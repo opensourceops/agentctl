@@ -1,0 +1,70 @@
+playbook: memory-flow
+description: Verify working memory and long-term memory in one deterministic run.
+
+memory:
+  working:
+    initial:
+      service: checkout
+  longTerm:
+    dbPath: ./state/long-term.db
+    namespace: memory-flow
+
+tasks:
+  - id: write_working
+    uses: module:builtin.memory.write
+    with:
+      key: finding
+      value: restore-drill-missing
+
+  - id: read_working
+    needs: [write_working]
+    uses: module:builtin.memory.read
+    with:
+      key: finding
+
+  - id: assert_working
+    needs: [read_working]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ memory.working.finding }}"
+        right: restore-drill-missing
+
+  - id: persist_long_term
+    needs: [assert_working]
+    uses: module:builtin.long_term_memory.write
+    with:
+      key: finding
+      value: "{{ memory.working.finding }}"
+      tags:
+        - readiness
+        - audit
+
+  - id: read_long_term
+    needs: [persist_long_term]
+    uses: module:builtin.long_term_memory.search
+    with:
+      key: finding
+
+  - id: assert_long_term_search
+    needs: [read_long_term]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.read_long_term.output.matchCount }}"
+        right: 1
+
+  - id: recall_long_term
+    needs: [assert_long_term_search]
+    uses: module:builtin.long_term_memory.retrieve
+    with:
+      key: finding
+      promoteKey: recalled
+
+  - id: assert_recalled
+    needs: [recall_long_term]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ memory.working.recalled }}"
+        right: restore-drill-missing

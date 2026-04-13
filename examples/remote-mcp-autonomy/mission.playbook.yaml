@@ -1,0 +1,55 @@
+playbook: remote-mcp-autonomy
+version: 0.1.0
+description: Autonomous run that uses a remote MCP server over HTTP and verifies the persisted report.
+
+defaults:
+  agentProfile: inspect
+
+mcpServers:
+  auditor:
+    url: http://127.0.0.1:43127/mcp
+
+agents:
+  remote/service_auditor:
+    kind: builtin.heuristic
+    instructions: |
+      Call the remote MCP audit tool and use its report as the final answer.
+    tools:
+      - tool: mcp:auditor/audit_service
+        with:
+          serviceRoot: ./fixtures/service
+
+tasks:
+  - id: audit
+    uses: agent:remote/service_auditor
+
+  - id: persist_report
+    uses: module:builtin.write
+    needs:
+      - audit
+    with:
+      path: ./artifacts/remote-mcp-report.md
+      content: "{{ tasks.audit.output.finalText }}"
+
+  - id: verify_report
+    uses: module:builtin.shell.exec
+    needs:
+      - persist_report
+    with:
+      command: |
+        set -eu
+        test -f ./artifacts/remote-mcp-report.md
+        grep -q '^# Remote MCP Ops Report' ./artifacts/remote-mcp-report.md
+        grep -q '^## Summary' ./artifacts/remote-mcp-report.md
+        grep -qi 'rollback validation drill' ./artifacts/remote-mcp-report.md
+        grep -qi 'incident communication owner' ./artifacts/remote-mcp-report.md
+        printf verified
+
+  - id: assert_verification
+    uses: module:builtin.assert
+    needs:
+      - verify_report
+    with:
+      equals:
+        left: "{{ tasks.verify_report.output.stdout }}"
+        right: verified

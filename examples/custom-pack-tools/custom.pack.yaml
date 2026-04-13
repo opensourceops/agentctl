@@ -1,0 +1,51 @@
+pack: custom
+version: "1"
+description: Custom process-backed tools for pack testing.
+
+modules:
+  node_version:
+    kind: pack.process
+    description: Wrap an existing host command to report the current Node.js version.
+    command: node
+    args:
+      - --version
+    runtime:
+      requires:
+        - command: node
+          version: ">=22"
+    policy:
+      label: node.version
+      capability: observe
+      risk: low
+
+  fixture_audit:
+    kind: pack.process
+    description: Run the pack-shipped audit script against the fixture directory.
+    command: node
+    args:
+      - ./tools/audit-service.mjs
+      - ./fixtures/service
+    cwd: .
+    runtime:
+      requires:
+        - command: node
+          version: ">=22"
+    policy:
+      label: fixture.audit
+      capability: observe
+      risk: low
+
+agents:
+  auditor:
+    kind: builtin.heuristic
+    description: Run pack-defined process tools to collect a report.
+    instructions: |
+      Run both configured tools in order.
+      The second tool must produce the final report.
+    maxTurns: 3
+    profile: inspect
+    tools:
+      - tool: custom/node_version
+        name: node_version
+      - tool: custom/fixture_audit
+        name: fixture_audit

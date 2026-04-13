@@ -1,0 +1,54 @@
+playbook: dataflow
+description: Verify scalar and structured task outputs can flow across YAML steps without losing shape.
+
+tasks:
+  - id: produce
+    uses: module:builtin.assign
+    with:
+      values:
+        status: ready
+        payload:
+          service: checkout
+          findings:
+            - restore-drill-missing
+            - escalation-policy-missing
+          metadata:
+            source: fixture
+            severity: high
+
+  - id: consume_scalar
+    needs: [produce]
+    uses: module:builtin.assign
+    with:
+      values:
+        copiedStatus: "{{ tasks.produce.output.values.status }}"
+
+  - id: consume_object
+    needs: [produce]
+    uses: module:builtin.assign
+    with:
+      values:
+        copiedPayload: "{{ tasks.produce.output.values.payload }}"
+
+  - id: assert_scalar
+    needs: [consume_scalar]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.consume_scalar.output.values.copiedStatus }}"
+        right: ready
+
+  - id: assert_object
+    needs: [consume_object]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.consume_object.output.values.copiedPayload }}"
+        right:
+          service: checkout
+          findings:
+            - restore-drill-missing
+            - escalation-policy-missing
+          metadata:
+            source: fixture
+            severity: high

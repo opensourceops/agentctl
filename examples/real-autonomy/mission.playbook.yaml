@@ -1,0 +1,98 @@
+playbook: real-autonomy
+version: 0.1.0
+description: Model-backed agent inspects a fixture and produces a verified ops readiness report.
+
+defaults:
+  agentProfile: workspace_write
+
+agents:
+  real/ops_auditor:
+    kind: openai.responses
+    provider: openai
+    model: gpt-5-mini
+    instructions: |
+      Inspect ./fixtures/service and produce the final Markdown content for an ops readiness report.
+
+      Requirements:
+      - Use the available tools to inspect the fixture before writing the report.
+      - Write a Markdown report with these exact headings:
+        - # Ops Readiness Report
+        - ## Summary
+        - ## Evidence
+        - ## Risks
+        - ## Recommended Next Steps
+      - The report must explicitly mention:
+        - the missing backup restore drill
+        - the missing documented on-call escalation policy
+      - The report must cite concrete evidence from the fixture files.
+      - In the Evidence section, include bullets for:
+        - README.md
+        - docs/runbook.md
+      - Quote the exact findings:
+        - "There is no documented on-call escalation policy."
+        - "Backups exist at the database layer, but there is no backup restore drill."
+        - "No restore validation drill is scheduled."
+      - Keep the report concise and factual.
+      - Return only the final report Markdown in your final answer.
+    maxTurns: 8
+    temperature: 0
+    tools:
+      - tool: builtin/ls
+        name: list_directory
+        with:
+          path: .
+      - tool: builtin/find
+        name: find_files
+        with:
+          path: ./fixtures/service
+          pattern: "**/*"
+      - tool: builtin/read
+        name: read_file
+        with:
+          path: ./fixtures/service/README.md
+      - tool: builtin/grep
+        name: search_text
+        with:
+          path: ./fixtures/service
+          pattern: backup|restore|on-call|escalation|deploy|runbook
+
+tasks:
+  - id: audit
+    uses: agent:real/ops_auditor
+
+  - id: persist_report
+    uses: module:builtin.write
+    needs:
+      - audit
+    with:
+      path: ./artifacts/ops-readiness-report.md
+      content: "{{ tasks.audit.output.finalText }}"
+
+  - id: verify_report
+    uses: module:builtin.shell.exec
+    needs:
+      - persist_report
+    with:
+      command: |
+        set -eu
+        test -f ./artifacts/ops-readiness-report.md
+        grep -q '^# Ops Readiness Report' ./artifacts/ops-readiness-report.md
+        grep -q '^## Summary' ./artifacts/ops-readiness-report.md
+        grep -q '^## Evidence' ./artifacts/ops-readiness-report.md
+        grep -qi 'backup restore drill' ./artifacts/ops-readiness-report.md
+        grep -qi 'on-call escalation policy' ./artifacts/ops-readiness-report.md
+        grep -q 'README.md' ./artifacts/ops-readiness-report.md
+        grep -q 'docs/runbook.md' ./artifacts/ops-readiness-report.md
+        grep -q 'There is no documented on-call escalation policy.' ./artifacts/ops-readiness-report.md
+        grep -q 'Backups exist at the database layer, but there is no backup restore drill.' ./artifacts/ops-readiness-report.md
+        grep -q 'No restore validation drill is scheduled.' ./artifacts/ops-readiness-report.md
+        printf verified
+
+  - id: assert_verification
+    uses: module:builtin.assert
+    needs:
+      - verify_report
+    with:
+      equals:
+        left: "{{ tasks.verify_report.output.stdout }}"
+        right: verified

@@ -1,0 +1,21 @@
+pack: demo
+version: 0.1.0
+description: Demo pack for the standalone autonomous runtime.
+
+modules:
+  status_probe:
+    kind: builtin.shell.exec
+    deterministic: false
+    with:
+      command: "printf 'status=ready\nframework={{ vars.framework_name }}\n'"
+
+agents:
+  reviewer:
+    kind: builtin.heuristic
+    profile: workspace_exec
+    instructions: |
+      Run the configured status probe once and return the captured output as the final text.
+    maxTurns: 4
+    tools:
+      - tool: demo/status_probe
+        name: status_probe

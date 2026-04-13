@@ -1,0 +1,42 @@
+{
+	"name": "agentctl",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Declarative autonomous agent runtime with playbooks, packs, durable checkpoints, and replay.",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"bin": {
+		"agentctl": "./dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"clean": "rm -rf dist .runtime",
+		"docs:cli": "tsx scripts/generate-cli-docs.ts",
+		"test": "vitest --run",
+		"sample": "tsx src/cli.ts run examples/hello.playbook.yaml --db .runtime/sample.db",
+		"schema": "tsx src/cli.ts schema"
+	},
+	"engines": {
+		"node": ">=22.0.0"
+	},
+	"dependencies": {
+		"@opentelemetry/api": "^1.9.0",
+		"better-sqlite3": "^12.4.1",
+		"mongodb": "^6.21.0",
+		"openai": "^6.34.0",
+		"yaml": "^2.8.1",
+		"zod": "^4.1.12"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/node": "^24.3.0",
+		"tsx": "^4.20.6",
+		"typescript": "^5.9.3",
+		"vitest": "^3.2.4"
+	}
+}

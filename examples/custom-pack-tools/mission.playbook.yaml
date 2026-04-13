@@ -1,0 +1,37 @@
+playbook: custom-pack-tools
+description: Example autonomous run using pack-defined process tools.
+packs:
+  - ./custom.pack.yaml
+
+tasks:
+  - id: audit
+    uses: agent:custom/auditor
+
+  - id: persist_report
+    needs: [audit]
+    uses: module:builtin.write
+    with:
+      path: ./artifacts/custom-pack-report.md
+      content: "{{ tasks.audit.output.finalText }}"
+
+  - id: verify_report
+    needs: [persist_report]
+    uses: module:builtin.shell.exec
+    with:
+      cwd: .
+      command: |
+        set -eu
+        test -f ./artifacts/custom-pack-report.md
+        grep -Eq '^# Custom Pack Report' ./artifacts/custom-pack-report.md
+        grep -qi 'Node.js version:' ./artifacts/custom-pack-report.md
+        grep -qi 'rollback owner' ./artifacts/custom-pack-report.md
+        grep -qi 'restore drill' ./artifacts/custom-pack-report.md
+        printf verified
+
+  - id: assert_verification
+    needs: [verify_report]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.verify_report.output.stdout }}"
+        right: verified

@@ -1,0 +1,30 @@
+playbook: hello-world
+version: 0.1.0
+description: Example autonomous run using a pack-defined agent and module.
+
+packs:
+  - ./demo.pack.yaml
+
+inputs:
+  requested_by: sample
+
+tasks:
+  - id: init
+    uses: module:builtin.assign
+    with:
+      values:
+        framework_name: agentctl
+
+  - id: review
+    uses: agent:demo/reviewer
+    needs:
+      - init
+
+  - id: verify
+    uses: module:builtin.assert
+    needs:
+      - review
+    with:
+      equals:
+        left: "{{ tasks.review.output.finalText }}"
+        right: "status=ready\nframework=agentctl"

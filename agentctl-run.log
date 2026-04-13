@@ -1,0 +1,460 @@
+agentctl run examples/real-autonomy/mission.playbook.yaml --db .runtime/real-autonomy.db
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 2
+status: running
+createdAt: 2026-04-11T06:19:02.567Z
+taskId: audit
+task:
+  status: running
+  attempts: 1
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 3
+status: running
+createdAt: 2026-04-11T06:19:09.146Z
+taskId: audit
+task:
+  status: running
+  attempts: 1
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 4
+status: running
+createdAt: 2026-04-11T06:19:09.151Z
+taskId: audit
+task:
+  status: running
+  attempts: 1
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 5
+status: running
+createdAt: 2026-04-11T06:19:25.772Z
+taskId: audit
+task:
+  status: succeeded
+  attempts: 1
+  output:
+    finalText: >-
+      # Ops Readiness Report
+
+
+      ## Summary
+
+      The Ledger Sync Service has basic observability (healthz, metrics) and
+      nightly database snapshots, but several operational gaps increase risk for
+      recovery and incident response. Notably, there is no documented on-call
+      escalation policy and no backup restore drill or scheduled restore
+      validation.
+
+
+      ## Evidence
+
+      - README.md (./fixtures/service/README.md)
+        - "There is no documented on-call escalation policy."
+        - "Backups exist at the database layer, but there is no backup restore drill."
+        - Other statements: "Deployments are manual and happen from a maintainer laptop." and "The service publishes `/healthz` and `/metrics`." and "Alerts are sent to a shared Slack channel."
+      - docs/runbook.md (./fixtures/service/docs/runbook.md)
+        - "No restore validation drill is scheduled."
+        - Other statements: "Primary alerts route to Slack `#ledger-sync-alerts`." and "Database snapshots run nightly."
+
+      ## Risks
+
+      - Recovery risk: Without a restore drill or scheduled restore validation,
+      backups may be unusable or recovery procedures may take longer than
+      acceptable RTO/RPO.
+
+      - Incident response confusion: Absence of a documented on-call escalation
+      policy can cause delayed or inconsistent responses during outages.
+
+      - Operational fragility: Manual deployments increase the chance of human
+      error during change or recovery windows.
+
+      - False assurance: Nightly snapshots alone do not guarantee recoverability
+      unless regularly validated through restores.
+
+
+      ## Recommended Next Steps
+
+      - Document and publish an on-call escalation policy (roles, escalation
+      matrix, contact methods) in the runbook.
+
+      - Define, schedule, and execute a backup restore drill that restores from
+      production snapshots to a test environment; document steps and outcomes.
+
+      - Add a scheduled “restore validation drill” to the runbook and track
+      results (pass/fail, time-to-restore, data integrity checks).
+
+      - Automate deployments or add clear deployment runbooks/checklists to
+      reduce human error during releases and rollbacks.
+
+      - After the first restore drill, record lessons learned and update runbook
+      procedures, RTO/RPO targets, and alerting/escalation flows.
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 6
+status: running
+createdAt: 2026-04-11T06:19:25.778Z
+taskId: persist_report
+task:
+  status: running
+  attempts: 1
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 7
+status: running
+createdAt: 2026-04-11T06:19:25.783Z
+taskId: persist_report
+task:
+  status: succeeded
+  attempts: 1
+  output:
+    path: /Users/ompragash/Git/agentctl/examples/real-autonomy/artifacts/ops-readiness-report.md
+    mode: overwrite
+    bytesWritten: 2153
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 8
+status: running
+createdAt: 2026-04-11T06:19:25.786Z
+taskId: verify_report
+task:
+  status: running
+  attempts: 1
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 9
+status: running
+createdAt: 2026-04-11T06:19:25.888Z
+taskId: verify_report
+task:
+  status: succeeded
+  attempts: 1
+  output:
+    command: >
+      set -eu
+
+      test -f ./artifacts/ops-readiness-report.md
+
+      grep -q '^# Ops Readiness Report' ./artifacts/ops-readiness-report.md
+
+      grep -q '^## Summary' ./artifacts/ops-readiness-report.md
+
+      grep -q '^## Evidence' ./artifacts/ops-readiness-report.md
+
+      grep -qi 'backup restore drill' ./artifacts/ops-readiness-report.md
+
+      grep -qi 'on-call escalation policy' ./artifacts/ops-readiness-report.md
+
+      grep -q 'README.md' ./artifacts/ops-readiness-report.md
+
+      grep -q 'docs/runbook.md' ./artifacts/ops-readiness-report.md
+
+      grep -q 'There is no documented on-call escalation policy.'
+      ./artifacts/ops-readiness-report.md
+
+      grep -q 'Backups exist at the database layer, but there is no backup
+      restore drill.' ./artifacts/ops-readiness-report.md
+
+      grep -q 'No restore validation drill is scheduled.'
+      ./artifacts/ops-readiness-report.md
+
+      printf verified
+    cwd: /Users/ompragash/Git/agentctl/examples/real-autonomy
+    exitCode: 0
+    stdout: verified
+    stderr: ""
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 10
+status: running
+createdAt: 2026-04-11T06:19:25.890Z
+taskId: assert_verification
+task:
+  status: running
+  attempts: 1
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 11
+status: running
+createdAt: 2026-04-11T06:19:25.892Z
+taskId: assert_verification
+task:
+  status: succeeded
+  attempts: 1
+  output:
+    ok: true
+    left: verified
+    right: verified
+    message: assertion passed
+---
+type: checkpoint
+runId: 458e6c86-6232-4d07-b199-360726ef99b8
+seq: 12
+status: succeeded
+createdAt: 2026-04-11T06:19:25.893Z
+---
+type: result
+run:
+  id: 458e6c86-6232-4d07-b199-360726ef99b8
+  playbookName: real-autonomy
+  status: succeeded
+  traceId: 867b417d-6050-4bc0-bca4-e057e41b6840
+  snapshot:
+    inputs: {}
+    vars: {}
+    tasks:
+      audit:
+        status: succeeded
+        attempts: 1
+        output:
+          finalText: >-
+            # Ops Readiness Report
+
+
+            ## Summary
+
+            The Ledger Sync Service has basic observability (healthz, metrics)
+            and nightly database snapshots, but several operational gaps
+            increase risk for recovery and incident response. Notably, there is
+            no documented on-call escalation policy and no backup restore drill
+            or scheduled restore validation.
+
+
+            ## Evidence
+
+            - README.md (./fixtures/service/README.md)
+              - "There is no documented on-call escalation policy."
+              - "Backups exist at the database layer, but there is no backup restore drill."
+              - Other statements: "Deployments are manual and happen from a maintainer laptop." and "The service publishes `/healthz` and `/metrics`." and "Alerts are sent to a shared Slack channel."
+            - docs/runbook.md (./fixtures/service/docs/runbook.md)
+              - "No restore validation drill is scheduled."
+              - Other statements: "Primary alerts route to Slack `#ledger-sync-alerts`." and "Database snapshots run nightly."
+
+            ## Risks
+
+            - Recovery risk: Without a restore drill or scheduled restore
+            validation, backups may be unusable or recovery procedures may take
+            longer than acceptable RTO/RPO.
+
+            - Incident response confusion: Absence of a documented on-call
+            escalation policy can cause delayed or inconsistent responses during
+            outages.
+
+            - Operational fragility: Manual deployments increase the chance of
+            human error during change or recovery windows.
+
+            - False assurance: Nightly snapshots alone do not guarantee
+            recoverability unless regularly validated through restores.
+
+
+            ## Recommended Next Steps
+
+            - Document and publish an on-call escalation policy (roles,
+            escalation matrix, contact methods) in the runbook.
+
+            - Define, schedule, and execute a backup restore drill that restores
+            from production snapshots to a test environment; document steps and
+            outcomes.
+
+            - Add a scheduled “restore validation drill” to the runbook and
+            track results (pass/fail, time-to-restore, data integrity checks).
+
+            - Automate deployments or add clear deployment runbooks/checklists
+            to reduce human error during releases and rollbacks.
+
+            - After the first restore drill, record lessons learned and update
+            runbook procedures, RTO/RPO targets, and alerting/escalation flows.
+      persist_report:
+        status: succeeded
+        attempts: 1
+        output:
+          path: /Users/ompragash/Git/agentctl/examples/real-autonomy/artifacts/ops-readiness-report.md
+          mode: overwrite
+          bytesWritten: 2153
+      verify_report:
+        status: succeeded
+        attempts: 1
+        output:
+          command: >
+            set -eu
+
+            test -f ./artifacts/ops-readiness-report.md
+
+            grep -q '^# Ops Readiness Report'
+            ./artifacts/ops-readiness-report.md
+
+            grep -q '^## Summary' ./artifacts/ops-readiness-report.md
+
+            grep -q '^## Evidence' ./artifacts/ops-readiness-report.md
+
+            grep -qi 'backup restore drill' ./artifacts/ops-readiness-report.md
+
+            grep -qi 'on-call escalation policy'
+            ./artifacts/ops-readiness-report.md
+
+            grep -q 'README.md' ./artifacts/ops-readiness-report.md
+
+            grep -q 'docs/runbook.md' ./artifacts/ops-readiness-report.md
+
+            grep -q 'There is no documented on-call escalation policy.'
+            ./artifacts/ops-readiness-report.md
+
+            grep -q 'Backups exist at the database layer, but there is no backup
+            restore drill.' ./artifacts/ops-readiness-report.md
+
+            grep -q 'No restore validation drill is scheduled.'
+            ./artifacts/ops-readiness-report.md
+
+            printf verified
+          cwd: /Users/ompragash/Git/agentctl/examples/real-autonomy
+          exitCode: 0
+          stdout: verified
+          stderr: ""
+      assert_verification:
+        status: succeeded
+        attempts: 1
+        output:
+          ok: true
+          left: verified
+          right: verified
+          message: assertion passed
+    agents: {}
+  createdAt: 2026-04-11T06:19:02.560Z
+  updatedAt: 2026-04-11T06:19:25.893Z
+latestCheckpoint:
+  runId: 458e6c86-6232-4d07-b199-360726ef99b8
+  seq: 12
+  status: succeeded
+  snapshot:
+    inputs: {}
+    vars: {}
+    tasks:
+      audit:
+        status: succeeded
+        attempts: 1
+        output:
+          finalText: >-
+            # Ops Readiness Report
+
+
+
+            ## Summary
+
+            The Ledger Sync Service has basic observability (healthz, metrics)
+            and nightly database snapshots, but several operational gaps
+            increase risk for recovery and incident response. Notably, there is
+            no documented on-call escalation policy and no backup restore drill
+            or scheduled restore validation.
+
+
+            ## Evidence
+
+            - README.md (./fixtures/service/README.md)
+              - "There is no documented on-call escalation policy."
+              - "Backups exist at the database layer, but there is no backup restore drill."
+              - Other statements: "Deployments are manual and happen from a maintainer laptop." and "The service publishes `/healthz` and `/metrics`." and "Alerts are sent to a shared Slack channel."
+            - docs/runbook.md (./fixtures/service/docs/runbook.md)
+              - "No restore validation drill is scheduled."
+              - Other statements: "Primary alerts route to Slack `#ledger-sync-alerts`." and "Database snapshots run nightly."
+
+            ## Risks
+
+            - Recovery risk: Without a restore drill or scheduled restore
+            validation, backups may be unusable or recovery procedures may take
+            longer than acceptable RTO/RPO.
+
+            - Incident response confusion: Absence of a documented on-call
+            escalation policy can cause delayed or inconsistent responses during
+            outages.
+
+            - Operational fragility: Manual deployments increase the chance of
+            human error during change or recovery windows.
+
+            - False assurance: Nightly snapshots alone do not guarantee
+            recoverability unless regularly validated through restores.
+
+
+            ## Recommended Next Steps
+
+            - Document and publish an on-call escalation policy (roles,
+            escalation matrix, contact methods) in the runbook.
+
+            - Define, schedule, and execute a backup restore drill that restores
+            from production snapshots to a test environment; document steps and
+            outcomes.
+
+            - Add a scheduled “restore validation drill” to the runbook and
+            track results (pass/fail, time-to-restore, data integrity checks).
+
+            - Automate deployments or add clear deployment runbooks/checklists
+            to reduce human error during releases and rollbacks.
+
+            - After the first restore drill, record lessons learned and update
+            runbook procedures, RTO/RPO targets, and alerting/escalation flows.
+      persist_report:
+        status: succeeded
+        attempts: 1
+        output:
+          path: /Users/ompragash/Git/agentctl/examples/real-autonomy/artifacts/ops-readiness-report.md
+          mode: overwrite
+          bytesWritten: 2153
+      verify_report:
+        status: succeeded
+        attempts: 1
+        output:
+          command: >
+            set -eu
+
+            test -f ./artifacts/ops-readiness-report.md
+
+            grep -q '^# Ops Readiness Report'
+            ./artifacts/ops-readiness-report.md
+
+            grep -q '^## Summary' ./artifacts/ops-readiness-report.md
+
+            grep -q '^## Evidence' ./artifacts/ops-readiness-report.md
+
+            grep -qi 'backup restore drill' ./artifacts/ops-readiness-report.md
+
+            grep -qi 'on-call escalation policy'
+            ./artifacts/ops-readiness-report.md
+
+            grep -q 'README.md' ./artifacts/ops-readiness-report.md
+
+            grep -q 'docs/runbook.md' ./artifacts/ops-readiness-report.md
+
+            grep -q 'There is no documented on-call escalation policy.'
+            ./artifacts/ops-readiness-report.md
+
+            grep -q 'Backups exist at the database layer, but there is no backup
+            restore drill.' ./artifacts/ops-readiness-report.md
+
+            grep -q 'No restore validation drill is scheduled.'
+            ./artifacts/ops-readiness-report.md
+
+            printf verified
+          cwd: /Users/ompragash/Git/agentctl/examples/real-autonomy
+          exitCode: 0
+          stdout: verified
+          stderr: ""
+      assert_verification:
+        status: succeeded
+        attempts: 1
+        output:
+          ok: true
+          left: verified
+          right: verified
+          message: assertion passed
+    agents: {}
+  createdAt: 2026-04-11T06:19:25.893Z
