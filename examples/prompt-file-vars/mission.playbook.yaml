@@ -1,0 +1,52 @@
+playbook: prompt-file-vars
+description: Verify prompt files and execution-time agent vars render deterministically.
+
+agents:
+  local/reviewer:
+    kind: builtin.heuristic
+    instructionsFile: ./prompts/review.md
+    vars:
+      severity: medium
+
+tasks:
+  - id: prepare
+    uses: module:builtin.assign
+    with:
+      values:
+        finding: restore-drill-missing
+
+  - id: project
+    needs: [prepare]
+    uses: module:builtin.assign
+    vars:
+      service: checkout
+      finding: "{{ tasks.prepare.output.values.finding }}"
+    with:
+      values:
+        rendered: "{{ service }}:{{ vars.finding }}"
+
+  - id: review
+    needs: [prepare]
+    uses: agent:local/reviewer
+    vars:
+      service: checkout
+      finding: "{{ tasks.prepare.output.values.finding }}"
+
+  - id: verify
+    needs: [project, review]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.review.output.finalText }}"
+        right: |
+          Service: checkout
+          Finding: restore-drill-missing
+          Severity: medium
+
+  - id: verify_project
+    needs: [project]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.project.output.values.rendered }}"
+        right: "checkout:restore-drill-missing"

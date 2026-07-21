@@ -43,10 +43,14 @@ Runtime-bound transports still override playbook-declared remotes when both are 
 
 ```text
 Usage:
+  agentctl check <playbook.yaml> [flags]
   agentctl run <playbook.yaml> [flags]
   agentctl resume <playbook.yaml> <run-id> [flags]
   agentctl replay <playbook.yaml> <run-id> <checkpoint-seq> [flags]
   agentctl db stats [flags]
+  agentctl approvals <subcommand> [flags]
+  agentctl prompt-cache stats [flags]
+  agentctl prompt-cache explain <playbook.yaml> [flags]
   agentctl memory <subcommand> [flags]
   agentctl gc [flags]
   agentctl auth check [playbook.yaml] [flags]
@@ -61,8 +65,31 @@ Examples: "agentctl run --help", "agentctl memory --help", "agentctl auth check 
 Examples:
   agentctl run examples/hello.playbook.yaml
   agentctl db stats
+  agentctl approvals list
+  agentctl prompt-cache stats
   agentctl memory stats
   agentctl auth check examples/real-autonomy/mission.playbook.yaml
+  agentctl check examples/prompt-file-vars/mission.playbook.yaml
+
+Flags:
+  -h, --help  Show help
+  -v, --verbose  Show full structured output
+  -V, --version  Show version
+  --output yaml|json  Structured output format
+  --color auto|always|never  YAML color mode
+```
+
+### `check`
+
+```text
+Usage:
+  agentctl check <playbook.yaml> [flags]
+
+Reports YAML syntax, schema, prompt-file, template-reference, and compile errors with exact file context when available.
+
+Examples:
+  agentctl check examples/hello.playbook.yaml
+  agentctl check examples/prompt-file-vars/mission.playbook.yaml --output json
 
 Flags:
   -h, --help  Show help
@@ -79,6 +106,7 @@ Usage:
   agentctl run <playbook.yaml> [flags]
 
 Streams checkpoint events progressively and prints the final run result.
+In interactive YAML TTY mode, paused approval-gated runs prompt inline and resume automatically after approval or rejection.
 
 Examples:
   agentctl run examples/hello.playbook.yaml
@@ -103,6 +131,7 @@ Usage:
   agentctl resume <playbook.yaml> <run-id> [flags]
 
 Fails fast for terminal runs and preserves already checkpointed side effects.
+In interactive YAML TTY mode, pending approvals can be resolved inline before resuming execution.
 
 Examples:
   agentctl resume examples/hello.playbook.yaml <run-id> --db ~/.agentctl/runtime/runtime.db
@@ -125,6 +154,7 @@ Usage:
   agentctl replay <playbook.yaml> <run-id> <checkpoint-seq> [flags]
 
 Creates a new run id and reuses the selected checkpoint snapshot as the starting state.
+In interactive YAML TTY mode, replayed approval gates can be resolved inline as the new run pauses.
 
 Examples:
   agentctl replay examples/hello.playbook.yaml <run-id> 3 --db ~/.agentctl/runtime/runtime.db
@@ -159,6 +189,35 @@ Flags:
   --output yaml|json  Structured output format
   --color auto|always|never  YAML color mode
   --db path  Runtime database path
+```
+
+### `prompt-cache`
+
+```text
+Usage:
+  agentctl prompt-cache stats [flags]
+  agentctl prompt-cache explain <playbook.yaml> [flags]
+
+Aggregates prompt-cache hit and token usage from runtime audit events.
+Explain reports why prompt cache is enabled or disabled per agent before a run.
+This is observability for provider-native caching, not cache content inspection.
+
+Examples:
+  agentctl prompt-cache stats
+  agentctl prompt-cache stats --db .runtime/real-autonomy.db --output json
+  agentctl prompt-cache stats --run-id <run-id> --verbose
+  agentctl prompt-cache explain examples/prompt-cache/mission.playbook.yaml
+
+Flags:
+  -h, --help  Show help
+  -v, --verbose  Show full structured output
+  -V, --version  Show version
+  --output yaml|json  Structured output format
+  --color auto|always|never  YAML color mode
+  --db path  Runtime database path
+  --agent-ref ref  Filter prompt-cache stats to one agent ref
+  --run-id id  Filter prompt-cache stats to one run
+  --task-id id  Filter prompt-cache stats to one task
 ```
 
 ### `memory`
@@ -206,7 +265,7 @@ Flags:
 Usage:
   agentctl gc [flags]
 
-Running runs are never deleted.
+Only terminal runs are deleted. Running and paused runs are preserved.
 
 Examples:
   agentctl gc
@@ -336,14 +395,17 @@ agentctl gc --output json --verbose
   - Extension point for future external adapters such as SQL, vector, document, and graph stores.
 
 - `prompt_cache`
-  - Provider/model optimization, not part of execution correctness.
-  - Not implemented as a first-class `agentctl` subsystem yet.
+  - Provider-native optimization for supported model adapters.
+  - Currently implemented for `openai.responses` with provider `openai`.
+  - Disabled by default and never required for correctness.
+  - Custom OpenAI-compatible base URLs are disabled by default unless `promptCache.force: true` is set.
 
 Recommended usage:
 
 - Use `working_memory` for state that must survive retries, resume, and replay within the same run.
 - Use `long_term_memory` only for cross-run knowledge that you want to keep deliberately.
 - Do not treat `run_memory` as a user-facing knowledge store.
+- Use `prompt_cache` only for cost and latency optimization on stable prompt prefixes.
 - Do not rely on prompt caching for correctness.
 
 ### `vars` compatibility
@@ -377,10 +439,16 @@ Command behavior:
 - `--namespace` filters to a single namespace; omitted namespace searches across all namespaces for CLI reads
 - `--value` accepts JSON and `--string` writes a plain string
 
-See [/Users/ompragash/Git/agentctl/docs/memory.md](/Users/ompragash/Git/agentctl/docs/memory.md) for the detailed memory guide.
-See [/Users/ompragash/Git/agentctl/docs/long-term-memory.md](/Users/ompragash/Git/agentctl/docs/long-term-memory.md) for long-term retention, adapters, MongoDB Atlas, retrieval/promotion, and replay/resume notes.
-See [/Users/ompragash/Git/agentctl/docs/custom-tools.md](/Users/ompragash/Git/agentctl/docs/custom-tools.md) for pack-defined custom tools, runtime requirements, and host-command wrappers.
-See [/Users/ompragash/Git/agentctl/docs/typescript.md](/Users/ompragash/Git/agentctl/docs/typescript.md) for the repository TypeScript conventions.
+See [docs/memory.md](docs/memory.md) for the detailed memory guide.
+See [docs/prompt-cache.md](docs/prompt-cache.md) for prompt-cache support, configuration, sharing modes, and CLI stats.
+See [docs/long-term-memory.md](docs/long-term-memory.md) for long-term retention, adapters, MongoDB Atlas, retrieval/promotion, and replay/resume notes.
+See [docs/custom-tools.md](docs/custom-tools.md) for pack-defined custom tools, runtime requirements, and host-command wrappers.
+See [docs/agent-prompts.md](docs/agent-prompts.md) for inline prompts, prompt files, task-scoped vars, agent default vars, and execution-time prompt rendering.
+See [docs/agent-kinds.md](docs/agent-kinds.md) for the supported `agents.<name>.kind` values, exact fields, and when to use each one.
+See [docs/profiles.md](docs/profiles.md) for the supported agent tool profiles, capability matrix, and selection guidance.
+See [docs/policies.md](docs/policies.md) for the supported policy fields, path rules, approval modes, and decision flow.
+See [docs/check.md](docs/check.md) for `agentctl check`, YAML syntax validation, schema validation, and prompt-template diagnostics.
+See [docs/typescript.md](docs/typescript.md) for the repository TypeScript conventions.
 
 ## Provider auth
 
@@ -435,10 +503,12 @@ Stored credentials in `~/.agentctl/auth.json` can be either a legacy string API 
 
 ## Real example
 
-See [/Users/ompragash/Git/agentctl/examples/real-autonomy/README.md](/Users/ompragash/Git/agentctl/examples/real-autonomy/README.md) for a model-backed example that inspects a fixture, writes a report, and verifies the output deterministically.
+See [examples/real-autonomy/README.md](examples/real-autonomy/README.md) for a model-backed example that inspects a fixture, writes a report, and verifies the output deterministically.
 
-See [/Users/ompragash/Git/agentctl/examples/remote-mcp-autonomy/README.md](/Users/ompragash/Git/agentctl/examples/remote-mcp-autonomy/README.md) for a second example that crosses a real remote MCP HTTP boundary before persisting and verifying the report.
+See [examples/remote-mcp-autonomy/README.md](examples/remote-mcp-autonomy/README.md) for a second example that crosses a real remote MCP HTTP boundary before persisting and verifying the report.
 
-See [/Users/ompragash/Git/agentctl/examples/custom-pack-tools/README.md](/Users/ompragash/Git/agentctl/examples/custom-pack-tools/README.md) for a pack example that lets an agent call both a wrapped host command and a custom script shipped inside the pack.
+See [examples/custom-pack-tools/README.md](examples/custom-pack-tools/README.md) for a pack example that lets an agent call both a wrapped host command and a custom script shipped inside the pack.
 
-See [/Users/ompragash/Git/agentctl/examples/dataflow/README.md](/Users/ompragash/Git/agentctl/examples/dataflow/README.md) for a deterministic example that proves scalar and structured task outputs can flow across YAML steps without losing shape.
+See [examples/dataflow/README.md](examples/dataflow/README.md) for a deterministic example that proves scalar and structured task outputs can flow across YAML steps without losing shape.
+
+See [examples/prompt-file-vars/README.md](examples/prompt-file-vars/README.md) for a deterministic example that proves `instructionsFile`, task-scoped vars, agent default vars, and runtime task-output interpolation.

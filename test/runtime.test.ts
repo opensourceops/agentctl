@@ -394,6 +394,62 @@ describe("runtime", () => {
 		} finally {
 			store.close();
 			rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+	test("task vars override agent defaults and support bare plus namespaced resolution", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-task-vars");
+		const playbookFile = join(dir, "task-vars.playbook.yaml");
+		writeFileSync(
+			playbookFile,
+			`playbook: task-vars\n` +
+				`inputs:\n` +
+				`  service: payments\n` +
+				`agents:\n` +
+				`  local/reviewer:\n` +
+				`    kind: builtin.heuristic\n` +
+				`    instructions: "service={{ service }} alias={{ vars.service }} input={{ inputs.service }} finding={{ finding }} severity={{ severity }}"\n` +
+				`    vars:\n` +
+				`      service: default-service\n` +
+				`      severity: medium\n` +
+				`tasks:\n` +
+				`  - id: prepare\n` +
+				`    uses: module:builtin.assign\n` +
+				`    with:\n` +
+				`      values:\n` +
+				`        finding: restore-drill-missing\n` +
+				`  - id: project\n` +
+				`    needs: [prepare]\n` +
+				`    uses: module:builtin.assign\n` +
+				`    vars:\n` +
+				`      service: checkout\n` +
+				`      finding: "{{ tasks.prepare.output.values.finding }}"\n` +
+				`    with:\n` +
+				`      values:\n` +
+				`        preview: "{{ service }}|{{ vars.finding }}|{{ inputs.service }}"\n` +
+				`  - id: review\n` +
+				`    needs: [prepare]\n` +
+				`    uses: agent:local/reviewer\n` +
+				`    vars:\n` +
+				`      service: checkout\n` +
+				`      finding: "{{ tasks.prepare.output.values.finding }}"\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		try {
+			const runtime = new PlaybookRuntime(compilePlaybook(loadPlaybookWithPacks(playbookFile)), store);
+			const result = await runtime.start();
+			expect(result.run.status).toBe("succeeded");
+			expect(result.run.snapshot.tasks.project.output?.values).toEqual({
+				preview: "checkout|restore-drill-missing|payments",
+			});
+			expect(result.run.snapshot.tasks.review.output?.finalText).toBe(
+				"service=checkout alias=checkout input=payments finding=restore-drill-missing severity=medium",
+			);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -460,6 +516,80 @@ describe("runtime", () => {
 		expect(resumed.run.snapshot.vars.recalled).toBe("grounded");
 
 		store.close();
+			rmSync(dir, { recursive: true, force: true });
+		});
+
+	test("resume preserves task-scoped vars across multi-turn memory agent workflows", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-agent-memory-task-vars-resume");
+		const playbookFile = join(dir, "agent-memory-task-vars-resume.playbook.yaml");
+		writeFileSync(
+			playbookFile,
+			`playbook: agent-memory-task-vars-resume\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`memory:\n` +
+				`  longTerm:\n` +
+				`    dbPath: ./long-term.db\n` +
+				`    namespace: memory-agent\n` +
+				`agents:\n` +
+				`  local/memory_worker:\n` +
+				`    kind: builtin.heuristic\n` +
+				`    instructions: progress through memory tools\n` +
+				`    maxTurns: 4\n` +
+				`    tools:\n` +
+				`      - tool: builtin/memory-write\n` +
+				`        with:\n` +
+				`          key: finding\n` +
+				`          value: "{{ finding }}"\n` +
+				`      - tool: builtin/long-term-memory-write\n` +
+				`        with:\n` +
+				`          key: finding\n` +
+				`          value: "{{ finding }}"\n` +
+				`      - tool: builtin/long-term-memory-retrieve\n` +
+				`        with:\n` +
+				`          key: finding\n` +
+				`          promoteKey: recalled\n` +
+				`tasks:\n` +
+				`  - id: prepare\n` +
+				`    uses: module:builtin.assign\n` +
+				`    with:\n` +
+				`      values:\n` +
+				`        finding: grounded\n` +
+				`  - id: memory_agent\n` +
+				`    needs: [prepare]\n` +
+				`    uses: agent:local/memory_worker\n` +
+				`    vars:\n` +
+				`      finding: "{{ tasks.prepare.output.values.finding }}"\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		const plan = compilePlaybook(loadPlaybookWithPacks(playbookFile));
+		let interruptedRunId = "";
+		const runtime = new PlaybookRuntime(plan, store, {
+			hooks: {
+				afterCheckpoint(checkpoint) {
+					const session = checkpoint.snapshot.agents.memory_agent;
+					if (checkpoint.taskId === "memory_agent" && session && session.turns.length === 1) {
+						interruptedRunId = checkpoint.runId;
+						throw new Error("interrupt after first task-var turn");
+					}
+				},
+			},
+		});
+
+		await expect(runtime.start()).rejects.toThrow("interrupt after first task-var turn");
+		const interrupted = store.getLatestCheckpoint(interruptedRunId);
+		expect(interrupted.snapshot.memory.working.finding).toBe("grounded");
+		expect(interrupted.snapshot.agents.memory_agent?.resolvedVars).toEqual({
+			finding: "grounded",
+		});
+
+		const resumed = await new PlaybookRuntime(plan, store).resume(interruptedRunId);
+		expect(resumed.run.status).toBe("succeeded");
+		expect(resumed.run.snapshot.memory.working.recalled).toBe("grounded");
+
+		store.close();
 		rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -519,6 +649,255 @@ describe("runtime", () => {
 		expect(replayedCheckpoints[0]?.snapshot.memory.working.finding).toBe("grounded");
 
 		store.close();
+			rmSync(dir, { recursive: true, force: true });
+		});
+
+	test("replay from a mid-agent checkpoint preserves resolved task vars for later memory turns", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-agent-memory-task-vars-replay");
+		const playbookFile = join(dir, "agent-memory-task-vars-replay.playbook.yaml");
+		writeFileSync(
+			playbookFile,
+			`playbook: agent-memory-task-vars-replay\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`memory:\n` +
+				`  longTerm:\n` +
+				`    dbPath: ./long-term.db\n` +
+				`    namespace: memory-agent\n` +
+				`agents:\n` +
+				`  local/memory_worker:\n` +
+				`    kind: builtin.heuristic\n` +
+				`    instructions: progress through memory tools\n` +
+				`    maxTurns: 4\n` +
+				`    tools:\n` +
+				`      - tool: builtin/memory-write\n` +
+				`        with:\n` +
+				`          key: finding\n` +
+				`          value: "{{ finding }}"\n` +
+				`      - tool: builtin/long-term-memory-write\n` +
+				`        with:\n` +
+				`          key: finding\n` +
+				`          value: "{{ finding }}"\n` +
+				`      - tool: builtin/long-term-memory-retrieve\n` +
+				`        with:\n` +
+				`          key: finding\n` +
+				`          promoteKey: recalled\n` +
+				`tasks:\n` +
+				`  - id: prepare\n` +
+				`    uses: module:builtin.assign\n` +
+				`    with:\n` +
+				`      values:\n` +
+				`        finding: grounded\n` +
+				`  - id: memory_agent\n` +
+				`    needs: [prepare]\n` +
+				`    uses: agent:local/memory_worker\n` +
+				`    vars:\n` +
+				`      finding: "{{ tasks.prepare.output.values.finding }}"\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		const plan = compilePlaybook(loadPlaybookWithPacks(playbookFile));
+		const runtime = new PlaybookRuntime(plan, store);
+		const original = await runtime.start();
+		const checkpoint = store
+			.listCheckpoints(original.run.id)
+			.find((entry) => entry.taskId === "memory_agent" && entry.snapshot.agents.memory_agent?.turns.length === 2);
+
+		expect(checkpoint).toBeDefined();
+		expect(checkpoint?.snapshot.agents.memory_agent?.resolvedVars).toEqual({
+			finding: "grounded",
+		});
+
+		const replayed = await runtime.replay(original.run.id, checkpoint!.seq);
+		expect(replayed.run.status).toBe("succeeded");
+		expect(replayed.run.snapshot.memory.working.recalled).toBe("grounded");
+		expect(store.listCheckpoints(replayed.run.id)[0]?.snapshot.agents.memory_agent?.resolvedVars).toEqual({
+			finding: "grounded",
+		});
+
+		store.close();
 		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("approved module mutations resume successfully and execute exactly once", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-approval-resume-module");
+		const playbookFile = join(dir, "approval-module.playbook.yaml");
+		const targetFile = join(dir, "note.txt");
+		writeFileSync(
+			playbookFile,
+			`playbook: approval-module\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`policy:\n` +
+				`  workspaceRoot: ${JSON.stringify(dir)}\n` +
+				`  writableRoots:\n` +
+				`    - ${JSON.stringify(dir)}\n` +
+				`  approvalMode: on-mutate\n` +
+				`tasks:\n` +
+				`  - id: write_note\n` +
+				`    uses: module:builtin.write\n` +
+				`    with:\n` +
+				`      path: ./note.txt\n` +
+				`      content: approved write\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		try {
+			const runtime = new PlaybookRuntime(compilePlaybook(loadPlaybookWithPacks(playbookFile)), store);
+			const paused = await runtime.start();
+			expect(paused.run.status).toBe("paused");
+			expect(paused.run.snapshot.tasks.write_note.status).toBe("waiting_approval");
+			expect(existsSync(targetFile)).toBe(false);
+
+			const approvalId = paused.run.snapshot.tasks.write_note.approvalId;
+			expect(approvalId).toBeTruthy();
+			store.resolveApproval(approvalId!, "approved", { resolvedBy: "tester" });
+
+			const resumed = await runtime.resume(paused.run.id);
+			expect(resumed.run.status).toBe("succeeded");
+			expect(resumed.run.snapshot.tasks.write_note.status).toBe("succeeded");
+			expect(readFileSync(targetFile, "utf8")).toBe("approved write");
+			expect(resumed.run.snapshot.tasks.write_note.attempts).toBe(1);
+
+			const approvalAudit = store
+				.listAuditEvents(resumed.run.id)
+				.find((event) => event.name === "approval.applied");
+			expect(approvalAudit).toBeDefined();
+			expect(approvalAudit?.attributes).toEqual(
+				expect.objectContaining({
+					task_id: "write_note",
+					approval_id: approvalId,
+					tool_ref: "builtin.write",
+				}),
+			);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("rejected approvals fail the blocked task on resume without executing the tool", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-approval-reject-module");
+		const playbookFile = join(dir, "reject-module.playbook.yaml");
+		const targetFile = join(dir, "note.txt");
+		writeFileSync(
+			playbookFile,
+			`playbook: reject-module\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`policy:\n` +
+				`  workspaceRoot: ${JSON.stringify(dir)}\n` +
+				`  writableRoots:\n` +
+				`    - ${JSON.stringify(dir)}\n` +
+				`  approvalMode: on-mutate\n` +
+				`tasks:\n` +
+				`  - id: write_note\n` +
+				`    uses: module:builtin.write\n` +
+				`    with:\n` +
+				`      path: ./note.txt\n` +
+				`      content: should-not-write\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		try {
+			const runtime = new PlaybookRuntime(compilePlaybook(loadPlaybookWithPacks(playbookFile)), store);
+			const paused = await runtime.start();
+			expect(paused.run.status).toBe("paused");
+			const approvalId = paused.run.snapshot.tasks.write_note.approvalId;
+			expect(approvalId).toBeTruthy();
+			store.resolveApproval(approvalId!, "rejected", { resolvedBy: "tester", resolutionNote: "nope" });
+
+			const resumed = await runtime.resume(paused.run.id);
+			expect(resumed.run.status).toBe("failed");
+			expect(resumed.run.snapshot.tasks.write_note.status).toBe("failed");
+			expect(resumed.run.snapshot.tasks.write_note.error).toContain("Tool call rejected");
+			expect(existsSync(targetFile)).toBe(false);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resume refuses runs with pending approvals", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-approval-pending");
+		const playbookFile = join(dir, "pending-approval.playbook.yaml");
+		writeFileSync(
+			playbookFile,
+			`playbook: pending-approval\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`policy:\n` +
+				`  workspaceRoot: ${JSON.stringify(dir)}\n` +
+				`  writableRoots:\n` +
+				`    - ${JSON.stringify(dir)}\n` +
+				`  approvalMode: on-mutate\n` +
+				`tasks:\n` +
+				`  - id: write_note\n` +
+				`    uses: module:builtin.write\n` +
+				`    with:\n` +
+				`      path: ./note.txt\n` +
+				`      content: pending\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		try {
+			const runtime = new PlaybookRuntime(compilePlaybook(loadPlaybookWithPacks(playbookFile)), store);
+			const paused = await runtime.start();
+			expect(paused.run.status).toBe("paused");
+			await expect(runtime.resume(paused.run.id)).rejects.toThrow(
+				`Run "${paused.run.id}" is paused with pending approval "${paused.run.snapshot.tasks.write_note.approvalId}" for task "write_note"`,
+			);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("replay from a paused approval checkpoint forks a fresh run with a fresh approval", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-approval-replay");
+		const playbookFile = join(dir, "replay-approval.playbook.yaml");
+		writeFileSync(
+			playbookFile,
+			`playbook: replay-approval\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`policy:\n` +
+				`  workspaceRoot: ${JSON.stringify(dir)}\n` +
+				`  writableRoots:\n` +
+				`    - ${JSON.stringify(dir)}\n` +
+				`  approvalMode: on-mutate\n` +
+				`tasks:\n` +
+				`  - id: write_note\n` +
+				`    uses: module:builtin.write\n` +
+				`    with:\n` +
+				`      path: ./note.txt\n` +
+				`      content: replayed\n`,
+			"utf8",
+		);
+
+		const store = new CheckpointStore(dbPath);
+		try {
+			const runtime = new PlaybookRuntime(compilePlaybook(loadPlaybookWithPacks(playbookFile)), store);
+			const paused = await runtime.start();
+			expect(paused.run.status).toBe("paused");
+			const pausedCheckpoint = store.getLatestCheckpoint(paused.run.id);
+			const originalApprovalId = paused.run.snapshot.tasks.write_note.approvalId;
+			expect(originalApprovalId).toBeTruthy();
+
+			const replayed = await runtime.replay(paused.run.id, pausedCheckpoint.seq);
+			expect(replayed.run.status).toBe("paused");
+			expect(replayed.run.id).not.toBe(paused.run.id);
+			expect(replayed.run.snapshot.tasks.write_note.status).toBe("waiting_approval");
+			expect(replayed.run.snapshot.tasks.write_note.approvalId).toBeTruthy();
+			expect(replayed.run.snapshot.tasks.write_note.approvalId).not.toBe(originalApprovalId);
+			expect(store.getApproval(replayed.run.snapshot.tasks.write_note.approvalId!).runId).toBe(replayed.run.id);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

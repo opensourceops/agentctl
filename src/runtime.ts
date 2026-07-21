@@ -1,9 +1,11 @@
 import type {
 	AgentDefinition,
+	ApprovalRecord,
 	CheckpointRecord,
 	CompiledPlaybook,
 	CompiledTask,
 	ExecutionResult,
+	JsonObject,
 	JsonValue,
 	ModuleDefinition,
 	RunRecord,
@@ -14,6 +16,7 @@ import type {
 	ToolPolicySpec,
 } from "./types.js";
 import { A2ARegistry, createA2ATransportMap, type A2AAgentTransport } from "./a2a.js";
+import { ApprovalRequiredError, RunPausedError } from "./approvals.js";
 import { AuthStorage } from "./auth-storage.js";
 import { BuiltinAgentRegistry } from "./agents.js";
 import { getModulePolicySpec, resolveBuiltinToolRef } from "./builtin-tools.js";
@@ -22,10 +25,12 @@ import { createLongTermMemoryAdapter } from "./long-term-memory-adapters/factory
 import type { LongTermMemoryAdapter } from "./long-term-memory-adapters/types.js";
 import { createMcpTransportMap, McpRegistry, type McpServerTransport } from "./mcp.js";
 import { ModelRegistry } from "./model-registry.js";
-import { BuiltinModuleRegistry, preflightProcessModule } from "./modules.js";
+import { BuiltinModuleRegistry, preflightProcessModule, resolveProcessModuleExecution } from "./modules.js";
 import { PolicyEngine } from "./policy.js";
+import { resolvePromptCacheConfig } from "./prompt-cache.js";
+import { buildVarResolutionSource, resolveTaskVars } from "./template-utils.js";
 import { ActiveSpan, OtelTraceSink, TraceRecorder, type TraceSink } from "./tracing.js";
-import { buildTemplateContext, deepClone, nowIso, resolveTemplates } from "./utils.js";
+import { buildTaskTemplateContext, deepClone, nowIso, resolveTemplates, stableStringify } from "./utils.js";
 
 export interface EngineHooks {
 	afterCheckpoint?(checkpoint: CheckpointRecord): void | Promise<void>;
@@ -100,6 +105,20 @@ function normalizeSnapshotForResume(snapshot: RuntimeSnapshot): RuntimeSnapshot 
 	return next;
 }
 
+function normalizeSnapshotForReplay(snapshot: RuntimeSnapshot): RuntimeSnapshot {
+	const next = normalizeSnapshotForResume(snapshot);
+	for (const [taskId, taskState] of Object.entries(next.tasks)) {
+		delete taskState.approvalId;
+		if (taskState.status === "waiting_approval") {
+			taskState.status = next.agents[taskId] ? "running" : "pending";
+		}
+		if (next.agents[taskId]?.pendingToolCall) {
+			delete next.agents[taskId]!.pendingToolCall;
+		}
+	}
+	return next;
+}
+
 export class PlaybookRuntime {
 	private readonly modules: BuiltinModuleRegistry;
 	private readonly agents: BuiltinAgentRegistry;
@@ -140,7 +159,7 @@ export class PlaybookRuntime {
 		if (run.status === "succeeded" || run.status === "failed") {
 			throw new Error(`Run "${runId}" is already ${run.status}; use replay to fork from an earlier checkpoint`);
 		}
-		run.snapshot = normalizeSnapshotForResume(run.snapshot);
+		run.snapshot = this.prepareSnapshotForResume(run.id, normalizeSnapshotForResume(run.snapshot));
 		const updatedRun = this.store.updateRun(run.id, "running", run.snapshot);
 		const latest = this.store.getLatestCheckpoint(run.id);
 		const resumeCheckpoint: CheckpointRecord = {
@@ -158,10 +177,36 @@ export class PlaybookRuntime {
 	async replay(runId: string, checkpointSeq: number): Promise<ExecutionResult> {
 		await this.preflightProcessModules();
 		const replayRun = this.store.createReplayRun(runId, checkpointSeq);
-		replayRun.snapshot = normalizeSnapshotForResume(replayRun.snapshot);
+		replayRun.snapshot = normalizeSnapshotForReplay(replayRun.snapshot);
 		this.store.updateRun(replayRun.id, "running", replayRun.snapshot);
 		await this.hooks.afterCheckpoint?.(this.store.getLatestCheckpoint(replayRun.id));
 		return this.execute(replayRun.id, replayRun, this.store.getLatestCheckpoint(replayRun.id).seq);
+	}
+
+	private prepareSnapshotForResume(runId: string, snapshot: RuntimeSnapshot): RuntimeSnapshot {
+		const next = cloneSnapshot(snapshot);
+		for (const [taskId, taskState] of Object.entries(next.tasks)) {
+			if (!taskState.approvalId) {
+				continue;
+			}
+			const approval = this.store.getApproval(taskState.approvalId);
+			if (approval.runId !== runId) {
+				delete taskState.approvalId;
+				continue;
+			}
+			if (approval.status === "pending") {
+				throw new Error(`Run "${runId}" is paused with pending approval "${approval.id}" for task "${taskId}"`);
+			}
+			if (approval.status === "approved") {
+				taskState.status = next.agents[taskId] ? "running" : "pending";
+				delete taskState.error;
+				continue;
+			}
+			taskState.status = "failed";
+			taskState.error = `Tool call rejected: ${approval.reason}`;
+			delete next.agents[taskId];
+		}
+		return next;
 	}
 
 	private resolveModuleDefinition(ref: string): ModuleDefinition {
@@ -206,6 +251,14 @@ export class PlaybookRuntime {
 		return definition;
 	}
 
+	private buildResolvedTaskVars(
+		task: CompiledTask,
+		snapshot: RuntimeSnapshot,
+		agentDefinition: AgentDefinition | undefined,
+	): JsonObject {
+		return resolveTaskVars(task.vars, agentDefinition?.vars, buildVarResolutionSource(snapshot, task.with));
+	}
+
 	private nextRunnableTask(snapshot: RuntimeSnapshot): CompiledTask | undefined {
 		const runningAgent = this.plan.tasks.find(
 			(task) => snapshot.tasks[task.id]?.status === "running" && snapshot.agents[task.id],
@@ -247,6 +300,14 @@ export class PlaybookRuntime {
 				taskSpan.end(snapshot.tasks[task.id]?.status === "failed" ? "error" : "ok");
 			}
 		} catch (error) {
+			if (error instanceof RunPausedError) {
+				const pausedRun = this.store.getRun(runId);
+				runSpan.end("ok", { final_status: "paused", approval_id: error.approvalId });
+				return {
+					run: pausedRun,
+					latestCheckpoint: this.store.getLatestCheckpoint(runId),
+				};
+			}
 			if (error instanceof CheckpointInterruptError) {
 				runSpan.end("error", { interrupted: true, error: error.message });
 				throw error;
@@ -271,7 +332,10 @@ export class PlaybookRuntime {
 		if (!taskState) throw new Error(`Task state for "${task.id}" not found`);
 		let checkpointSeq = seq;
 
-		const startingNewAttempt = taskState.status !== "running";
+		const startingNewAttempt =
+			taskState.status !== "running" &&
+			taskState.status !== "waiting_approval" &&
+			!(taskState.status === "pending" && Boolean(taskState.approvalId));
 		if (startingNewAttempt) {
 			taskState.status = "running";
 			taskState.attempts += 1;
@@ -297,27 +361,45 @@ export class PlaybookRuntime {
 		};
 		this.store.recordTaskAttemptForRun(runId, attemptRecord);
 
-		try {
-			if (task.use.kind === "module") {
-				const definition = this.resolveModuleDefinition(task.use.ref);
-				const resolvedInput = this.modules.resolveInput(definition, task.with, next);
-				this.assertAuthorized(
-					{
-						origin: "task",
+			try {
+				if (task.use.kind === "module") {
+					const definition = this.resolveModuleDefinition(task.use.ref);
+					const resolvedVars = this.buildResolvedTaskVars(task, next, undefined);
+					const resolvedInput = this.modules.resolveInput(definition, task.with, next, resolvedVars);
+					const authorizationInput =
+						definition.kind === "pack.process"
+							? {
+									...resolvedInput,
+									cwd: resolveProcessModuleExecution(
+										definition,
+										next,
+										resolvedVars,
+										resolvedInput,
+										this.plan.policy.workspaceRoot,
+									).cwd,
+								}
+							: resolvedInput;
+					const authorizationRequest = {
+						origin: "task" as const,
 						spec: getModulePolicySpec(definition, task.use.ref),
-						input: resolvedInput,
-					},
-					trace,
-					task.id,
-				);
-				const result = await this.modules.executeResolved(
-					runId,
-					task.id,
-					definition,
-					resolvedInput,
-					next,
-					this.plan.policy.workspaceRoot,
-				);
+						input: authorizationInput,
+					};
+					const approvedApproval = this.getApprovedApproval(taskState.approvalId, authorizationRequest);
+					if (!approvedApproval) {
+						this.assertAuthorized(authorizationRequest, trace, task.id);
+					} else {
+						delete taskState.approvalId;
+						this.recordApprovedExecution(trace, task.id, approvedApproval, "task");
+					}
+					const result = await this.modules.executeResolved(
+						runId,
+						task.id,
+						definition,
+						resolvedInput,
+						next,
+						this.plan.policy.workspaceRoot,
+						resolvedVars,
+					);
 				taskState.status = "succeeded";
 				taskState.output = result.output;
 					if (result.stateUpdates) {
@@ -326,30 +408,51 @@ export class PlaybookRuntime {
 							next.memory.working[key] = value;
 						}
 					}
-			} else {
-				const agentDefinition = this.resolveAgentDefinition(task.use.ref);
-				const existingSession = next.agents[task.id];
-				const result = await this.agents.execute(
-					runId,
-					task.id,
-					agentDefinition,
-					task.with,
-					next,
-					{
-						executeTool: async (tool, taskSnapshot, toolCallId) => {
-							if (tool.tool.startsWith("mcp:")) {
-								const resolved = await this.mcpRegistry.resolveTool(tool.tool);
-								const resolvedInput = resolveTemplates(tool.with ?? {}, buildTemplateContext(taskSnapshot));
-								this.assertAuthorized(
-									{
-										origin: "agent_tool",
-										spec: resolved.spec,
-										input: resolvedInput,
-										agentProfile: agentDefinition.profile ?? this.plan.defaults.agentProfile,
-									},
-									trace,
-									task.id,
+				} else {
+					const agentDefinition = this.resolveAgentDefinition(task.use.ref);
+					const existingSession = next.agents[task.id];
+					const resolvedVars = existingSession?.resolvedVars ?? this.buildResolvedTaskVars(task, next, agentDefinition);
+					const promptCache = resolvePromptCacheConfig({
+						playbook: this.plan,
+						agent: agentDefinition,
+						agentRef: task.use.ref,
+						runId,
+						snapshot: next,
+						taskInput: task.with,
+					});
+					const result = await this.agents.execute(
+						runId,
+						this.plan.name,
+						task.id,
+						task.use.ref,
+						agentDefinition,
+						task.with,
+						resolvedVars,
+						promptCache,
+						next,
+						{
+							executeTool: async (tool, taskSnapshot, toolCallId) => {
+								const toolTemplateContext = buildTaskTemplateContext(
+									taskSnapshot,
+									resolvedVars,
+									existingSession?.input ?? task.with,
 								);
+								if (tool.tool.startsWith("mcp:")) {
+									const resolved = await this.mcpRegistry.resolveTool(tool.tool);
+									const resolvedInput = resolveTemplates(tool.with ?? {}, toolTemplateContext);
+								const authorizationRequest = {
+									origin: "agent_tool" as const,
+									spec: resolved.spec,
+									input: resolvedInput,
+									agentProfile: agentDefinition.profile ?? this.plan.defaults.agentProfile,
+								};
+								const approvedApproval = this.getApprovedApproval(taskState.approvalId, authorizationRequest);
+								if (!approvedApproval) {
+									this.assertAuthorized(authorizationRequest, trace, task.id);
+								} else {
+									delete taskState.approvalId;
+									this.recordApprovedExecution(trace, task.id, approvedApproval, "agent_tool");
+								}
 								const toolSpan = trace.startSpan(
 									"playbook.tool",
 									"tool",
@@ -374,19 +477,22 @@ export class PlaybookRuntime {
 									throw error;
 								}
 							}
-							if (tool.tool.startsWith("a2a:")) {
-								const resolved = this.a2aRegistry.resolveAgent(tool.tool);
-								const resolvedInput = resolveTemplates(tool.with ?? {}, buildTemplateContext(taskSnapshot));
-								this.assertAuthorized(
-									{
-										origin: "agent_tool",
-										spec: resolved.spec,
-										input: resolvedInput,
-										agentProfile: agentDefinition.profile ?? this.plan.defaults.agentProfile,
-									},
-									trace,
-									task.id,
-								);
+								if (tool.tool.startsWith("a2a:")) {
+									const resolved = this.a2aRegistry.resolveAgent(tool.tool);
+									const resolvedInput = resolveTemplates(tool.with ?? {}, toolTemplateContext);
+								const authorizationRequest = {
+									origin: "agent_tool" as const,
+									spec: resolved.spec,
+									input: resolvedInput,
+									agentProfile: agentDefinition.profile ?? this.plan.defaults.agentProfile,
+								};
+								const approvedApproval = this.getApprovedApproval(taskState.approvalId, authorizationRequest);
+								if (!approvedApproval) {
+									this.assertAuthorized(authorizationRequest, trace, task.id);
+								} else {
+									delete taskState.approvalId;
+									this.recordApprovedExecution(trace, task.id, approvedApproval, "agent_tool");
+								}
 								const toolSpan = trace.startSpan(
 									"playbook.tool",
 									"tool",
@@ -419,19 +525,35 @@ export class PlaybookRuntime {
 									toolSpan.end("error", { error: error instanceof Error ? error.message : String(error) });
 									throw error;
 								}
-							}
-							const definition = this.resolveModuleDefinition(tool.tool);
-							const resolvedInput = this.modules.resolveInput(definition, tool.with ?? {}, taskSnapshot);
-							this.assertAuthorized(
-								{
-									origin: "agent_tool",
+								}
+								const definition = this.resolveModuleDefinition(tool.tool);
+								const resolvedInput = this.modules.resolveInput(definition, tool.with ?? {}, taskSnapshot, resolvedVars);
+							const authorizationInput =
+								definition.kind === "pack.process"
+									? {
+											...resolvedInput,
+											cwd: resolveProcessModuleExecution(
+												definition,
+												taskSnapshot,
+												resolvedVars,
+												resolvedInput,
+												this.plan.policy.workspaceRoot,
+											).cwd,
+										}
+									: resolvedInput;
+							const authorizationRequest = {
+								origin: "agent_tool" as const,
 								spec: getModulePolicySpec(definition, tool.tool),
-									input: resolvedInput,
-									agentProfile: agentDefinition.profile ?? this.plan.defaults.agentProfile,
-								},
-								trace,
-								task.id,
-							);
+								input: authorizationInput,
+								agentProfile: agentDefinition.profile ?? this.plan.defaults.agentProfile,
+							};
+							const approvedApproval = this.getApprovedApproval(taskState.approvalId, authorizationRequest);
+							if (!approvedApproval) {
+								this.assertAuthorized(authorizationRequest, trace, task.id);
+							} else {
+								delete taskState.approvalId;
+								this.recordApprovedExecution(trace, task.id, approvedApproval, "agent_tool");
+							}
 							const toolSpan = trace.startSpan(
 								"playbook.tool",
 								"tool",
@@ -443,14 +565,15 @@ export class PlaybookRuntime {
 								taskSpan.id,
 							);
 							try {
-								const result = await this.modules.executeResolved(
-									runId,
-									toolCallId,
-									definition,
-									resolvedInput,
-									taskSnapshot,
-									this.plan.policy.workspaceRoot,
-								);
+									const result = await this.modules.executeResolved(
+										runId,
+										toolCallId,
+										definition,
+										resolvedInput,
+										taskSnapshot,
+										this.plan.policy.workspaceRoot,
+										resolvedVars,
+									);
 								toolSpan.end("ok");
 								return result;
 							} catch (error) {
@@ -486,11 +609,31 @@ export class PlaybookRuntime {
 							);
 						},
 					},
+					(metric) => {
+						if (!metric.promptCache) {
+							return;
+						}
+						trace.recordAudit("prompt_cache", "prompt_cache.response", "info", {
+							task_id: task.id,
+							agent_ref: task.use.ref,
+							provider: metric.provider,
+							response_id: metric.responseId ?? null,
+							enabled: metric.promptCache.enabled,
+							key: metric.promptCache.key ?? null,
+							retention: metric.promptCache.retention,
+							cached_tokens: metric.promptCache.cachedTokens,
+							input_tokens: metric.promptCache.inputTokens,
+							uncached_input_tokens: metric.promptCache.uncachedInputTokens,
+							output_tokens: metric.promptCache.outputTokens,
+							hit: metric.promptCache.cachedTokens > 0,
+						});
+					},
 				);
 				taskState.status = "succeeded";
 				taskState.output = result.output;
 				delete next.agents[task.id];
 			}
+			delete taskState.approvalId;
 
 			this.store.recordTaskAttemptForRun(runId, {
 				...attemptRecord,
@@ -515,6 +658,57 @@ export class PlaybookRuntime {
 		} catch (error) {
 			if (error instanceof CheckpointInterruptError) {
 				throw error;
+			}
+			if (error instanceof ApprovalRequiredError) {
+				if (error.runtimeState?.session) {
+					next.agents[task.id] = deepClone(error.runtimeState.session);
+				}
+				if (error.runtimeState?.snapshot) {
+					next.vars = deepClone(error.runtimeState.snapshot.vars);
+					next.memory = deepClone(error.runtimeState.snapshot.memory);
+				}
+				const approval = this.store.createApproval({
+					runId,
+					taskId: task.id,
+					origin: error.approval.origin,
+					toolRef: error.approval.spec.ref,
+					toolProvider: error.approval.spec.provider,
+					toolLabel: error.approval.spec.label,
+					capability: error.approval.spec.capability,
+					risk: error.approval.spec.risk,
+					requestInput: deepClone(error.approval.input),
+					reason: error.approval.reason,
+					...(error.approval.agentProfile ? { agentProfile: error.approval.agentProfile } : {}),
+				});
+				taskState.status = "waiting_approval";
+				taskState.approvalId = approval.id;
+				delete taskState.error;
+				this.store.recordTaskAttemptForRun(runId, {
+					...attemptRecord,
+					status: "waiting_approval",
+					finishedAt: nowIso(),
+				});
+				trace.recordAudit("approval", "approval.created", "warning", {
+					task_id: task.id,
+					approval_id: approval.id,
+					origin: approval.origin,
+					tool_ref: approval.toolRef,
+					tool_provider: approval.toolProvider,
+					capability: approval.capability,
+					risk: approval.risk,
+					reason: approval.reason,
+					agent_profile: approval.agentProfile ?? null,
+				});
+				await this.saveCheckpoint(
+					this.store.updateRun(runId, "paused", next),
+					checkpointSeq,
+					"paused",
+					next,
+					task.id,
+					trace,
+					taskSpan.id,
+				);
+				throw new RunPausedError(approval.id);
 			}
 			const message = error instanceof Error ? error.message : String(error);
 			this.store.recordTaskAttemptForRun(runId, {
@@ -598,6 +792,47 @@ export class PlaybookRuntime {
 		return nextSeq;
 	}
 
+	private getApprovedApproval(
+		approvalId: string | undefined,
+		request: {
+			origin: "task" | "agent_tool";
+			spec: ToolPolicySpec;
+			input: Record<string, JsonValue>;
+		},
+	): ApprovalRecord | undefined {
+		if (!approvalId) {
+			return undefined;
+		}
+		const approval = this.store.getApproval(approvalId);
+		if (approval.status !== "approved") {
+			return undefined;
+		}
+		const matches =
+			approval.origin === request.origin &&
+			approval.toolRef === request.spec.ref &&
+			approval.toolProvider === request.spec.provider &&
+			stableStringify(approval.requestInput) === stableStringify(request.input);
+		if (!matches) {
+			throw new Error(`Approved tool call "${approval.id}" no longer matches the current request for "${request.spec.ref}"`);
+		}
+		return approval;
+	}
+
+	private recordApprovedExecution(
+		trace: TraceRecorder,
+		taskId: string,
+		approval: ApprovalRecord,
+		origin: "task" | "agent_tool",
+	): void {
+		trace.recordAudit("approval", "approval.applied", "info", {
+			task_id: taskId,
+			approval_id: approval.id,
+			tool_ref: approval.toolRef,
+			tool_provider: approval.toolProvider,
+			origin,
+		});
+	}
+
 	private assertAuthorized(
 		request: {
 			origin: "task" | "agent_tool";
@@ -627,7 +862,13 @@ export class PlaybookRuntime {
 			return;
 		}
 		if (decision.decision === "require_approval") {
-			throw new Error(`Tool call requires approval: ${decision.reason}`);
+			throw new ApprovalRequiredError({
+				origin: request.origin,
+				spec: request.spec,
+				input: deepClone(request.input),
+				reason: decision.reason,
+				...(request.agentProfile ? { agentProfile: request.agentProfile } : {}),
+			});
 		}
 		throw new Error(`Tool call denied: ${decision.reason}`);
 	}

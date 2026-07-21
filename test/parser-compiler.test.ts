@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -10,6 +10,82 @@ describe("parser and compiler", () => {
 		const definition = loadPlaybookWithPacks(join(process.cwd(), "examples/hello.playbook.yaml"));
 		expect(definition.modules?.["demo/status_probe"]?.kind).toBe("builtin.shell.exec");
 		expect(definition.agents?.["demo/reviewer"]?.kind).toBe("builtin.heuristic");
+	});
+
+	test("resolves instructionsFile relative to the defining file and keeps agent default vars with task vars", () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-prompt-file-pack-"));
+		const promptsDir = join(dir, "prompts");
+		const packFile = join(dir, "prompts.pack.yaml");
+		const playbookFile = join(dir, "prompt-file.playbook.yaml");
+		mkdirSync(promptsDir, { recursive: true });
+			writeFileSync(
+				join(promptsDir, "review.md"),
+				"Service: {{ service }}\nFinding: {{ finding }}\nSeverity: {{ vars.severity }}\n",
+				"utf8",
+			);
+		writeFileSync(
+			packFile,
+			`pack: prompts\n` +
+				`version: 0.1.0\n` +
+				`agents:\n` +
+				`  reviewer:\n` +
+					`    kind: builtin.heuristic\n` +
+					`    instructionsFile: ./prompts/review.md\n` +
+					`    vars:\n` +
+					`      severity: medium\n`,
+				"utf8",
+			);
+			writeFileSync(
+			playbookFile,
+			`playbook: prompt-file\n` +
+				`packs:\n` +
+				`  - ./prompts.pack.yaml\n` +
+				`tasks:\n` +
+				`  - id: prepare\n` +
+				`    uses: module:builtin.assign\n` +
+				`    with:\n` +
+				`      values:\n` +
+					`        finding: restore-drill-missing\n` +
+					`  - id: review\n` +
+					`    needs: [prepare]\n` +
+					`    uses: agent:prompts/reviewer\n` +
+					`    vars:\n` +
+					`      service: checkout\n` +
+					`      finding: "{{ tasks.prepare.output.values.finding }}"\n`,
+				"utf8",
+			);
+
+		try {
+			const definition = loadPlaybookWithPacks(playbookFile);
+			expect(definition.agents?.["prompts/reviewer"]).toEqual(
+				expect.objectContaining({
+						kind: "builtin.heuristic",
+						instructionsFile: join(dir, "prompts", "review.md"),
+						instructions: "Service: {{ service }}\nFinding: {{ finding }}\nSeverity: {{ vars.severity }}\n",
+						vars: {
+							severity: "medium",
+						},
+					}),
+				);
+				expect(definition.tasks.find((task) => task.id === "review")?.vars).toEqual({
+					service: "checkout",
+					finding: "{{ tasks.prepare.output.values.finding }}",
+				});
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+	test("accepts task-scoped vars for module and agent tasks", () => {
+		const definition = loadPlaybookWithPacks(join(process.cwd(), "examples/prompt-file-vars/mission.playbook.yaml"));
+		expect(definition.tasks.find((task) => task.id === "project")?.vars).toEqual({
+			service: "checkout",
+			finding: "{{ tasks.prepare.output.values.finding }}",
+		});
+		expect(definition.tasks.find((task) => task.id === "review")?.vars).toEqual({
+			service: "checkout",
+			finding: "{{ tasks.prepare.output.values.finding }}",
+		});
 	});
 
 	test("real autonomy example persists the agent report before verification", () => {
@@ -109,6 +185,35 @@ describe("parser and compiler", () => {
 				database: "ops",
 				collection: "findings",
 			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects agent definitions that set both instructions and instructionsFile", () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-agent-instructions-exclusive-"));
+		const file = join(dir, "invalid.playbook.yaml");
+		writeFileSync(
+			join(dir, "prompt.md"),
+			"hello\n",
+			"utf8",
+		);
+		writeFileSync(
+			file,
+			`playbook: invalid-agent\n` +
+				`agents:\n` +
+				`  local/reviewer:\n` +
+				`    kind: builtin.heuristic\n` +
+				`    instructions: inline\n` +
+				`    instructionsFile: ./prompt.md\n` +
+				`tasks:\n` +
+				`  - id: review\n` +
+				`    uses: agent:local/reviewer\n`,
+			"utf8",
+		);
+
+		try {
+			expect(() => loadPlaybookWithPacks(file)).toThrow(/Agent must define exactly one of "instructions" or "instructionsFile"/);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

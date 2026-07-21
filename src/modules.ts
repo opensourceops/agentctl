@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -14,7 +15,7 @@ import type {
 	TaskOutput,
 } from "./types.js";
 import {
-	buildTemplateContext,
+	buildTaskTemplateContext,
 	getJsonObjectValue,
 	getStringArrayValue,
 	getStringValue,
@@ -35,6 +36,7 @@ export interface ModuleExecutionContext {
 	taskId: string;
 	definition: ModuleDefinition;
 	input: JsonObject;
+	resolvedVars?: JsonObject;
 	snapshot: RuntimeSnapshot;
 	workspaceRoot: string;
 	longTermMemory?: LongTermMemoryAdapter;
@@ -43,6 +45,13 @@ export interface ModuleExecutionContext {
 
 export interface ModuleExecutor {
 	run(context: ModuleExecutionContext): Promise<ModuleExecutionResult>;
+}
+
+export interface ResolvedProcessExecution {
+	command: string;
+	args: string[];
+	cwd: string;
+	env?: Record<string, string>;
 }
 
 function evaluateAssertInput(input: JsonObject): { ok: boolean; details: TaskOutput } {
@@ -154,40 +163,26 @@ class ProcessModuleExecutor implements ModuleExecutor {
 		if (context.definition.kind !== "pack.process") {
 			throw new Error(`ProcessModuleExecutor received unsupported module kind "${context.definition.kind}"`);
 		}
-
-		const source = {
-			...buildTemplateContext(context.snapshot),
-			input: context.input,
-		};
-		const commandValue = resolveTemplates(context.definition.command, source);
-		if (typeof commandValue !== "string" || commandValue.trim() === "") {
-			throw new Error('pack.process requires a non-empty "command"');
-		}
-		const argsValue = context.definition.args ? resolveTemplates([...context.definition.args], source) : [];
-		if (!Array.isArray(argsValue) || !argsValue.every((item) => typeof item === "string")) {
-			throw new Error('pack.process requires string "args" values');
-		}
-		const cwdValue =
-			context.definition.cwd !== undefined ? resolveTemplates(context.definition.cwd, source) : context.workspaceRoot;
-		if (typeof cwdValue !== "string" || cwdValue.trim() === "") {
-			throw new Error('pack.process requires string "cwd" when provided');
-		}
-		const envValue = context.definition.env ? resolveTemplates({ ...context.definition.env }, source) : undefined;
-		if (envValue !== undefined && (!isJsonObject(envValue) || !Object.values(envValue).every((item) => typeof item === "string"))) {
-			throw new Error('pack.process requires string "env" values');
-		}
+		const execution = resolveProcessModuleExecution(
+			context.definition,
+			context.snapshot,
+			context.resolvedVars ?? {},
+			context.input,
+			context.workspaceRoot,
+		);
+		assertProcessExecutionWithinWorkspace(execution.cwd, context.workspaceRoot);
 
 		try {
-			const { stdout, stderr } = await execFileAsync(commandValue, argsValue, {
-				cwd: cwdValue,
-				env: envValue ? { ...process.env, ...envValue } : process.env,
+			const { stdout, stderr } = await execFileAsync(execution.command, execution.args, {
+				cwd: execution.cwd,
+				env: execution.env ? { ...process.env, ...execution.env } : process.env,
 				maxBuffer: 10 * 1024 * 1024,
 			});
 			return {
 				output: {
-					command: commandValue,
-					args: argsValue,
-					cwd: cwdValue,
+					command: execution.command,
+					args: execution.args,
+					cwd: execution.cwd,
 					exitCode: 0,
 					stdout: stdout.trimEnd(),
 					stderr: stderr.trimEnd(),
@@ -197,7 +192,7 @@ class ProcessModuleExecutor implements ModuleExecutor {
 			const execError = error as Error & { stdout?: string; stderr?: string; code?: number };
 			throw new Error(
 				[
-					`Command failed: ${commandValue}`,
+					`Command failed: ${execution.command}`,
 					`exitCode=${execError.code ?? "unknown"}`,
 					execError.stdout ? `stdout=${execError.stdout.trimEnd()}` : "",
 					execError.stderr ? `stderr=${execError.stderr.trimEnd()}` : "",
@@ -207,6 +202,68 @@ class ProcessModuleExecutor implements ModuleExecutor {
 			);
 		}
 	}
+}
+
+function assertProcessExecutionWithinWorkspace(cwd: string, workspaceRoot: string): void {
+	const canonicalCwd = canonicalizeWorkspacePath(cwd);
+	const canonicalWorkspaceRoot = canonicalizeWorkspacePath(workspaceRoot);
+	if (!isPathWithinWorkspace(canonicalCwd, canonicalWorkspaceRoot)) {
+		throw new Error(`pack.process cwd "${canonicalCwd}" escapes workspaceRoot`);
+	}
+}
+
+function canonicalizeWorkspacePath(path: string): string {
+	const resolvedPath = resolve(path);
+	const pendingSegments: string[] = [];
+	let cursor = resolvedPath;
+
+	while (!existsSync(cursor)) {
+		const parent = dirname(cursor);
+		if (parent === cursor) {
+			return resolvedPath;
+		}
+		pendingSegments.unshift(basename(cursor));
+		cursor = parent;
+	}
+
+	const canonicalBase = realpathSync(cursor);
+	return pendingSegments.reduce((current, segment) => resolve(current, segment), canonicalBase);
+}
+
+function isPathWithinWorkspace(path: string, workspaceRoot: string): boolean {
+	return path === workspaceRoot || path.startsWith(`${workspaceRoot}/`);
+}
+
+export function resolveProcessModuleExecution(
+	definition: ProcessModuleDefinition,
+	snapshot: RuntimeSnapshot,
+	resolvedVars: JsonObject,
+	resolvedInput: JsonObject,
+	workspaceRoot: string,
+): ResolvedProcessExecution {
+	const source = buildTaskTemplateContext(snapshot, resolvedVars, resolvedInput);
+	const commandValue = resolveTemplates(definition.command, source);
+	if (typeof commandValue !== "string" || commandValue.trim() === "") {
+		throw new Error('pack.process requires a non-empty "command"');
+	}
+	const argsValue = definition.args ? resolveTemplates([...definition.args], source) : [];
+	if (!Array.isArray(argsValue) || !argsValue.every((item) => typeof item === "string")) {
+		throw new Error('pack.process requires string "args" values');
+	}
+	const cwdValue = definition.cwd !== undefined ? resolveTemplates(definition.cwd, source) : workspaceRoot;
+	if (typeof cwdValue !== "string" || cwdValue.trim() === "") {
+		throw new Error('pack.process requires string "cwd" when provided');
+	}
+	const envValue = definition.env ? resolveTemplates({ ...definition.env }, source) : undefined;
+	if (envValue !== undefined && (!isJsonObject(envValue) || !Object.values(envValue).every((item) => typeof item === "string"))) {
+		throw new Error('pack.process requires string "env" values');
+	}
+	return {
+		command: commandValue,
+		args: argsValue,
+		cwd: cwdValue,
+		...(envValue ? { env: envValue as Record<string, string> } : {}),
+	};
 }
 
 class ReadModuleExecutor implements ModuleExecutor {
@@ -669,18 +726,19 @@ export class BuiltinModuleRegistry {
 		snapshot: RuntimeSnapshot,
 		workspaceRoot: string,
 	): Promise<ModuleExecutionResult> {
-		const resolvedInput = this.resolveInput(definition, taskInput, snapshot);
-		return this.executeResolved(runId, taskId, definition, resolvedInput, snapshot, workspaceRoot);
+		const resolvedInput = this.resolveInput(definition, taskInput, snapshot, {});
+		return this.executeResolved(runId, taskId, definition, resolvedInput, snapshot, workspaceRoot, {});
 	}
 
 	resolveInput(
 		definition: ModuleDefinition,
 		taskInput: JsonObject,
 		snapshot: RuntimeSnapshot,
+		resolvedVars: JsonObject = {},
 	): JsonObject {
 		const baseInput = definition.with ?? {};
 		const mergedInput = { ...baseInput, ...taskInput };
-		return resolveTemplates(mergedInput, buildTemplateContext(snapshot));
+		return resolveTemplates(mergedInput, buildTaskTemplateContext(snapshot, resolvedVars, mergedInput));
 	}
 
 	async executeResolved(
@@ -690,16 +748,18 @@ export class BuiltinModuleRegistry {
 		resolvedInput: JsonObject,
 		snapshot: RuntimeSnapshot,
 		workspaceRoot: string,
+		resolvedVars: JsonObject = {},
 	): Promise<ModuleExecutionResult> {
 		const executor = this.executors.get(definition.kind);
 		if (!executor) throw new Error(`No executor registered for module kind "${definition.kind}"`);
 		return executor.run({
 			runId,
 			taskId,
-			definition,
-			input: resolvedInput,
-			snapshot,
-			workspaceRoot,
+				definition,
+				input: resolvedInput,
+				resolvedVars,
+				snapshot,
+				workspaceRoot,
 			...(this.longTermMemory ? { longTermMemory: this.longTermMemory } : {}),
 			...(this.longTermNamespace ? { longTermNamespace: this.longTermNamespace } : {}),
 		});

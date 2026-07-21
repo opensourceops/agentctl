@@ -14,12 +14,12 @@
 		"README.md"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.json",
+		"build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
 		"clean": "rm -rf dist .runtime",
-		"docs:cli": "tsx scripts/generate-cli-docs.ts",
-		"test": "vitest --run",
-		"sample": "tsx src/cli.ts run examples/hello.playbook.yaml --db .runtime/sample.db",
-		"schema": "tsx src/cli.ts schema"
+		"docs:cli": "node ./node_modules/tsx/dist/cli.mjs scripts/generate-cli-docs.ts",
+		"test": "node ./node_modules/vitest/vitest.mjs --run",
+		"sample": "node ./node_modules/tsx/dist/cli.mjs src/cli.ts run examples/hello.playbook.yaml --db .runtime/sample.db",
+		"schema": "node ./node_modules/tsx/dist/cli.mjs src/cli.ts schema"
 	},
 	"engines": {
 		"node": ">=22.0.0"

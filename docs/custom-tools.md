@@ -36,6 +36,8 @@ The runtime contract is the same in both cases:
 - execution is traced and audited
 - task checkpoints still govern retry, resume, and replay behavior
 
+That policy check includes the effective working directory. If a `pack.process` module resolves `cwd` outside `workspaceRoot`, the call is denied before the process starts.
+
 ## Why one process-backed kind first
 
 This is the smallest correct abstraction.
@@ -100,6 +102,7 @@ modules:
 - `cwd`
   - optional working directory
   - resolved relative to the pack file when declared in a pack
+  - policy-checked against `workspaceRoot` before execution
 - `env`
   - optional string-to-string environment overrides
 - `with`
@@ -200,6 +203,8 @@ Defaults for `pack.process`:
 - `label: basename(command)`
 
 That means pack tools are treated conservatively unless the pack author narrows them deliberately.
+
+When a `pack.process` module is exposed to an agent through `tools:`, `agentctl` also requires approval before execution. Subprocess launches are not sandboxed by command content, so agent-origin process tools are treated as approval-gated operations even when `approvalMode: never`.
 
 ## What this supports today
 

@@ -26,10 +26,14 @@ export type AgentProfileName = "none" | "inspect" | "workspace_write" | "workspa
 export type ToolCapability = "internal" | "observe" | "mutate" | "act";
 export type ToolRisk = "low" | "medium" | "high";
 export type ApprovalMode = "never" | "on-mutate" | "on-act" | "always";
+export type ApprovalStatus = "pending" | "approved" | "rejected";
 export type ToolProviderKind = "builtin" | "module" | "mcp" | "a2a";
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 export type OutputFormat = "yaml" | "json";
 export type OutputColorMode = "auto" | "always" | "never";
+export type PromptCacheRetention = "in_memory" | "24h";
+export type PromptCacheKeyScope = "agent" | "run" | "playbook" | "provider" | "custom";
+export type PromptCacheShareMode = "isolated" | "group";
 
 export interface RetryPolicy {
 	maxAttempts: number;
@@ -94,10 +98,23 @@ export interface AgentToolDefinition {
 	with?: JsonObject;
 }
 
+export interface PromptCacheDefinition {
+	enabled?: boolean;
+	force?: boolean;
+	retention?: PromptCacheRetention;
+	keyScope?: PromptCacheKeyScope;
+	shareMode?: PromptCacheShareMode;
+	group?: string;
+	keyTemplate?: string;
+}
+
 export interface AgentDefinition {
 	kind: AgentKind;
 	description?: string;
 	instructions: string;
+	instructionsFile?: string;
+	vars?: JsonObject;
+	promptCache?: PromptCacheDefinition;
 	maxTurns?: number;
 	profile?: AgentProfileName;
 	tools?: AgentToolDefinition[];
@@ -176,6 +193,7 @@ export interface TaskDefinition {
 	id: string;
 	uses: string;
 	needs?: string[];
+	vars?: JsonObject;
 	with?: JsonObject;
 	retry?: Partial<RetryPolicy>;
 }
@@ -187,6 +205,7 @@ export interface PlaybookDefinition {
 	packs?: string[];
 	inputs?: JsonObject;
 	defaults?: PlaybookDefaults;
+	promptCache?: PromptCacheDefinition;
 	memory?: MemoryDefinition;
 	output?: OutputDefinition;
 	policy?: GuardrailsPolicy;
@@ -208,6 +227,7 @@ export interface CompiledTask {
 	id: string;
 	use: TaskReference;
 	needs: string[];
+	vars: JsonObject;
 	with: JsonObject;
 	retry: RetryPolicy;
 }
@@ -217,6 +237,7 @@ export interface CompiledPlaybook {
 	description?: string;
 	inputs: JsonObject;
 	defaults: Required<PlaybookDefaults>;
+	promptCache: Required<Omit<PromptCacheDefinition, "group" | "keyTemplate">> & Pick<PromptCacheDefinition, "group" | "keyTemplate">;
 	memory: {
 		working: Required<WorkingMemoryDefinition>;
 		longTerm: Required<LongTermMemoryDefinition>;
@@ -237,16 +258,19 @@ export interface TaskOutput {
 }
 
 export interface TaskState {
-	status: "pending" | "running" | "succeeded" | "failed";
+	status: "pending" | "running" | "waiting_approval" | "succeeded" | "failed";
 	attempts: number;
 	output?: TaskOutput;
 	error?: string;
+	approvalId?: string;
 }
 
 export interface AgentSessionState {
 	attempt: number;
 	input: JsonObject;
+	resolvedVars?: JsonObject;
 	turns: AgentTurnRecord[];
+	pendingToolCall?: AgentDecisionToolCall;
 	providerState?: JsonObject;
 }
 
@@ -263,7 +287,7 @@ export interface RuntimeSnapshot {
 export interface TaskAttemptRecord {
 	taskId: string;
 	attempt: number;
-	status: "running" | "succeeded" | "failed";
+	status: "running" | "waiting_approval" | "succeeded" | "failed";
 	input: JsonObject;
 	output?: TaskOutput;
 	error?: string;
@@ -295,7 +319,9 @@ export interface AgentTurnRecord {
 
 export interface AgentModelContext {
 	runId: string;
+	playbookName: string;
 	taskId: string;
+	agentRef: string;
 	agent: AgentDefinition;
 	instructions: string;
 	maxTurns: number;
@@ -305,11 +331,44 @@ export interface AgentModelContext {
 	turns: AgentTurnRecord[];
 	snapshot: RuntimeSnapshot;
 	session: AgentSessionState;
+	promptCache: ResolvedPromptCacheConfig;
+	recordProviderMetric(metric: AgentProviderMetric): void;
 }
 
 export interface AgentModel {
 	name: string;
 	decide(context: AgentModelContext): Promise<AgentDecision>;
+}
+
+export interface ResolvedPromptCacheConfig {
+	requested: boolean;
+	enabled: boolean;
+	force: boolean;
+	eligible: boolean;
+	disabledReason?: string;
+	provider: string;
+	baseUrl?: string;
+	directOpenAiBaseUrl?: boolean;
+	retention: "in-memory" | "24h";
+	keyScope: PromptCacheKeyScope;
+	shareMode: PromptCacheShareMode;
+	group?: string;
+	keyTemplate?: string;
+	keyBase?: string;
+}
+
+export interface AgentProviderMetric {
+	readonly provider: string;
+	readonly responseId?: string;
+	readonly promptCache?: {
+		readonly enabled: boolean;
+		readonly key?: string;
+		readonly retention: "in-memory" | "24h";
+		readonly cachedTokens: number;
+		readonly inputTokens: number;
+		readonly uncachedInputTokens: number;
+		readonly outputTokens: number;
+	};
 }
 
 export interface ToolPolicySpec {
@@ -324,6 +383,26 @@ export interface AuthorizationDecision {
 	decision: "allow" | "deny" | "require_approval";
 	reason: string;
 	spec: ToolPolicySpec;
+}
+
+export interface ApprovalRecord {
+	id: string;
+	runId: string;
+	taskId: string;
+	origin: "task" | "agent_tool";
+	toolRef: string;
+	toolProvider: ToolProviderKind;
+	toolLabel: string;
+	capability: ToolCapability;
+	risk: ToolRisk;
+	requestInput: JsonObject;
+	reason: string;
+	agentProfile?: AgentProfileName;
+	status: ApprovalStatus;
+	createdAt: string;
+	resolvedAt?: string;
+	resolvedBy?: string;
+	resolutionNote?: string;
 }
 
 export type TraceSpanKind = "run" | "task" | "agent" | "tool" | "checkpoint";
@@ -360,7 +439,7 @@ export interface CheckpointRecord {
 	createdAt: string;
 }
 
-export type RunStatus = "running" | "succeeded" | "failed";
+export type RunStatus = "running" | "paused" | "succeeded" | "failed";
 
 export interface RunRecord {
 	id: string;

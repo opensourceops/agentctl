@@ -53,6 +53,7 @@ export function compilePlaybook(definition: PlaybookDefinition): CompiledPlayboo
 			id: task.id,
 			use,
 			needs: task.needs ?? [],
+			vars: task.vars ?? {},
 			with: task.with ?? {},
 			retry: {
 				maxAttempts: task.retry?.maxAttempts ?? 1,
@@ -78,6 +79,12 @@ export function compilePlaybook(definition: PlaybookDefinition): CompiledPlayboo
 	}
 
 	for (const [agentName, agentDefinition] of Object.entries(definition.agents ?? {})) {
+		if (
+			agentDefinition.promptCache?.enabled &&
+			(agentDefinition.kind !== "openai.responses" || (agentDefinition.provider ?? "openai") !== "openai")
+		) {
+			throw new Error(`Agent "${agentName}" enables promptCache but only openai.responses with provider "openai" is supported`);
+		}
 		for (const tool of agentDefinition.tools ?? []) {
 			if (isBuiltinToolRef(tool.tool)) {
 				continue;
@@ -125,6 +132,15 @@ export function compilePlaybook(definition: PlaybookDefinition): CompiledPlayboo
 			inputs: definition.inputs ?? {},
 			defaults: {
 				agentProfile: definition.defaults?.agentProfile ?? "none",
+			},
+			promptCache: {
+				enabled: definition.promptCache?.enabled ?? false,
+				force: definition.promptCache?.force ?? false,
+				retention: definition.promptCache?.retention ?? "in_memory",
+				keyScope: definition.promptCache?.keyScope ?? "agent",
+				shareMode: definition.promptCache?.shareMode ?? "isolated",
+				...(definition.promptCache?.group ? { group: definition.promptCache.group } : {}),
+				...(definition.promptCache?.keyTemplate ? { keyTemplate: definition.promptCache.keyTemplate } : {}),
 			},
 			memory: {
 				working: {

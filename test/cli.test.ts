@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -56,6 +56,7 @@ describe("cli", () => {
 		const { stdout, stderr } = await runCli(["-h"]);
 		expect(stderr).toBe("");
 		expect(stdout).toContain("Usage:");
+		expect(stdout).toContain("agentctl check <playbook.yaml> [flags]");
 		expect(stdout).toContain("Use command-specific help for examples and command-specific flags.");
 		expect(stdout).toContain("agentctl run <playbook.yaml> [flags]");
 		expect(stdout).toContain("agentctl memory <subcommand> [flags]");
@@ -75,6 +76,15 @@ describe("cli", () => {
 		expect(stdout).toContain("--provider name");
 	});
 
+	test("check --help prints validation-specific usage and examples", async () => {
+		const { stdout, stderr, exitCode } = await runCli(["check", "--help"]);
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe("");
+		expect(stdout).toContain("agentctl check <playbook.yaml> [flags]");
+		expect(stdout).toContain("Reports YAML syntax, schema, prompt-file, template-reference, and compile errors");
+		expect(stdout).toContain("examples/prompt-file-vars/mission.playbook.yaml");
+	});
+
 	test("help memory prints memory backend specific help", async () => {
 		const { stdout, stderr, exitCode } = await runCli(["help", "memory"]);
 		expect(exitCode).toBe(0);
@@ -91,7 +101,7 @@ describe("cli", () => {
 		expect(stderr).toBe("");
 		expect(stdout).toContain("agentctl gc");
 		expect(stdout).toContain("older-than-days");
-		expect(stdout).toContain("Running runs are never deleted.");
+		expect(stdout).toContain("Running and paused runs are preserved.");
 	});
 
 	test("db --help prints db usage instead of trying to execute a subcommand", async () => {
@@ -109,6 +119,15 @@ describe("cli", () => {
 		expect(stdout).toContain("agentctl memory get");
 		expect(stdout).toContain("agentctl memory write");
 		expect(stdout).toContain("Reads fail on a missing SQLite memory DB path");
+	});
+
+	test("approvals --help prints approval workflow usage", async () => {
+		const { stdout, stderr, exitCode } = await runCli(["approvals", "--help"]);
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe("");
+		expect(stdout).toContain("agentctl approvals list");
+		expect(stdout).toContain("agentctl approvals approve <approval-id>");
+		expect(stdout).toContain("agentctl approvals reject <approval-id>");
 	});
 
 	test("-V and --version print the package version", async () => {
@@ -201,6 +220,240 @@ describe("cli", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("check succeeds for the prompt-file-vars example", async () => {
+		const { stdout, stderr, exitCode } = await runCli([
+			"check",
+			"examples/prompt-file-vars/mission.playbook.yaml",
+			"--output",
+			"json",
+		]);
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe("");
+		expect(parseJsonLines(stdout)).toEqual([
+			{
+				type: "check",
+				ok: true,
+				playbook: `${process.cwd()}/examples/prompt-file-vars/mission.playbook.yaml`,
+				packs: [],
+				compiled: true,
+			},
+		]);
+	});
+
+	test("check reports YAML syntax errors with exact line and column", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-check-yaml-"));
+		const playbookPath = join(dir, "broken.playbook.yaml");
+		writeFileSync(
+			playbookPath,
+			`playbook: broken\n` +
+				`tasks:\n` +
+				`  - id: init\n` +
+				`    uses: module:builtin.assign\n` +
+				`      with:\n` +
+				`      values:\n` +
+				`        status: ready\n`,
+			"utf8",
+		);
+
+		try {
+			const { stdout, stderr, exitCode } = await runCli(["check", playbookPath, "--output", "json"]);
+			expect(exitCode).toBe(1);
+			expect(stderr).toBe("");
+			expect(parseJsonLines(stdout)).toEqual([
+				expect.objectContaining({
+					type: "check",
+					ok: false,
+					packs: [],
+					playbook: playbookPath,
+					diagnostics: [
+						expect.objectContaining({
+							file: playbookPath,
+							phase: "yaml_syntax",
+							line: 4,
+							column: 11,
+							detail: expect.stringContaining("Nested mappings are not allowed in compact mappings"),
+						}),
+					],
+				}),
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("check fails when an agent prompt file is missing", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-check-prompt-file-"));
+		const playbookPath = join(dir, "missing-prompt.playbook.yaml");
+		writeFileSync(
+			playbookPath,
+			`playbook: missing-prompt\n` +
+				`agents:\n` +
+				`  local/reviewer:\n` +
+				`    kind: builtin.heuristic\n` +
+				`    instructionsFile: ./prompts/review.md\n` +
+				`tasks:\n` +
+				`  - id: review\n` +
+				`    uses: agent:local/reviewer\n`,
+			"utf8",
+		);
+
+		try {
+			const { stdout, stderr, exitCode } = await runCli(["check", playbookPath, "--output", "json"]);
+			expect(exitCode).toBe(1);
+			expect(stderr).toBe("");
+			expect(parseJsonLines(stdout)).toEqual([
+				expect.objectContaining({
+					type: "check",
+					ok: false,
+					diagnostics: [
+						expect.objectContaining({
+							file: playbookPath,
+							phase: "load",
+							detail: expect.stringContaining("Agent instructions file not found"),
+						}),
+					],
+				}),
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+		test("check fails when a task using an agent does not supply a required prompt var", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-check-prompt-vars-"));
+			const promptDir = join(dir, "prompts");
+			const playbookPath = join(dir, "undefined-var.playbook.yaml");
+		mkdirSync(promptDir, { recursive: true });
+		writeFileSync(join(promptDir, "review.md"), "Finding: {{ finding }}\n", "utf8");
+		writeFileSync(
+			playbookPath,
+			`playbook: undefined-var\n` +
+				`agents:\n` +
+				`  local/reviewer:\n` +
+				`    kind: builtin.heuristic\n` +
+				`    instructionsFile: ./prompts/review.md\n` +
+				`tasks:\n` +
+				`  - id: review\n` +
+				`    uses: agent:local/reviewer\n`,
+			"utf8",
+		);
+
+		try {
+			const { stdout, stderr, exitCode } = await runCli(["check", playbookPath, "--output", "json"]);
+			expect(exitCode).toBe(1);
+			expect(stderr).toBe("");
+				expect(parseJsonLines(stdout)).toEqual([
+					expect.objectContaining({
+						type: "check",
+						ok: false,
+						diagnostics: [
+							expect.objectContaining({
+								file: playbookPath,
+								phase: "template",
+								path: "tasks.review.uses",
+								detail: 'Task "review" references undefined prompt variable "finding" for agent "local/reviewer"',
+							}),
+						],
+					}),
+				]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test("check validates prompt vars per task invocation for the same agent", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-check-task-vars-"));
+			const promptDir = join(dir, "prompts");
+			const playbookPath = join(dir, "task-vars.playbook.yaml");
+			mkdirSync(promptDir, { recursive: true });
+			writeFileSync(join(promptDir, "review.md"), "Service: {{ service }}\nFinding: {{ finding }}\n", "utf8");
+			writeFileSync(
+				playbookPath,
+				`playbook: task-vars\n` +
+					`agents:\n` +
+					`  local/reviewer:\n` +
+					`    kind: builtin.heuristic\n` +
+					`    instructionsFile: ./prompts/review.md\n` +
+					`    vars:\n` +
+					`      service: default-service\n` +
+					`tasks:\n` +
+					`  - id: prepare\n` +
+					`    uses: module:builtin.assign\n` +
+					`    with:\n` +
+					`      values:\n` +
+					`        finding: restore-drill-missing\n` +
+					`  - id: review_ok\n` +
+					`    needs: [prepare]\n` +
+					`    uses: agent:local/reviewer\n` +
+					`    vars:\n` +
+					`      finding: "{{ tasks.prepare.output.values.finding }}"\n` +
+					`  - id: review_bad\n` +
+					`    needs: [prepare]\n` +
+					`    uses: agent:local/reviewer\n`,
+				"utf8",
+			);
+
+			try {
+				const { stdout, stderr, exitCode } = await runCli(["check", playbookPath, "--output", "json"]);
+				expect(exitCode).toBe(1);
+				expect(stderr).toBe("");
+				expect(parseJsonLines(stdout)).toEqual([
+					expect.objectContaining({
+						type: "check",
+						ok: false,
+						diagnostics: [
+							expect.objectContaining({
+								file: playbookPath,
+								phase: "template",
+								path: "tasks.review_bad.uses",
+								detail: 'Task "review_bad" references undefined prompt variable "finding" for agent "local/reviewer"',
+							}),
+						],
+					}),
+				]);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test("check fails when task input references an undefined vars alias", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-check-task-input-vars-"));
+			const playbookPath = join(dir, "undefined-task-var.playbook.yaml");
+			writeFileSync(
+				playbookPath,
+				`playbook: undefined-task-var\n` +
+					`tasks:\n` +
+					`  - id: project\n` +
+					`    uses: module:builtin.assign\n` +
+					`    with:\n` +
+					`      values:\n` +
+					`        rendered: "{{ vars.finding }}"\n`,
+				"utf8",
+			);
+
+			try {
+				const { stdout, stderr, exitCode } = await runCli(["check", playbookPath, "--output", "json"]);
+				expect(exitCode).toBe(1);
+				expect(stderr).toBe("");
+				expect(parseJsonLines(stdout)).toEqual([
+					expect.objectContaining({
+						type: "check",
+						ok: false,
+						diagnostics: [
+							expect.objectContaining({
+								file: playbookPath,
+								phase: "template",
+								path: "tasks.project.with",
+								detail: 'Task "project" input references undefined variable "finding"',
+							}),
+						],
+					}),
+				]);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
 
 	test("run streams YAML checkpoints by default before the final result", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-yaml-run-"));
@@ -760,6 +1013,57 @@ describe("cli", () => {
 		}
 	});
 
+	test("gc never deletes paused runs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-gc-paused-"));
+		const dbPath = join(dir, "runtime.db");
+		const store = new CheckpointStore(dbPath);
+		const pausedRun = store.createRun("paused-playbook", {
+			inputs: {},
+			vars: {},
+			memory: {
+				working: {},
+			},
+			tasks: {
+				active: {
+					status: "waiting_approval",
+					attempts: 1,
+					approvalId: "approval-1",
+				},
+			},
+			agents: {},
+		});
+		store.updateRun(pausedRun.id, "paused", pausedRun.snapshot);
+		store.close();
+
+		try {
+			const gcResult = await runCli([
+				"gc",
+				"--db",
+				dbPath,
+				"--older-than-days",
+				"0",
+				"--keep-runs",
+				"0",
+				"--output",
+				"json",
+				"--verbose",
+			]);
+			expect(gcResult.exitCode).toBe(0);
+			expect(gcResult.stderr).toBe("");
+			const payload = parseJsonLines(gcResult.stdout)[0] as {
+				type: string;
+				deletedRuns: number;
+				after: { runs: { total: number; paused: number } };
+			};
+			expect(payload.type).toBe("gc");
+			expect(payload.deletedRuns).toBe(0);
+			expect(payload.after.runs.total).toBe(1);
+			expect(payload.after.runs.paused).toBe(1);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("gc fails for a missing database path instead of creating an empty database", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-gc-missing-"));
 		const missingDbPath = join(dir, "missing.db");
@@ -1072,6 +1376,191 @@ describe("cli", () => {
 			]);
 		} finally {
 			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test("approval CLI lists, shows, resolves, and resumes paused runs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-approvals-"));
+		const dbPath = join(dir, "runtime.db");
+		const playbookPath = join(dir, "approval.playbook.yaml");
+		const targetFile = join(dir, "approved.txt");
+		writeFileSync(
+			playbookPath,
+			`playbook: approval-cli\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`policy:\n` +
+				`  workspaceRoot: ${JSON.stringify(dir)}\n` +
+				`  writableRoots:\n` +
+				`    - ${JSON.stringify(dir)}\n` +
+				`  approvalMode: on-mutate\n` +
+				`tasks:\n` +
+				`  - id: write_note\n` +
+				`    uses: module:builtin.write\n` +
+				`    with:\n` +
+				`      path: ./approved.txt\n` +
+				`      content: approved\n`,
+			"utf8",
+		);
+
+		try {
+			const runResult = await runCli(["run", playbookPath, "--db", dbPath, "--output", "json", "--verbose"]);
+			expect(runResult.exitCode).toBe(0);
+			const runEvents = parseJsonLines(runResult.stdout) as Array<Record<string, unknown>>;
+			const pausedResult = runEvents.at(-1) as {
+				run: {
+					id: string;
+					status: string;
+					snapshot: { tasks: Record<string, { approvalId?: string; status: string }> };
+				};
+			};
+			expect(pausedResult.run.status).toBe("paused");
+			const approvalId = pausedResult.run.snapshot.tasks.write_note.approvalId;
+			expect(approvalId).toBeTruthy();
+			expect(existsSync(targetFile)).toBe(false);
+
+			const listResult = await runCli(["approvals", "list", "--db", dbPath, "--output", "json"]);
+			expect(listResult.exitCode).toBe(0);
+			expect(parseJsonLines(listResult.stdout)).toEqual([
+				expect.objectContaining({
+					type: "approval_list",
+					count: 1,
+					approvals: [
+						expect.objectContaining({
+							id: approvalId,
+							runId: pausedResult.run.id,
+							taskId: "write_note",
+							status: "pending",
+							toolRef: "builtin.write",
+						}),
+					],
+				}),
+			]);
+
+			const showResult = await runCli(["approvals", "show", approvalId!, "--db", dbPath, "--output", "json"]);
+			expect(showResult.exitCode).toBe(0);
+			expect(parseJsonLines(showResult.stdout)).toEqual([
+				expect.objectContaining({
+					type: "approval_show",
+					approval: expect.objectContaining({
+						id: approvalId,
+						status: "pending",
+						requestInput: {
+							path: "./approved.txt",
+							content: "approved",
+						},
+					}),
+				}),
+			]);
+
+			const approveResult = await runCli([
+				"approvals",
+				"approve",
+				approvalId!,
+				"--db",
+				dbPath,
+				"--by",
+				"tester",
+				"--note",
+				"approved for runtime test",
+				"--output",
+				"json",
+			]);
+			expect(approveResult.exitCode).toBe(0);
+			expect(parseJsonLines(approveResult.stdout)).toEqual([
+				expect.objectContaining({
+					type: "approval_approve",
+					approval: expect.objectContaining({
+						id: approvalId,
+						status: "approved",
+						resolvedBy: "tester",
+						resolutionNote: "approved for runtime test",
+					}),
+				}),
+			]);
+
+			const resumeResult = await runCli(["resume", playbookPath, pausedResult.run.id, "--db", dbPath, "--output", "json"]);
+			expect(resumeResult.exitCode).toBe(0);
+			const resumeEvents = parseJsonLines(resumeResult.stdout) as Array<Record<string, unknown>>;
+			const finalResult = resumeEvents.at(-1) as { run: { status: string; snapshot: { tasks: Record<string, { status: string }> } } };
+			expect(finalResult.run.status).toBe("succeeded");
+			expect(finalResult.run.snapshot.tasks.write_note.status).toBe("succeeded");
+			expect(readFileSync(targetFile, "utf8")).toBe("approved");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("approval CLI reject marks the blocked task failed on resume", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "agentctl-cli-approval-reject-"));
+		const dbPath = join(dir, "runtime.db");
+		const playbookPath = join(dir, "approval-reject.playbook.yaml");
+		const targetFile = join(dir, "rejected.txt");
+		writeFileSync(
+			playbookPath,
+			`playbook: approval-reject-cli\n` +
+				`defaults:\n` +
+				`  agentProfile: workspace_write\n` +
+				`policy:\n` +
+				`  workspaceRoot: ${JSON.stringify(dir)}\n` +
+				`  writableRoots:\n` +
+				`    - ${JSON.stringify(dir)}\n` +
+				`  approvalMode: on-mutate\n` +
+				`tasks:\n` +
+				`  - id: write_note\n` +
+				`    uses: module:builtin.write\n` +
+				`    with:\n` +
+				`      path: ./rejected.txt\n` +
+				`      content: rejected\n`,
+			"utf8",
+		);
+
+		try {
+			const runResult = await runCli(["run", playbookPath, "--db", dbPath, "--output", "json"]);
+			expect(runResult.exitCode).toBe(0);
+			const pausedResult = parseJsonLines(runResult.stdout).at(-1) as {
+				run: { id: string; snapshot: { tasks: Record<string, { approvalId?: string }> } };
+			};
+			const approvalId = pausedResult.run.snapshot.tasks.write_note.approvalId;
+			expect(approvalId).toBeTruthy();
+
+			const rejectResult = await runCli([
+				"approvals",
+				"reject",
+				approvalId!,
+				"--db",
+				dbPath,
+				"--by",
+				"tester",
+				"--note",
+				"rejected for runtime test",
+				"--output",
+				"json",
+			]);
+			expect(rejectResult.exitCode).toBe(0);
+			expect(parseJsonLines(rejectResult.stdout)).toEqual([
+				expect.objectContaining({
+					type: "approval_reject",
+					approval: expect.objectContaining({
+						id: approvalId,
+						status: "rejected",
+						resolvedBy: "tester",
+						resolutionNote: "rejected for runtime test",
+					}),
+				}),
+			]);
+
+			const resumeResult = await runCli(["resume", playbookPath, pausedResult.run.id, "--db", dbPath, "--output", "json", "--verbose"]);
+			expect(resumeResult.exitCode).toBe(0);
+			const finalResult = parseJsonLines(resumeResult.stdout).at(-1) as {
+				run: { status: string; snapshot: { tasks: Record<string, { status: string; error?: string }> } };
+			};
+			expect(finalResult.run.status).toBe("failed");
+			expect(finalResult.run.snapshot.tasks.write_note.status).toBe("failed");
+			expect(finalResult.run.snapshot.tasks.write_note.error).toContain("Tool call rejected");
+			expect(existsSync(targetFile)).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

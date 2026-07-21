@@ -8,7 +8,7 @@ This document covers the operational surface of `long_term_memory` in `agentctl`
 - agent-facing retrieval and promotion patterns
 - replay/resume behavior for memory-heavy agent flows
 
-For the broader memory model, see [/Users/ompragash/Git/agentctl/docs/memory.md](/Users/ompragash/Git/agentctl/docs/memory.md).
+For the broader memory model, see [memory.md](memory.md).
 
 ## Scope
 
@@ -232,7 +232,7 @@ What is not guaranteed:
 
 The long-term adapter surface is intentionally separated under:
 
-- [/Users/ompragash/Git/agentctl/src/long-term-memory-adapters/](/Users/ompragash/Git/agentctl/src/long-term-memory-adapters/)
+- [src/long-term-memory-adapters/](../src/long-term-memory-adapters/)
 
 The contract includes:
 

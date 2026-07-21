@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compilePlaybook } from "../src/compiler.js";
 import { CheckpointStore } from "../src/checkpoint-store.js";
+import { BuiltinModuleRegistry } from "../src/modules.js";
 import { loadPlaybookWithPacks } from "../src/parser.js";
 import { PlaybookRuntime } from "../src/runtime.js";
 
@@ -26,17 +28,25 @@ describe("custom pack process tools", () => {
 		expect(auditor?.tools?.map((tool) => tool.tool)).toEqual(["custom/node_version", "custom/fixture_audit"]);
 	});
 
-	test("agent can call both an existing wrapped command and a pack-shipped script", async () => {
+	test("agent can call both an existing wrapped command and a pack-shipped script after sequential approvals", async () => {
 		const { dir, dbPath } = createTempDb("agentctl-custom-pack");
 		const store = new CheckpointStore(dbPath);
-		const runtime = new PlaybookRuntime(
-			compilePlaybook(loadPlaybookWithPacks(join(process.cwd(), "examples/custom-pack-tools/mission.playbook.yaml"))),
-			store,
-		);
+		const plan = compilePlaybook(loadPlaybookWithPacks(join(process.cwd(), "examples/custom-pack-tools/mission.playbook.yaml")));
+		const runtime = new PlaybookRuntime(plan, store);
 
-		const result = await runtime.start();
+		let result = await runtime.start();
+		expect(result.run.status).toBe("paused");
+		const approvalIds: string[] = [];
+		while (result.run.status === "paused") {
+			const [approval] = store.listApprovals({ runId: result.run.id, status: "pending" });
+			expect(approval?.toolProvider).toBe("module");
+			approvalIds.push(approval!.id);
+			store.resolveApproval(approval!.id, "approved", { resolvedBy: "test" });
+			result = await new PlaybookRuntime(plan, store).resume(result.run.id);
+		}
 
 		expect(result.run.status).toBe("succeeded");
+		expect(approvalIds).toHaveLength(2);
 		expect(result.run.snapshot.tasks.audit.output?.observations).toBeDefined();
 		const observations = result.run.snapshot.tasks.audit.output?.observations;
 		expect(Array.isArray(observations)).toBe(true);
@@ -177,6 +187,52 @@ describe("custom pack process tools", () => {
 		expect(readFileSync(counterFile, "utf8")).toBe("1");
 
 		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("pack.process executor rejects cwd escapes even without runtime policy authorization", async () => {
+		const { dir } = createTempDb("agentctl-custom-pack-executor-cwd-escape");
+		const workspaceRoot = join(dir, "workspace");
+		const outsideDir = join(dir, "outside");
+		const targetFile = join(outsideDir, "should-not-exist.txt");
+		await Promise.all([mkdir(workspaceRoot, { recursive: true }), mkdir(outsideDir, { recursive: true })]);
+
+		const plan = compilePlaybook({
+			playbook: "executor-cwd-escape",
+			tasks: [],
+			modules: {
+				"local/write_outside": {
+					kind: "pack.process",
+					command: "node",
+					args: [
+						"-e",
+						"require('node:fs').writeFileSync('should-not-exist.txt', 'blocked')",
+					],
+					cwd: outsideDir,
+				},
+			},
+		});
+		const registry = new BuiltinModuleRegistry();
+
+		await expect(
+			registry.executeResolved(
+				"run-id",
+				"task-id",
+				plan.modules["local/write_outside"],
+				{},
+				{
+					inputs: {},
+					vars: {},
+					memory: { working: {} },
+					tasks: {},
+					agents: {},
+				},
+				workspaceRoot,
+				{},
+			),
+		).rejects.toThrow("escapes workspaceRoot");
+		expect(existsSync(targetFile)).toBe(false);
+
 		rmSync(dir, { recursive: true, force: true });
 	});
 });

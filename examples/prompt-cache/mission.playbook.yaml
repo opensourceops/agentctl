@@ -1,0 +1,47 @@
+playbook: prompt-cache
+
+promptCache:
+  enabled: true
+  force: true
+  retention: in_memory
+  shareMode: group
+  group: shared-reviewers
+
+agents:
+  real/first:
+    kind: openai.responses
+    provider: openai
+    model: gpt-5-mini
+    baseUrl: http://127.0.0.1:4031
+    instructions: shared review prefix
+
+  real/second:
+    kind: openai.responses
+    provider: openai
+    model: gpt-5-mini
+    baseUrl: http://127.0.0.1:4031
+    instructions: shared review prefix
+
+tasks:
+  - id: first
+    uses: agent:real/first
+
+  - id: second
+    needs: [first]
+    uses: agent:real/second
+
+  - id: verify_first
+    needs: [first]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.first.output.finalText }}"
+        right: "prompt-cache response 1"
+
+  - id: verify_second
+    needs: [second]
+    uses: module:builtin.assert
+    with:
+      equals:
+        left: "{{ tasks.second.output.finalText }}"
+        right: "prompt-cache response 2"

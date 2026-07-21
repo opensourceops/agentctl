@@ -1,18 +1,22 @@
 import type {
 	AgentDecision,
+	AgentDecisionToolCall,
 	AgentDefinition,
 	AgentModel,
 	AgentModelContext,
+	AgentProviderMetric,
 	AgentSessionState,
 	AgentToolDefinition,
 	JsonObject,
-	JsonValue,
+	ResolvedPromptCacheConfig,
 	RuntimeSnapshot,
 	TaskOutput,
 } from "./types.js";
+import { ApprovalRequiredError } from "./approvals.js";
 import type { ModuleExecutionResult } from "./modules.js";
 import type { ModelRegistry } from "./model-registry.js";
-import { buildTemplateContext, deepClone, isJsonObject, resolveTemplates, stableStringify } from "./utils.js";
+import { buildTaskTemplateContext, deepClone, isJsonObject, resolveTemplates, stableStringify } from "./utils.js";
+import { resolveTemplatesStrict } from "./template-utils.js";
 import OpenAI from "openai";
 import { AzureOpenAI } from "openai";
 import type { Responses as OpenAIResponses } from "openai/resources/responses/responses";
@@ -260,6 +264,16 @@ function supportsTemperature(model: string, reasoningEffort: "minimal" | "low" |
 	return reasoningEffort === undefined;
 }
 
+function resolveProviderPromptCacheRetention(
+	directOpenAiBaseUrl: boolean | undefined,
+	retention: "in-memory" | "24h",
+): "in-memory" | "24h" {
+	if (retention === "24h" && directOpenAiBaseUrl === false) {
+		return "in-memory";
+	}
+	return retention;
+}
+
 export class OpenAIResponsesAgentModel implements AgentModel {
 	readonly name = "openai.responses";
 
@@ -268,6 +282,10 @@ export class OpenAIResponsesAgentModel implements AgentModel {
 	async decide(context: AgentModelContext): Promise<AgentDecision> {
 		const definition = context.agent;
 		const config = this.modelRegistry.resolveAgent(definition);
+		const promptCacheRetention = resolveProviderPromptCacheRetention(
+			context.promptCache.directOpenAiBaseUrl,
+			context.promptCache.retention,
+		);
 		const client =
 			config.provider === "azure-openai-responses"
 				? new AzureOpenAI({
@@ -352,12 +370,36 @@ export class OpenAIResponsesAgentModel implements AgentModel {
 					],
 			...(providerState.previousResponseId ? { previous_response_id: providerState.previousResponseId } : {}),
 			...(tools.length > 0 ? { tools } : {}),
+			...(context.promptCache.enabled && context.promptCache.keyBase
+				? {
+						prompt_cache_key: context.promptCache.keyBase,
+						prompt_cache_retention: promptCacheRetention,
+					}
+				: {}),
 			...(config.temperature !== undefined && supportsTemperature(config.model, config.reasoningEffort)
 				? { temperature: config.temperature }
 				: {}),
 			...(config.maxOutputTokens !== undefined ? { max_output_tokens: config.maxOutputTokens } : {}),
 			...(config.reasoningEffort ? { reasoning: { effort: config.reasoningEffort } } : {}),
 		});
+		const cachedTokens = response.usage?.input_tokens_details?.cached_tokens ?? 0;
+		const inputTokens = response.usage?.input_tokens ?? 0;
+		const outputTokens = response.usage?.output_tokens ?? 0;
+		if (context.promptCache.enabled) {
+			context.recordProviderMetric({
+				provider: config.provider,
+				responseId: response.id,
+				promptCache: {
+					enabled: context.promptCache.enabled,
+					...(context.promptCache.keyBase ? { key: context.promptCache.keyBase } : {}),
+					retention: promptCacheRetention,
+					cachedTokens,
+					inputTokens,
+					uncachedInputTokens: Math.max(0, inputTokens - cachedTokens),
+					outputTokens,
+				},
+			});
+		}
 
 		const functionCalls = response.output.filter(
 			(item): item is OpenAIResponses.ResponseFunctionToolCall => item.type === "function_call",
@@ -423,48 +465,72 @@ export class BuiltinAgentRegistry {
 
 	async execute(
 		runId: string,
+		playbookName: string,
 		taskId: string,
+		agentRef: string,
 		definition: AgentDefinition,
 		taskInput: JsonObject,
+		resolvedVars: JsonObject,
+		promptCache: ResolvedPromptCacheConfig,
 		snapshot: RuntimeSnapshot,
 		toolRuntime: AgentToolRuntime,
 		existingSession: AgentSessionState | undefined,
 		callbacks: AgentExecutionCallbacks,
+		recordProviderMetric: (metric: AgentProviderMetric) => void,
 	): Promise<AgentExecutionResult> {
 		const model = this.models.get(definition.kind);
 		if (!model) throw new Error(`No agent model registered for kind "${definition.kind}"`);
 
 		const maxTurns = definition.maxTurns ?? 4;
-		const resolvedInput = resolveTemplates(taskInput, buildTemplateContext(snapshot));
+		const resolvedInput = resolveTemplates(taskInput, buildTaskTemplateContext(snapshot, resolvedVars, taskInput));
 		const session: AgentSessionState = existingSession
-			? {
-					attempt: existingSession.attempt,
-					input: existingSession.input,
-					turns: [...existingSession.turns],
-					...(existingSession.providerState ? { providerState: deepClone(existingSession.providerState) } : {}),
-				}
-			: {
-					attempt: 1,
-					input: resolvedInput,
-					turns: [],
-				};
+				? {
+						attempt: existingSession.attempt,
+						input: existingSession.input,
+						resolvedVars: deepClone(existingSession.resolvedVars ?? resolvedVars),
+						turns: [...existingSession.turns],
+						...(existingSession.pendingToolCall ? { pendingToolCall: deepClone(existingSession.pendingToolCall) } : {}),
+						...(existingSession.providerState ? { providerState: deepClone(existingSession.providerState) } : {}),
+					}
+				: {
+						attempt: 1,
+						input: resolvedInput,
+						resolvedVars: deepClone(resolvedVars),
+						turns: [],
+					};
 		let workingSnapshot = deepClone(snapshot);
 
 		while (session.turns.length < maxTurns) {
-			const tools = (definition.tools ?? []).map((tool) => resolveTool(tool, workingSnapshot));
-			const decision = await model.decide({
-				runId,
-				taskId,
-				agent: definition,
-				instructions: definition.instructions,
-				maxTurns,
-				input: session.input,
-				profile: definition.profile ?? "none",
-				tools,
-				turns: session.turns,
-				snapshot: workingSnapshot,
-				session,
+			const tools = (definition.tools ?? []).map((tool) =>
+				resolveTool(tool, workingSnapshot, session.resolvedVars ?? {}, session.input),
+			);
+			const templateContext = buildTaskTemplateContext(workingSnapshot, session.resolvedVars ?? {}, session.input);
+			const resolvedInstructionsValue = resolveTemplatesStrict(definition.instructions, {
+				...templateContext,
 			});
+			const resolvedInstructions =
+				typeof resolvedInstructionsValue === "string"
+					? resolvedInstructionsValue
+					: stableStringify(resolvedInstructionsValue);
+			const decision =
+				session.pendingToolCall ??
+				(await model.decide({
+					runId,
+					playbookName,
+					taskId,
+					agentRef,
+					agent: definition,
+					instructions: resolvedInstructions,
+					maxTurns,
+					input: session.input,
+					profile: definition.profile ?? "none",
+					tools,
+					turns: session.turns,
+					snapshot: workingSnapshot,
+					session,
+					promptCache,
+					recordProviderMetric,
+				}));
 
 			if (decision.kind === "finish") {
 				return {
@@ -492,11 +558,23 @@ export class BuiltinAgentRegistry {
 						};
 					})()
 				: selectedTool;
-			const toolResult = await toolRuntime.executeTool(
-				toolInput,
-				workingSnapshot,
-				`${taskId}::tool:${selectedTool.name ?? selectedTool.tool}`,
-			);
+			let toolResult: ModuleExecutionResult;
+			try {
+				toolResult = await toolRuntime.executeTool(
+					toolInput,
+					workingSnapshot,
+					`${taskId}::tool:${selectedTool.name ?? selectedTool.tool}`,
+				);
+			} catch (error) {
+				if (error instanceof ApprovalRequiredError) {
+					session.pendingToolCall = deepClone(decision as AgentDecisionToolCall);
+					throw new ApprovalRequiredError(error.approval, {
+						session: deepClone(session),
+						snapshot: deepClone(workingSnapshot),
+					});
+				}
+				throw error;
+			}
 			const observation =
 				typeof decision.arguments?.call_id === "string"
 					? {
@@ -520,6 +598,7 @@ export class BuiltinAgentRegistry {
 			if (typeof decision.arguments?.call_id === "string") {
 				recordToolOutput(session, decision.arguments.call_id, observation);
 			}
+			delete session.pendingToolCall;
 			session.turns.push(turn);
 			await callbacks.onTurn(session, decision, observation, workingSnapshot);
 		}
@@ -528,14 +607,19 @@ export class BuiltinAgentRegistry {
 	}
 }
 
-function resolveTool(tool: AgentToolDefinition, snapshot: RuntimeSnapshot): AgentToolDefinition {
+function resolveTool(
+	tool: AgentToolDefinition,
+	snapshot: RuntimeSnapshot,
+	resolvedVars: JsonObject,
+	input: JsonObject,
+): AgentToolDefinition {
 	const resolvedTool = resolveTemplates(
 		{
 			tool: tool.tool,
 			...(tool.name ? { name: tool.name } : {}),
 			...(tool.with ? { with: tool.with } : {}),
 		},
-		buildTemplateContext(snapshot),
+		buildTaskTemplateContext(snapshot, resolvedVars, input),
 	);
 	return {
 		tool: String(resolvedTool.tool),

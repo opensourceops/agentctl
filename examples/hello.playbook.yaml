@@ -19,6 +19,8 @@ tasks:
     uses: agent:demo/reviewer
     needs:
       - init
+    vars:
+      framework_name: "{{ memory.working.framework_name }}"
 
   - id: verify
     uses: module:builtin.assert

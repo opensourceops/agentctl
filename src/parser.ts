@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import YAML from "yaml";
 import { z } from "zod";
 import {
@@ -14,6 +14,7 @@ import {
 	packSchema,
 	playbookSchema,
 	policySchema,
+	promptCacheSchema,
 	taskSchema,
 	workingMemorySchema,
 } from "./schema.js";
@@ -31,10 +32,20 @@ import type {
 	PackDefinition,
 	PlaybookDefaults,
 	PlaybookDefinition,
+	PromptCacheDefinition,
 	TaskDefinition,
 	WorkingMemoryDefinition,
 } from "./types.js";
 import { resolveRelativePath } from "./utils.js";
+
+function formatValidationIssues(error: z.ZodError): string {
+	return error.issues
+		.map((issue) => {
+			const path = issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
+			return `${issue.message}${path}`;
+		})
+		.join("; ");
+}
 
 function readYamlFile(filePath: string): unknown {
 	return YAML.parse(readFileSync(filePath, "utf8"));
@@ -107,10 +118,38 @@ function normalizeAgentToolDefinition(tool: z.infer<typeof agentToolSchema>): Ag
 	};
 }
 
+function normalizePromptCache(definition: z.infer<typeof promptCacheSchema>): PromptCacheDefinition {
+	return {
+		...(definition.enabled !== undefined ? { enabled: definition.enabled } : {}),
+		...(definition.force !== undefined ? { force: definition.force } : {}),
+		...(definition.retention ? { retention: definition.retention } : {}),
+		...(definition.keyScope ? { keyScope: definition.keyScope } : {}),
+		...(definition.shareMode ? { shareMode: definition.shareMode } : {}),
+		...(definition.group ? { group: definition.group } : {}),
+		...(definition.keyTemplate ? { keyTemplate: definition.keyTemplate } : {}),
+	};
+}
+
 function normalizeAgentDefinition(agent: z.infer<typeof agentSchema>): AgentDefinition {
+	const instructions =
+		agent.instructions ??
+		(() => {
+			const instructionsFile = agent.instructionsFile;
+			if (!instructionsFile) {
+				throw new Error('Agent must define exactly one of "instructions" or "instructionsFile"');
+			}
+			if (!existsSync(instructionsFile)) {
+				throw new Error(`Agent instructions file not found: ${instructionsFile}`);
+			}
+			return readFileSync(instructionsFile, "utf8");
+		})();
+
 	return {
 		kind: agent.kind,
-		instructions: agent.instructions,
+		instructions,
+		...(agent.instructionsFile ? { instructionsFile: agent.instructionsFile } : {}),
+		...(agent.vars ? { vars: agent.vars } : {}),
+		...(agent.promptCache ? { promptCache: normalizePromptCache(agent.promptCache) } : {}),
 		...(agent.description ? { description: agent.description } : {}),
 		...(agent.maxTurns !== undefined ? { maxTurns: agent.maxTurns } : {}),
 		...(agent.profile ? { profile: agent.profile } : {}),
@@ -129,11 +168,21 @@ function normalizeAgentDefinition(agent: z.infer<typeof agentSchema>): AgentDefi
 	};
 }
 
+function normalizeAgentPath(filePath: string, agentDefinition: z.infer<typeof agentSchema>): z.infer<typeof agentSchema> {
+	return {
+		...agentDefinition,
+		...(agentDefinition.instructionsFile
+			? { instructionsFile: resolveRelativePath(filePath, agentDefinition.instructionsFile) }
+			: {}),
+	};
+}
+
 function normalizeTaskDefinition(task: z.infer<typeof taskSchema>): TaskDefinition {
 	return {
 		id: task.id,
 		uses: task.uses,
 		...(task.needs.length > 0 ? { needs: task.needs } : {}),
+		...(task.vars && Object.keys(task.vars).length > 0 ? { vars: task.vars } : {}),
 		...(Object.keys(task.with).length > 0 ? { with: task.with } : {}),
 		...(task.retry
 			? {
@@ -237,7 +286,10 @@ function normalizePackDefinition(parsed: z.infer<typeof packSchema>, packPath: s
 		...(parsed.agents
 			? {
 					agents: Object.fromEntries(
-						Object.entries(parsed.agents).map(([name, definition]) => [name, normalizeAgentDefinition(definition)]),
+						Object.entries(parsed.agents).map(([name, definition]) => [
+							name,
+							normalizeAgentDefinition(normalizeAgentPath(packPath, definition)),
+						]),
 					),
 				}
 			: {}),
@@ -251,10 +303,11 @@ function normalizePlaybookDefinition(parsed: z.infer<typeof playbookSchema>, pla
 		...(parsed.version ? { version: parsed.version } : {}),
 		...(parsed.description ? { description: parsed.description } : {}),
 		...(parsed.packs ? { packs: parsed.packs } : {}),
-			...(parsed.inputs ? { inputs: parsed.inputs } : {}),
-			...(parsed.defaults ? { defaults: normalizeDefaults(parsed.defaults) } : {}),
-			...(parsed.memory ? { memory: normalizeMemory(parsed.memory, playbookPath) } : {}),
-			...(parsed.output ? { output: normalizeOutput(parsed.output) } : {}),
+		...(parsed.inputs ? { inputs: parsed.inputs } : {}),
+		...(parsed.defaults ? { defaults: normalizeDefaults(parsed.defaults) } : {}),
+		...(parsed.promptCache ? { promptCache: normalizePromptCache(parsed.promptCache) } : {}),
+		...(parsed.memory ? { memory: normalizeMemory(parsed.memory, playbookPath) } : {}),
+		...(parsed.output ? { output: normalizeOutput(parsed.output) } : {}),
 		...(parsed.policy ? { policy: normalizePolicy(parsed.policy, playbookPath) } : { policy: normalizePolicy({}, playbookPath) }),
 		...(parsed.mcpServers
 			? {
@@ -283,7 +336,10 @@ function normalizePlaybookDefinition(parsed: z.infer<typeof playbookSchema>, pla
 		...(parsed.agents
 			? {
 					agents: Object.fromEntries(
-						Object.entries(parsed.agents).map(([name, definition]) => [name, normalizeAgentDefinition(definition)]),
+						Object.entries(parsed.agents).map(([name, definition]) => [
+							name,
+							normalizeAgentDefinition(normalizeAgentPath(playbookPath, definition)),
+						]),
 					),
 				}
 			: {}),
@@ -293,7 +349,7 @@ function normalizePlaybookDefinition(parsed: z.infer<typeof playbookSchema>, pla
 export function loadPack(filePath: string): PackDefinition {
 	const parsed = packSchema.safeParse(readYamlFile(filePath));
 	if (!parsed.success) {
-		throw new Error(`Invalid pack file ${filePath}: ${parsed.error.message}`);
+		throw new Error(`Invalid pack file ${filePath}: ${formatValidationIssues(parsed.error)}`);
 	}
 	return normalizePackDefinition(parsed.data, filePath);
 }
@@ -301,7 +357,7 @@ export function loadPack(filePath: string): PackDefinition {
 export function loadPlaybook(filePath: string): PlaybookDefinition {
 	const parsed = playbookSchema.safeParse(readYamlFile(filePath));
 	if (!parsed.success) {
-		throw new Error(`Invalid playbook file ${filePath}: ${parsed.error.message}`);
+		throw new Error(`Invalid playbook file ${filePath}: ${formatValidationIssues(parsed.error)}`);
 	}
 	return normalizePlaybookDefinition(parsed.data, filePath);
 }

@@ -36,6 +36,9 @@ const reasoningEffortSchema = z.enum(["minimal", "low", "medium", "high"]);
 const outputFormatSchema = z.enum(["yaml", "json"]);
 const outputColorModeSchema = z.enum(["auto", "always", "never"]);
 const longTermProviderSchema = z.enum(["sqlite", "mongodb-atlas"]);
+const promptCacheRetentionSchema = z.enum(["in_memory", "24h"]);
+const promptCacheKeyScopeSchema = z.enum(["agent", "run", "playbook", "provider", "custom"]);
+const promptCacheShareModeSchema = z.enum(["isolated", "group"]);
 
 const processRequirementSchema = z.object({
 	command: z.string().min(1),
@@ -81,10 +84,40 @@ export const agentToolSchema = z.object({
 	with: z.record(z.string(), jsonValueSchema).optional(),
 });
 
+export const promptCacheSchema = z
+	.object({
+		enabled: z.boolean().optional(),
+		force: z.boolean().optional(),
+		retention: promptCacheRetentionSchema.optional(),
+		keyScope: promptCacheKeyScopeSchema.optional(),
+		shareMode: promptCacheShareModeSchema.optional(),
+		group: z.string().min(1).optional(),
+		keyTemplate: z.string().min(1).optional(),
+	})
+	.superRefine((value, context) => {
+		if (value.shareMode === "group" && !value.group) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: 'Prompt cache with shareMode "group" requires "group"',
+				path: ["group"],
+			});
+		}
+		if (value.keyScope === "custom" && !value.keyTemplate) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: 'Prompt cache with keyScope "custom" requires "keyTemplate"',
+				path: ["keyTemplate"],
+			});
+		}
+	});
+
 export const agentSchema = z.object({
 	kind: agentKindSchema,
 	description: z.string().optional(),
-	instructions: z.string().min(1),
+	instructions: z.string().min(1).optional(),
+	instructionsFile: z.string().min(1).optional(),
+	vars: z.record(z.string(), jsonValueSchema).optional(),
+	promptCache: promptCacheSchema.optional(),
 	maxTurns: z.number().int().positive().max(20).optional(),
 	profile: agentProfileSchema.optional(),
 	tools: z.array(agentToolSchema).optional(),
@@ -99,6 +132,16 @@ export const agentSchema = z.object({
 	temperature: z.number().min(0).max(2).optional(),
 	maxOutputTokens: z.number().int().positive().optional(),
 	reasoningEffort: reasoningEffortSchema.optional(),
+}).superRefine((value, context) => {
+	const hasInstructions = typeof value.instructions === "string";
+	const hasInstructionsFile = typeof value.instructionsFile === "string";
+	if (hasInstructions === hasInstructionsFile) {
+		context.addIssue({
+			code: z.ZodIssueCode.custom,
+			message: 'Agent must define exactly one of "instructions" or "instructionsFile"',
+			path: hasInstructions ? ["instructions"] : ["instructionsFile"],
+		});
+	}
 });
 
 export const defaultsSchema = z.object({
@@ -155,6 +198,7 @@ export const taskSchema = z.object({
 	id: z.string().min(1).regex(/^[a-zA-Z][a-zA-Z0-9_-]*$/),
 	uses: z.string().min(1).regex(/^(module|agent):.+$/),
 	needs: z.array(z.string().min(1)).default([]),
+	vars: z.record(z.string(), jsonValueSchema).optional(),
 	with: z.record(z.string(), jsonValueSchema).default({}),
 	retry: retrySchema.partial().optional(),
 });
@@ -174,6 +218,7 @@ export const playbookSchema = z.object({
 	packs: z.array(z.string().min(1)).optional(),
 	inputs: z.record(z.string(), jsonValueSchema).optional(),
 	defaults: defaultsSchema.optional(),
+	promptCache: promptCacheSchema.optional(),
 	memory: memorySchema.optional(),
 	output: outputSchema.optional(),
 	policy: policySchema.optional(),

@@ -7,6 +7,8 @@ This example shows two process-backed pack tools:
 
 Both tools are exposed to an agent through the normal `tools:` block, and both are preflight-checked before the run starts.
 
+Because both tools launch subprocesses, each agent-origin tool call is approval-gated. In an interactive TTY run, `agentctl` prompts inline and resumes automatically after approval.
+
 Run:
 
 ```bash
@@ -15,7 +17,8 @@ agentctl run examples/custom-pack-tools/mission.playbook.yaml --db .runtime/cust
 
 Expected behavior:
 
-- the agent calls both tools in order
+- the run pauses for approval before the agent launches the subprocess-backed tools
+- after approval, the agent calls both tools in order
 - the run succeeds without requiring any built-in write or shell tool access for the agent
 - the report is persisted to `./artifacts/custom-pack-report.md`
 - verification confirms the report mentions:

@@ -2,6 +2,9 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { JsonObject, JsonValue, RuntimeSnapshot, TaskReference } from "./types.js";
 
+const TASK_TEMPLATE_VARS_KEY = "__agentctlTaskVars";
+const TASK_TEMPLATE_BASE_KEY = "__agentctlTaskBase";
+
 export function nowIso(): string {
 	return new Date().toISOString();
 }
@@ -55,11 +58,31 @@ export function mergeRecords<T extends Record<string, unknown>>(base: T, overrid
 	return { ...base, ...override };
 }
 
-function getPathValue(path: string, source: Record<string, unknown>): unknown {
-	return path.split(".").reduce<unknown>((current, key) => {
+function getNestedPathValue(pathSegments: string[], source: Record<string, unknown>): unknown {
+	return pathSegments.reduce<unknown>((current, key) => {
 		if (!isObject(current)) return undefined;
 		return current[key];
 	}, source);
+}
+
+function getPathValue(path: string, source: Record<string, unknown>): unknown {
+	const segments = path.split(".");
+	const [root, ...rest] = segments;
+	if (!root) {
+		return undefined;
+	}
+	const taskVars = isObject(source[TASK_TEMPLATE_VARS_KEY]) ? source[TASK_TEMPLATE_VARS_KEY] : undefined;
+	const taskBase = isObject(source[TASK_TEMPLATE_BASE_KEY]) ? source[TASK_TEMPLATE_BASE_KEY] : undefined;
+	if (root === "vars" && taskVars) {
+		return rest.length === 0 ? taskVars : getNestedPathValue(rest, taskVars);
+	}
+	if (taskVars && rest.length === 0 && root in taskVars) {
+		return taskVars[root];
+	}
+	const target = taskBase && (root === "inputs" || root === "memory" || root === "tasks" || root === "run")
+		? taskBase
+		: source;
+	return getNestedPathValue(segments, target);
 }
 
 function renderTemplateString(template: string, source: Record<string, unknown>): JsonValue {
@@ -144,6 +167,21 @@ export function buildTemplateContext(snapshot: RuntimeSnapshot): Record<string, 
 				working: snapshot.memory.working,
 			},
 		},
+	};
+}
+
+export function buildTaskTemplateContext(
+	snapshot: RuntimeSnapshot,
+	resolvedVars: JsonObject = {},
+	input: JsonObject = {},
+): Record<string, unknown> {
+	const base = buildTemplateContext(snapshot);
+	return {
+		...base,
+		vars: resolvedVars,
+		input,
+		[TASK_TEMPLATE_VARS_KEY]: resolvedVars,
+		[TASK_TEMPLATE_BASE_KEY]: base,
 	};
 }
 

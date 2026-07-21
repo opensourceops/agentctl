@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import type {
+	ApprovalRecord,
 	AuditEventRecord,
 	CheckpointRecord,
 	RunRecord,
@@ -17,6 +18,7 @@ interface RuntimeDbStats {
 	runs: {
 		total: number;
 		running: number;
+		paused: number;
 		succeeded: number;
 		failed: number;
 		oldestCreatedAt: string | null;
@@ -28,6 +30,7 @@ interface RuntimeDbStats {
 		agentTurns: number;
 		auditEvents: number;
 		traceSpans: number;
+		approvals: number;
 	};
 	latestRun?: {
 		id: string;
@@ -40,6 +43,59 @@ interface RuntimeDbStats {
 interface GcResult {
 	deletedRunIds: string[];
 	vacuumed: boolean;
+}
+
+export interface PromptCacheStats {
+	dbPath: string;
+	totalResponses: number;
+	hitResponses: number;
+	totalCachedTokens: number;
+	totalInputTokens: number;
+	totalUncachedInputTokens: number;
+	totalOutputTokens: number;
+	latestResponseAt: string | null;
+	providers: Array<{
+		provider: string;
+		responses: number;
+		hitResponses: number;
+		cachedTokens: number;
+		inputTokens: number;
+		uncachedInputTokens: number;
+		outputTokens: number;
+	}>;
+	agents: Array<{
+		agentRef: string;
+		responses: number;
+		hitResponses: number;
+		cachedTokens: number;
+		inputTokens: number;
+		uncachedInputTokens: number;
+		outputTokens: number;
+	}>;
+	runs: Array<{
+		runId: string;
+		responses: number;
+		hitResponses: number;
+		cachedTokens: number;
+		inputTokens: number;
+		uncachedInputTokens: number;
+		outputTokens: number;
+	}>;
+	responses?: Array<{
+		runId: string;
+		taskId: string | null;
+		agentRef: string | null;
+		provider: string;
+		responseId: string | null;
+		key: string | null;
+		retention: string | null;
+		cachedTokens: number;
+		inputTokens: number;
+		uncachedInputTokens: number;
+		outputTokens: number;
+		hit: boolean;
+		createdAt: string;
+	}>;
 }
 
 const SCHEMA_SQL = `
@@ -109,6 +165,26 @@ CREATE TABLE IF NOT EXISTS trace_spans (
 	started_at TEXT NOT NULL,
 	ended_at TEXT,
 	PRIMARY KEY (run_id, span_id)
+);
+
+CREATE TABLE IF NOT EXISTS approvals (
+	id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL,
+	task_id TEXT NOT NULL,
+	origin TEXT NOT NULL,
+	tool_ref TEXT NOT NULL,
+	tool_provider TEXT NOT NULL,
+	tool_label TEXT NOT NULL,
+	capability TEXT NOT NULL,
+	risk TEXT NOT NULL,
+	request_input_json TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	agent_profile TEXT,
+	status TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	resolved_at TEXT,
+	resolved_by TEXT,
+	resolution_note TEXT
 );
 `;
 
@@ -303,6 +379,200 @@ export class CheckpointStore {
 		return rows.map((row) => toCheckpointRecord(row));
 	}
 
+	createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status" | "resolvedAt" | "resolvedBy" | "resolutionNote">): ApprovalRecord {
+		const approval: ApprovalRecord = {
+			id: randomUUID(),
+			status: "pending",
+			createdAt: nowIso(),
+			...record,
+		};
+		this.db
+			.prepare(
+				`INSERT INTO approvals
+				 (id, run_id, task_id, origin, tool_ref, tool_provider, tool_label, capability, risk, request_input_json, reason, agent_profile, status, created_at, resolved_at, resolved_by, resolution_note)
+				 VALUES (@id, @runId, @taskId, @origin, @toolRef, @toolProvider, @toolLabel, @capability, @risk, @requestInputJson, @reason, @agentProfile, @status, @createdAt, NULL, NULL, NULL)`,
+			)
+			.run({
+				id: approval.id,
+				runId: approval.runId,
+				taskId: approval.taskId,
+				origin: approval.origin,
+				toolRef: approval.toolRef,
+				toolProvider: approval.toolProvider,
+				toolLabel: approval.toolLabel,
+				capability: approval.capability,
+				risk: approval.risk,
+				requestInputJson: JSON.stringify(approval.requestInput),
+				reason: approval.reason,
+				agentProfile: approval.agentProfile ?? null,
+				status: approval.status,
+				createdAt: approval.createdAt,
+			});
+		return approval;
+	}
+
+	getApproval(approvalId: string): ApprovalRecord {
+		const row = this.db
+			.prepare(
+				`SELECT id, run_id, task_id, origin, tool_ref, tool_provider, tool_label, capability, risk, request_input_json, reason, agent_profile, status, created_at, resolved_at, resolved_by, resolution_note
+				 FROM approvals
+				 WHERE id = ?`,
+			)
+			.get(approvalId) as
+			| {
+					id: string;
+					run_id: string;
+					task_id: string;
+					origin: ApprovalRecord["origin"];
+					tool_ref: string;
+					tool_provider: ApprovalRecord["toolProvider"];
+					tool_label: string;
+					capability: ApprovalRecord["capability"];
+					risk: ApprovalRecord["risk"];
+					request_input_json: string;
+					reason: string;
+					agent_profile: ApprovalRecord["agentProfile"] | null;
+					status: ApprovalRecord["status"];
+					created_at: string;
+					resolved_at: string | null;
+					resolved_by: string | null;
+					resolution_note: string | null;
+			  }
+			| undefined;
+		if (!row) {
+			throw new Error(`Approval "${approvalId}" not found`);
+		}
+		return {
+			id: row.id,
+			runId: row.run_id,
+			taskId: row.task_id,
+			origin: row.origin,
+			toolRef: row.tool_ref,
+			toolProvider: row.tool_provider,
+			toolLabel: row.tool_label,
+			capability: row.capability,
+			risk: row.risk,
+			requestInput: parseJson(row.request_input_json),
+			reason: row.reason,
+			...(row.agent_profile ? { agentProfile: row.agent_profile } : {}),
+			status: row.status,
+			createdAt: row.created_at,
+			...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
+			...(row.resolved_by ? { resolvedBy: row.resolved_by } : {}),
+			...(row.resolution_note ? { resolutionNote: row.resolution_note } : {}),
+		};
+	}
+
+	listApprovals(filters: { runId?: string; status?: ApprovalRecord["status"] } = {}): ApprovalRecord[] {
+		const conditions: string[] = [];
+		const values: string[] = [];
+		if (filters.runId) {
+			conditions.push("run_id = ?");
+			values.push(filters.runId);
+		}
+		if (filters.status) {
+			conditions.push("status = ?");
+			values.push(filters.status);
+		}
+		const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+		const rows = this.db
+			.prepare(
+				`SELECT id, run_id, task_id, origin, tool_ref, tool_provider, tool_label, capability, risk, request_input_json, reason, agent_profile, status, created_at, resolved_at, resolved_by, resolution_note
+				 FROM approvals
+				 ${whereClause}
+				 ORDER BY created_at ASC`,
+			)
+			.all(...values) as Array<{
+			id: string;
+			run_id: string;
+			task_id: string;
+			origin: ApprovalRecord["origin"];
+			tool_ref: string;
+			tool_provider: ApprovalRecord["toolProvider"];
+			tool_label: string;
+			capability: ApprovalRecord["capability"];
+			risk: ApprovalRecord["risk"];
+			request_input_json: string;
+			reason: string;
+			agent_profile: ApprovalRecord["agentProfile"] | null;
+			status: ApprovalRecord["status"];
+			created_at: string;
+			resolved_at: string | null;
+			resolved_by: string | null;
+			resolution_note: string | null;
+		}>;
+		return rows.map((row) => ({
+			id: row.id,
+			runId: row.run_id,
+			taskId: row.task_id,
+			origin: row.origin,
+			toolRef: row.tool_ref,
+			toolProvider: row.tool_provider,
+			toolLabel: row.tool_label,
+			capability: row.capability,
+			risk: row.risk,
+			requestInput: parseJson(row.request_input_json),
+			reason: row.reason,
+			...(row.agent_profile ? { agentProfile: row.agent_profile } : {}),
+			status: row.status,
+			createdAt: row.created_at,
+			...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
+			...(row.resolved_by ? { resolvedBy: row.resolved_by } : {}),
+			...(row.resolution_note ? { resolutionNote: row.resolution_note } : {}),
+		}));
+	}
+
+	resolveApproval(
+		approvalId: string,
+		status: Extract<ApprovalRecord["status"], "approved" | "rejected">,
+		options: { resolvedBy?: string; resolutionNote?: string } = {},
+	): ApprovalRecord {
+		const current = this.getApproval(approvalId);
+		if (current.status !== "pending") {
+			if (current.status === status) {
+				return current;
+			}
+			throw new Error(`Approval "${approvalId}" is already ${current.status}`);
+		}
+		const resolvedAt = nowIso();
+		this.db
+			.prepare(
+				`UPDATE approvals
+				 SET status = ?, resolved_at = ?, resolved_by = ?, resolution_note = ?
+				 WHERE id = ?`,
+			)
+			.run(status, resolvedAt, options.resolvedBy ?? null, options.resolutionNote ?? null, approvalId);
+		return this.getApproval(approvalId);
+	}
+
+	listAuditEvents(runId: string): AuditEventRecord[] {
+		const rows = this.db
+			.prepare(
+				`SELECT run_id, seq, scope, name, level, attributes_json, created_at
+				 FROM audit_events
+				 WHERE run_id = ?
+				 ORDER BY seq ASC`,
+			)
+			.all(runId) as Array<{
+			run_id: string;
+			seq: number;
+			scope: string;
+			name: string;
+			level: AuditEventRecord["level"];
+			attributes_json: string;
+			created_at: string;
+		}>;
+		return rows.map((row) => ({
+			runId: row.run_id,
+			seq: row.seq,
+			scope: row.scope,
+			name: row.name,
+			level: row.level,
+			attributes: parseJson(row.attributes_json),
+			createdAt: row.created_at,
+		}));
+	}
+
 	recordTaskAttemptForRun(runId: string, record: TaskAttemptRecord): void {
 		this.db
 			.prepare(
@@ -413,6 +683,7 @@ export class CheckpointStore {
 				`SELECT
 				 COUNT(*) AS total,
 				 SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+				 SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END) AS paused,
 				 SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
 				 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
 				 MIN(created_at) AS oldest_created_at,
@@ -422,6 +693,7 @@ export class CheckpointStore {
 			.get() as {
 			total: number;
 			running: number | null;
+			paused: number | null;
 			succeeded: number | null;
 			failed: number | null;
 			oldest_created_at: string | null;
@@ -433,6 +705,7 @@ export class CheckpointStore {
 			agentTurns: this.getSingleCount("agent_turns"),
 			auditEvents: this.getSingleCount("audit_events"),
 			traceSpans: this.getSingleCount("trace_spans"),
+			approvals: this.getSingleCount("approvals"),
 		};
 		const latestRunRow = this.db
 			.prepare(
@@ -457,6 +730,7 @@ export class CheckpointStore {
 			runs: {
 				total: runCounts.total,
 				running: runCounts.running ?? 0,
+				paused: runCounts.paused ?? 0,
 				succeeded: runCounts.succeeded ?? 0,
 				failed: runCounts.failed ?? 0,
 				oldestCreatedAt: runCounts.oldest_created_at,
@@ -471,6 +745,217 @@ export class CheckpointStore {
 							status: latestRunRow.status,
 							updatedAt: latestRunRow.updated_at,
 						},
+					}
+				: {}),
+		};
+	}
+
+	getPromptCacheStats(filters: {
+		runId?: string;
+		taskId?: string;
+		agentRef?: string;
+		verbose?: boolean;
+	} = {}): PromptCacheStats {
+		const where: string[] = ["scope = 'prompt_cache'", "name = 'prompt_cache.response'"];
+		const values: Array<string> = [];
+		if (filters.runId) {
+			where.push("run_id = ?");
+			values.push(filters.runId);
+		}
+		if (filters.taskId) {
+			where.push("json_extract(attributes_json, '$.task_id') = ?");
+			values.push(filters.taskId);
+		}
+		if (filters.agentRef) {
+			where.push("json_extract(attributes_json, '$.agent_ref') = ?");
+			values.push(filters.agentRef);
+		}
+		const whereClause = where.join(" AND ");
+		const summaryRow = this.db
+			.prepare(
+				`SELECT
+				 COUNT(*) AS total_responses,
+				 SUM(CASE WHEN json_extract(attributes_json, '$.hit') = 1 THEN 1 ELSE 0 END) AS hit_responses,
+				 SUM(COALESCE(json_extract(attributes_json, '$.cached_tokens'), 0)) AS total_cached_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.input_tokens'), 0)) AS total_input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.uncached_input_tokens'), 0)) AS total_uncached_input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.output_tokens'), 0)) AS total_output_tokens,
+				 MAX(created_at) AS latest_response_at
+				 FROM audit_events
+				 WHERE ${whereClause}`,
+			)
+			.get(...values) as {
+			total_responses: number;
+			hit_responses: number | null;
+			total_cached_tokens: number | null;
+			total_input_tokens: number | null;
+			total_uncached_input_tokens: number | null;
+			total_output_tokens: number | null;
+			latest_response_at: string | null;
+		};
+		const providerRows = this.db
+			.prepare(
+				`SELECT
+				 COALESCE(json_extract(attributes_json, '$.provider'), 'unknown') AS provider,
+				 COUNT(*) AS responses,
+				 SUM(CASE WHEN json_extract(attributes_json, '$.hit') = 1 THEN 1 ELSE 0 END) AS hit_responses,
+				 SUM(COALESCE(json_extract(attributes_json, '$.cached_tokens'), 0)) AS cached_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.input_tokens'), 0)) AS input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.uncached_input_tokens'), 0)) AS uncached_input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.output_tokens'), 0)) AS output_tokens
+				 FROM audit_events
+				 WHERE ${whereClause}
+				 GROUP BY provider
+				 ORDER BY provider ASC`,
+			)
+			.all(...values) as Array<{
+			provider: string;
+			responses: number;
+			hit_responses: number | null;
+			cached_tokens: number | null;
+			input_tokens: number | null;
+			uncached_input_tokens: number | null;
+			output_tokens: number | null;
+		}>;
+		const agentRows = this.db
+			.prepare(
+				`SELECT
+				 COALESCE(json_extract(attributes_json, '$.agent_ref'), 'unknown') AS agent_ref,
+				 COUNT(*) AS responses,
+				 SUM(CASE WHEN json_extract(attributes_json, '$.hit') = 1 THEN 1 ELSE 0 END) AS hit_responses,
+				 SUM(COALESCE(json_extract(attributes_json, '$.cached_tokens'), 0)) AS cached_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.input_tokens'), 0)) AS input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.uncached_input_tokens'), 0)) AS uncached_input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.output_tokens'), 0)) AS output_tokens
+				 FROM audit_events
+				 WHERE ${whereClause}
+				 GROUP BY agent_ref
+				 ORDER BY agent_ref ASC`,
+			)
+			.all(...values) as Array<{
+			agent_ref: string;
+			responses: number;
+			hit_responses: number | null;
+			cached_tokens: number | null;
+			input_tokens: number | null;
+			uncached_input_tokens: number | null;
+			output_tokens: number | null;
+		}>;
+		const runRows = this.db
+			.prepare(
+				`SELECT
+				 run_id,
+				 COUNT(*) AS responses,
+				 SUM(CASE WHEN json_extract(attributes_json, '$.hit') = 1 THEN 1 ELSE 0 END) AS hit_responses,
+				 SUM(COALESCE(json_extract(attributes_json, '$.cached_tokens'), 0)) AS cached_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.input_tokens'), 0)) AS input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.uncached_input_tokens'), 0)) AS uncached_input_tokens,
+				 SUM(COALESCE(json_extract(attributes_json, '$.output_tokens'), 0)) AS output_tokens
+				 FROM audit_events
+				 WHERE ${whereClause}
+				 GROUP BY run_id
+				 ORDER BY run_id ASC`,
+			)
+			.all(...values) as Array<{
+			run_id: string;
+			responses: number;
+			hit_responses: number | null;
+			cached_tokens: number | null;
+			input_tokens: number | null;
+			uncached_input_tokens: number | null;
+			output_tokens: number | null;
+		}>;
+		const responseRows = filters.verbose
+			? (this.db
+					.prepare(
+						`SELECT
+						 run_id,
+						 json_extract(attributes_json, '$.task_id') AS task_id,
+						 json_extract(attributes_json, '$.agent_ref') AS agent_ref,
+						 COALESCE(json_extract(attributes_json, '$.provider'), 'unknown') AS provider,
+						 json_extract(attributes_json, '$.response_id') AS response_id,
+						 json_extract(attributes_json, '$.key') AS key,
+						 json_extract(attributes_json, '$.retention') AS retention,
+						 COALESCE(json_extract(attributes_json, '$.cached_tokens'), 0) AS cached_tokens,
+						 COALESCE(json_extract(attributes_json, '$.input_tokens'), 0) AS input_tokens,
+						 COALESCE(json_extract(attributes_json, '$.uncached_input_tokens'), 0) AS uncached_input_tokens,
+						 COALESCE(json_extract(attributes_json, '$.output_tokens'), 0) AS output_tokens,
+						 COALESCE(json_extract(attributes_json, '$.hit'), 0) AS hit,
+						 created_at
+						 FROM audit_events
+						 WHERE ${whereClause}
+						 ORDER BY created_at ASC`,
+					)
+					.all(...values) as Array<{
+					run_id: string;
+					task_id: string | null;
+					agent_ref: string | null;
+					provider: string;
+					response_id: string | null;
+					key: string | null;
+					retention: string | null;
+					cached_tokens: number;
+					input_tokens: number;
+					uncached_input_tokens: number;
+					output_tokens: number;
+					hit: number;
+					created_at: string;
+				}>)
+			: [];
+
+		return {
+			dbPath: this.dbPath,
+			totalResponses: summaryRow.total_responses,
+			hitResponses: summaryRow.hit_responses ?? 0,
+			totalCachedTokens: summaryRow.total_cached_tokens ?? 0,
+			totalInputTokens: summaryRow.total_input_tokens ?? 0,
+			totalUncachedInputTokens: summaryRow.total_uncached_input_tokens ?? 0,
+			totalOutputTokens: summaryRow.total_output_tokens ?? 0,
+			latestResponseAt: summaryRow.latest_response_at,
+			providers: providerRows.map((row) => ({
+				provider: row.provider,
+				responses: row.responses,
+				hitResponses: row.hit_responses ?? 0,
+				cachedTokens: row.cached_tokens ?? 0,
+				inputTokens: row.input_tokens ?? 0,
+				uncachedInputTokens: row.uncached_input_tokens ?? 0,
+				outputTokens: row.output_tokens ?? 0,
+			})),
+			agents: agentRows.map((row) => ({
+				agentRef: row.agent_ref,
+				responses: row.responses,
+				hitResponses: row.hit_responses ?? 0,
+				cachedTokens: row.cached_tokens ?? 0,
+				inputTokens: row.input_tokens ?? 0,
+				uncachedInputTokens: row.uncached_input_tokens ?? 0,
+				outputTokens: row.output_tokens ?? 0,
+			})),
+			runs: runRows.map((row) => ({
+				runId: row.run_id,
+				responses: row.responses,
+				hitResponses: row.hit_responses ?? 0,
+				cachedTokens: row.cached_tokens ?? 0,
+				inputTokens: row.input_tokens ?? 0,
+				uncachedInputTokens: row.uncached_input_tokens ?? 0,
+				outputTokens: row.output_tokens ?? 0,
+			})),
+			...(filters.verbose
+				? {
+						responses: responseRows.map((row) => ({
+							runId: row.run_id,
+							taskId: row.task_id,
+							agentRef: row.agent_ref,
+							provider: row.provider,
+							responseId: row.response_id,
+							key: row.key,
+							retention: row.retention,
+							cachedTokens: row.cached_tokens,
+							inputTokens: row.input_tokens,
+							uncachedInputTokens: row.uncached_input_tokens,
+							outputTokens: row.output_tokens,
+							hit: Boolean(row.hit),
+							createdAt: row.created_at,
+						})),
 					}
 				: {}),
 		};
@@ -513,6 +998,7 @@ export class CheckpointStore {
 			deleteMany("agent_turns");
 			deleteMany("audit_events");
 			deleteMany("trace_spans");
+			deleteMany("approvals");
 			const placeholders = deleteIds.map(() => "?").join(", ");
 			this.db.prepare(`DELETE FROM runs WHERE id IN (${placeholders})`).run(...deleteIds);
 		});

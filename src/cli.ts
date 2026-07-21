@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { createInterface } from "node:readline/promises";
 import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import YAML from "yaml";
 import { AuthStorage } from "./auth-storage.js";
+import { runInteractiveApprovalLoop } from "./cli-approval-loop.js";
 import { getCommandDoc, renderCommandHelp, renderRootHelp } from "./cli-docs.js";
 import { compilePlaybook } from "./compiler.js";
 import { loadPlaybookWithPacks } from "./parser.js";
@@ -12,9 +14,12 @@ import { createLongTermMemoryAdapter } from "./long-term-memory-adapters/factory
 import type { LongTermMemoryAdapterKind } from "./long-term-memory-adapters/types.js";
 import type { LongTermMemoryStats } from "./long-term-memory.js";
 import type { LongTermMemoryEntry } from "./long-term-memory.js";
+import { checkPlaybook } from "./playbook-check.js";
+import { inspectPromptCacheSupport, resolvePromptCacheConfig } from "./prompt-cache.js";
 import { PlaybookRuntime } from "./runtime.js";
 import type {
 	AgentDefinition,
+	ApprovalRecord,
 	CheckpointRecord,
 	ExecutionResult,
 	JsonValue,
@@ -187,6 +192,7 @@ function summarizeTaskState(taskState: TaskState): Record<string, JsonValue> {
 	return {
 		status: taskState.status,
 		attempts: taskState.attempts,
+		...(taskState.approvalId ? { approvalId: taskState.approvalId } : {}),
 		...(taskState.error ? { error: taskState.error } : {}),
 		...(summarizeTaskOutput(taskState.output) ? { output: summarizeTaskOutput(taskState.output)! } : {}),
 	};
@@ -418,6 +424,95 @@ function createGcPayload(input: {
 	};
 }
 
+function isApprovalStatus(value: string): value is ApprovalRecord["status"] {
+	return value === "pending" || value === "approved" || value === "rejected";
+}
+
+function createApprovalListPayload(approvals: ApprovalRecord[]): Record<string, unknown> {
+	return {
+		type: "approval_list",
+		count: approvals.length,
+		approvals,
+	};
+}
+
+function createApprovalPayload(
+	type: "approval_show" | "approval_approve" | "approval_reject",
+	approval: ApprovalRecord,
+): Record<string, unknown> {
+	return {
+		type,
+		approval,
+	};
+}
+
+function createInteractiveApprovalPrompt(): {
+	ask(approval: ApprovalRecord): Promise<Extract<ApprovalRecord["status"], "approved" | "rejected">>;
+	close(): Promise<void>;
+} {
+	const rl = createInterface({
+		input: process.stdin,
+		output: process.stderr,
+	});
+	return {
+		async ask(approval) {
+			const context = [
+				"",
+				`Approval required for run ${approval.runId}, task ${approval.taskId}.`,
+				`Tool: ${approval.toolRef} (${approval.capability}, risk=${approval.risk})`,
+				`Reason: ${approval.reason}`,
+				"Input:",
+				YAML.stringify(approval.requestInput).trimEnd(),
+			].join("\n");
+			process.stderr.write(`${context}\n`);
+			while (true) {
+				const answer = (await rl.question("Approve? [y/n]: ")).trim().toLowerCase();
+				if (answer === "y" || answer === "yes") {
+					return "approved";
+				}
+				if (answer === "n" || answer === "no") {
+					return "rejected";
+				}
+				process.stderr.write('Please answer "y" or "n".\n');
+			}
+		},
+		async close() {
+			rl.close();
+		},
+	};
+}
+
+function createPromptCacheStatsPayload(
+	stats: ReturnType<CheckpointStore["getPromptCacheStats"]>,
+): Record<string, unknown> {
+	return {
+		type: "prompt_cache_stats",
+		dbPath: stats.dbPath,
+		totalResponses: stats.totalResponses,
+		hitResponses: stats.hitResponses,
+		totalCachedTokens: stats.totalCachedTokens,
+		totalInputTokens: stats.totalInputTokens,
+		totalUncachedInputTokens: stats.totalUncachedInputTokens,
+		totalOutputTokens: stats.totalOutputTokens,
+		latestResponseAt: stats.latestResponseAt,
+		providers: stats.providers,
+		agents: stats.agents,
+		runs: stats.runs,
+		...(stats.responses ? { responses: stats.responses } : {}),
+	};
+}
+
+function createPromptCacheExplainPayload(input: {
+	playbook: string;
+	agents: Array<Record<string, unknown>>;
+}): Record<string, unknown> {
+	return {
+		type: "prompt_cache_explain",
+		playbook: input.playbook,
+		agents: input.agents,
+	};
+}
+
 function createCheckpointPayload(checkpoint: CheckpointRecord, verbose: boolean): Record<string, unknown> {
 	const taskId = checkpoint.taskId;
 	const task = taskId ? checkpoint.snapshot.tasks[taskId] : undefined;
@@ -485,6 +580,12 @@ function colorizeYamlValue(value: string): string {
 	if (value === " failed" || value === "failed") {
 		return ` ${Ansi.Red}failed${Ansi.Reset}`;
 	}
+	if (value === " paused" || value === "paused") {
+		return ` ${Ansi.Magenta}paused${Ansi.Reset}`;
+	}
+	if (value === " waiting_approval" || value === "waiting_approval") {
+		return ` ${Ansi.Magenta}waiting_approval${Ansi.Reset}`;
+	}
 	if (value === " checkpoint" || value === "checkpoint") {
 		return ` ${Ansi.Magenta}checkpoint${Ansi.Reset}`;
 	}
@@ -520,6 +621,17 @@ function createResultPayload(result: ExecutionResult, verbose: boolean): Record<
 	};
 }
 
+function createCheckPayload(result: ReturnType<typeof checkPlaybook>): Record<string, unknown> {
+	return {
+		type: "check",
+		ok: result.ok,
+		playbook: result.playbook,
+		packs: result.packs,
+		...(result.ok ? { compiled: true } : {}),
+		...(result.diagnostics.length > 0 ? { diagnostics: result.diagnostics } : {}),
+	};
+}
+
 async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const command = args[0];
@@ -538,12 +650,38 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	const runtimeApiKey = getFlag("--api-key", args, "");
+	const runtimeApiProvider = getFlag("--provider", args, "openai");
+	const requestedOutputFormat = getRequestedOutputFormat(args);
+	const requestedColorMode = getRequestedColorMode(args);
+	const verbose = isVerboseRequested(args);
+	const dbPath = resolve(getFlag("--db", args, getDefaultDbPath()));
+
 	if (command === "update") {
 		if (isHelpArg(args[1])) {
 			printCommandHelp("update");
 			return;
 		}
 		printUpdateInstructions();
+		return;
+	}
+
+	if (command === "check") {
+		const playbookPath = args[1];
+		if (isHelpArg(playbookPath)) {
+			printCommandHelp("check");
+			return;
+		}
+		if (!playbookPath) {
+			printCommandHelp("check");
+			process.exit(1);
+		}
+		const output = new OutputWriter(requestedOutputFormat ?? "yaml", requestedColorMode ?? "auto", Boolean(process.stdout.isTTY));
+		const result = checkPlaybook(resolve(playbookPath));
+		output.write(createCheckPayload(result));
+		if (!result.ok) {
+			process.exit(1);
+		}
 		return;
 	}
 
@@ -556,12 +694,6 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const runtimeApiKey = getFlag("--api-key", args, "");
-	const runtimeApiProvider = getFlag("--provider", args, "openai");
-	const requestedOutputFormat = getRequestedOutputFormat(args);
-	const requestedColorMode = getRequestedColorMode(args);
-	const verbose = isVerboseRequested(args);
-	const dbPath = resolve(getFlag("--db", args, getDefaultDbPath()));
 	const authStorage = AuthStorage.create();
 	if (runtimeApiKey) {
 		authStorage.setRuntimeApiKey(runtimeApiProvider, runtimeApiKey);
@@ -591,6 +723,188 @@ async function main(): Promise<void> {
 		} finally {
 			store.close();
 		}
+	}
+
+	if (command === "approvals") {
+		const subcommand = args[1];
+		if (isHelpArg(subcommand) || !subcommand) {
+			printCommandHelp("approvals");
+			return;
+		}
+		if (isHelpArg(args[2])) {
+			printCommandHelp("approvals");
+			return;
+		}
+		if (!existsSync(dbPath)) {
+			throw new Error(`Runtime DB not found: ${dbPath}`);
+		}
+		const store = new CheckpointStore(dbPath);
+		const output = new OutputWriter(requestedOutputFormat ?? "yaml", requestedColorMode ?? "auto", Boolean(process.stdout.isTTY));
+		try {
+			if (subcommand === "list") {
+				const statusValue = getOptionalStringFlag("--status", args);
+				if (statusValue && !isApprovalStatus(statusValue)) {
+					throw new Error(`Unsupported approval status "${statusValue}"`);
+				}
+				const runId = getOptionalStringFlag("--run-id", args);
+				const filters: { runId?: string; status?: ApprovalRecord["status"] } = {};
+				if (runId) {
+					filters.runId = runId;
+				}
+				if (statusValue) {
+					filters.status = statusValue as ApprovalRecord["status"];
+				}
+				output.write(
+					createApprovalListPayload(
+						store.listApprovals(filters),
+					),
+				);
+				return;
+			}
+			if (subcommand === "show") {
+				const approvalId = getCommandArg(args, 2);
+				if (!approvalId) {
+					throw new Error("approvals show requires an approval id");
+				}
+				output.write(createApprovalPayload("approval_show", store.getApproval(approvalId)));
+				return;
+			}
+			if (subcommand === "approve" || subcommand === "reject") {
+				const approvalId = getCommandArg(args, 2);
+				if (!approvalId) {
+					throw new Error(`approvals ${subcommand} requires an approval id`);
+				}
+				const nextStatus: Extract<ApprovalRecord["status"], "approved" | "rejected"> =
+					subcommand === "approve" ? "approved" : "rejected";
+				const resolveOptions: { resolvedBy?: string; resolutionNote?: string } = {};
+				const resolvedBy = getOptionalStringFlag("--by", args);
+				const resolutionNote = getOptionalStringFlag("--note", args);
+				if (resolvedBy) {
+					resolveOptions.resolvedBy = resolvedBy;
+				}
+				if (resolutionNote) {
+					resolveOptions.resolutionNote = resolutionNote;
+				}
+				output.write(
+					createApprovalPayload(
+						subcommand === "approve" ? "approval_approve" : "approval_reject",
+						store.resolveApproval(approvalId, nextStatus, resolveOptions),
+					),
+				);
+				return;
+			}
+			throw new Error(`Unknown approvals subcommand "${subcommand}"`);
+		} finally {
+			store.close();
+		}
+	}
+
+	if (command === "prompt-cache") {
+		const subcommand = args[1];
+		if (isHelpArg(subcommand) || !subcommand) {
+			printCommandHelp("prompt-cache");
+			return;
+		}
+		if (subcommand !== "stats" && subcommand !== "explain") {
+			throw new Error(`Unknown prompt-cache subcommand "${subcommand ?? ""}"`);
+		}
+		if (isHelpArg(args[2])) {
+			printCommandHelp("prompt-cache");
+			return;
+		}
+		const output = new OutputWriter(requestedOutputFormat ?? "yaml", requestedColorMode ?? "auto", Boolean(process.stdout.isTTY));
+		if (subcommand === "stats") {
+			if (!existsSync(dbPath)) {
+				throw new Error(`Runtime DB not found: ${dbPath}`);
+			}
+			const store = new CheckpointStore(dbPath);
+			try {
+				const runId = getOptionalStringFlag("--run-id", args);
+				const taskId = getOptionalStringFlag("--task-id", args);
+				const agentRef = getOptionalStringFlag("--agent-ref", args);
+				output.write(
+					createPromptCacheStatsPayload(
+						store.getPromptCacheStats({
+							...(runId ? { runId } : {}),
+							...(taskId ? { taskId } : {}),
+							...(agentRef ? { agentRef } : {}),
+							verbose,
+						}),
+					),
+				);
+				return;
+			} finally {
+				store.close();
+			}
+		}
+
+		const playbookPath = getCommandArg(args, 2);
+		if (!playbookPath) {
+			printCommandHelp("prompt-cache");
+			process.exit(1);
+		}
+		const plan = compilePlaybook(loadPlaybookWithPacks(resolve(playbookPath)));
+		const agentFilter = getOptionalStringFlag("--agent-ref", args);
+		const initialSnapshot: RuntimeSnapshot = {
+			inputs: plan.inputs,
+			vars: { ...plan.memory.working.initial },
+			memory: { working: { ...plan.memory.working.initial } },
+			tasks: Object.fromEntries(
+				plan.tasks.map((task) => [task.id, { status: "pending" as const, attempts: 0 }]),
+			),
+			agents: {},
+		};
+		const explanations = plan.tasks
+			.filter((task) => task.use.kind === "agent")
+			.filter((task) => !agentFilter || task.use.ref === agentFilter)
+			.map((task) => {
+				const agent = plan.agents[task.use.ref]!;
+				const support = inspectPromptCacheSupport({
+					agent,
+					agentRef: task.use.ref,
+					playbookPromptCache: plan.promptCache,
+				});
+				const resolved = resolvePromptCacheConfig({
+					playbook: plan,
+					agent,
+					agentRef: task.use.ref,
+					runId: "<run-id>",
+					snapshot: initialSnapshot,
+					taskInput: task.with,
+				});
+				return {
+					taskId: task.id,
+					agentRef: task.use.ref,
+					kind: agent.kind,
+					provider: support.provider,
+					model: agent.model ?? null,
+					baseUrl: support.baseUrl ?? null,
+					directOpenAiBaseUrl: support.directOpenAiBaseUrl,
+					requested: support.requested,
+					enabled: resolved.enabled,
+					eligible: support.eligible,
+					force: support.force,
+					reason: support.reason,
+					effective: {
+						retention: resolved.retention,
+						keyScope: resolved.keyScope,
+						shareMode: resolved.shareMode,
+						group: resolved.group ?? null,
+						keyTemplate: resolved.keyTemplate ?? null,
+						keyBasePreview: resolved.keyBase ?? null,
+					},
+				};
+			});
+		output.write(
+			createPromptCacheExplainPayload({
+				playbook: resolve(playbookPath),
+				agents: explanations,
+			}),
+		);
+		if (explanations.length === 0) {
+			process.exit(1);
+		}
+		return;
 	}
 
 	if (command === "memory") {
@@ -834,23 +1148,62 @@ async function main(): Promise<void> {
 
 	try {
 		if (command === "run") {
-			const result = await runtime.start();
-			output.write(createResultPayload(result, outputVerbose));
+			await runInteractiveApprovalLoop({
+				initialResult: await runtime.start(),
+				outputFormat: requestedOutputFormat ?? plan.output.format,
+				stdoutIsTty: Boolean(process.stdout.isTTY),
+				stdinIsTty: Boolean(process.stdin.isTTY),
+				listPendingApprovals: (runId) => store.listApprovals({ runId, status: "pending" }),
+				resolveApproval: (approvalId, status) =>
+					store.resolveApproval(approvalId, status, {
+						resolvedBy: "interactive-cli",
+					}),
+				resumeRun: (runId) => runtime.resume(runId),
+				writeResult: (result) => output.write(createResultPayload(result, outputVerbose)),
+				writeApproval: (type, approval) => output.write(createApprovalPayload(type, approval)),
+				prompt: createInteractiveApprovalPrompt(),
+			});
 			return;
 		}
 		if (command === "resume") {
 			const runId = args[2];
 			if (!runId) throw new Error("resume requires a run id");
-			const result = await runtime.resume(runId);
-			output.write(createResultPayload(result, outputVerbose));
+			await runInteractiveApprovalLoop({
+				initialResult: await runtime.resume(runId),
+				outputFormat: requestedOutputFormat ?? plan.output.format,
+				stdoutIsTty: Boolean(process.stdout.isTTY),
+				stdinIsTty: Boolean(process.stdin.isTTY),
+				listPendingApprovals: (currentRunId) => store.listApprovals({ runId: currentRunId, status: "pending" }),
+				resolveApproval: (approvalId, status) =>
+					store.resolveApproval(approvalId, status, {
+						resolvedBy: "interactive-cli",
+					}),
+				resumeRun: (currentRunId) => runtime.resume(currentRunId),
+				writeResult: (result) => output.write(createResultPayload(result, outputVerbose)),
+				writeApproval: (type, approval) => output.write(createApprovalPayload(type, approval)),
+				prompt: createInteractiveApprovalPrompt(),
+			});
 			return;
 		}
 		if (command === "replay") {
 			const runId = args[2];
 			const checkpointSeq = Number(args[3]);
 			if (!runId || Number.isNaN(checkpointSeq)) throw new Error("replay requires run id and checkpoint seq");
-			const result = await runtime.replay(runId, checkpointSeq);
-			output.write(createResultPayload(result, outputVerbose));
+			await runInteractiveApprovalLoop({
+				initialResult: await runtime.replay(runId, checkpointSeq),
+				outputFormat: requestedOutputFormat ?? plan.output.format,
+				stdoutIsTty: Boolean(process.stdout.isTTY),
+				stdinIsTty: Boolean(process.stdin.isTTY),
+				listPendingApprovals: (currentRunId) => store.listApprovals({ runId: currentRunId, status: "pending" }),
+				resolveApproval: (approvalId, status) =>
+					store.resolveApproval(approvalId, status, {
+						resolvedBy: "interactive-cli",
+					}),
+				resumeRun: (currentRunId) => runtime.resume(currentRunId),
+				writeResult: (result) => output.write(createResultPayload(result, outputVerbose)),
+				writeApproval: (type, approval) => output.write(createApprovalPayload(type, approval)),
+				prompt: createInteractiveApprovalPrompt(),
+			});
 			return;
 		}
 		throw new Error(`Unknown command "${command}"`);

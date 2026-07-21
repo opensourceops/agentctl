@@ -13,6 +13,31 @@ function createTempDb(name: string): { dir: string; dbPath: string } {
 }
 
 describe("example smoke tests", () => {
+	test("prompt-file-vars example succeeds and renders prompt vars from a file", async () => {
+		const { dir, dbPath } = createTempDb("agentctl-example-prompt-file-vars");
+		const store = new CheckpointStore(dbPath);
+
+		try {
+			const runtime = new PlaybookRuntime(
+				compilePlaybook(loadPlaybookWithPacks(join(process.cwd(), "examples/prompt-file-vars/mission.playbook.yaml"))),
+				store,
+			);
+				const result = await runtime.start();
+				expect(result.run.status).toBe("succeeded");
+				expect(result.run.snapshot.tasks.project.output?.values).toEqual({
+					rendered: "checkout:restore-drill-missing",
+				});
+				expect(result.run.snapshot.tasks.review.output?.finalText).toBe(
+					"Service: checkout\nFinding: restore-drill-missing\nSeverity: medium\n",
+				);
+				expect(result.run.snapshot.tasks.verify.status).toBe("succeeded");
+				expect(result.run.snapshot.tasks.verify_project.status).toBe("succeeded");
+			} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("dataflow example succeeds and preserves structured outputs across task boundaries", async () => {
 		const { dir, dbPath } = createTempDb("agentctl-example-dataflow");
 		const store = new CheckpointStore(dbPath);
@@ -84,7 +109,7 @@ describe("example smoke tests", () => {
 		}
 	});
 
-	test("custom-pack-tools example succeeds and persists the verified report", async () => {
+	test("custom-pack-tools example succeeds and persists the verified report after sequential approvals", async () => {
 		const tempRoot = mkdtempSync(join(tmpdir(), "agentctl-example-custom-pack-"));
 		const exampleDir = join(tempRoot, "custom-pack-tools");
 		cpSync(join(process.cwd(), "examples/custom-pack-tools"), exampleDir, { recursive: true });
@@ -94,9 +119,18 @@ describe("example smoke tests", () => {
 		const store = new CheckpointStore(dbPath);
 
 		try {
-			const runtime = new PlaybookRuntime(compilePlaybook(loadPlaybookWithPacks(playbookFile)), store);
-			const result = await runtime.start();
+			const plan = compilePlaybook(loadPlaybookWithPacks(playbookFile));
+			let result = await new PlaybookRuntime(plan, store).start();
+			const approvalIds: string[] = [];
+			while (result.run.status === "paused") {
+				const [approval] = store.listApprovals({ runId: result.run.id, status: "pending" });
+				expect(approval).toBeDefined();
+				approvalIds.push(approval!.id);
+				store.resolveApproval(approval!.id, "approved", { resolvedBy: "test" });
+				result = await new PlaybookRuntime(plan, store).resume(result.run.id);
+			}
 			expect(result.run.status).toBe("succeeded");
+			expect(approvalIds).toHaveLength(2);
 			expect(result.run.snapshot.tasks.verify_report.output?.stdout).toBe("verified");
 			const report = readFileSync(artifactPath, "utf8");
 			expect(report).toContain("# Custom Pack Report");

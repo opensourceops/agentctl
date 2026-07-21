@@ -24,7 +24,7 @@ Do not pass raw `JSON.parse(...)` results or remote payloads deeper into the run
 
 ## JSON Payload Model
 
-The canonical JSON types live in [types.ts](/Users/ompragash/Git/agentctl/src/types.ts):
+The canonical JSON types live in [src/types.ts](../src/types.ts):
 
 - `JsonPrimitive`
 - `JsonArray`

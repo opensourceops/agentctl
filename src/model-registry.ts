@@ -49,6 +49,12 @@ export class ModelRegistry {
 		const auth = this.authStorage.getResolvedProviderAuth(provider);
 		const issues: string[] = [];
 
+		if (
+			definition.promptCache?.enabled &&
+			(definition.kind !== "openai.responses" || provider !== "openai")
+		) {
+			issues.push('Prompt cache is only supported for agent kind "openai.responses" with provider "openai"');
+		}
 		if (!definition.model) {
 			issues.push(`Agent kind "${definition.kind}" requires a model`);
 		}

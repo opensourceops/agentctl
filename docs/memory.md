@@ -179,11 +179,19 @@ Community adapters can implement the same interface and later be wired into runt
 
 Prompt cache is not a memory-of-record.
 
-It is an optimization layer for:
+It is a provider-native optimization layer for:
 
-- provider-side prompt prefix caching
+- repeated prompt prefixes
 - tool schema reuse
-- model-specific cache handles
+- lower repeated input-token cost
+- lower repeated prompt latency
+
+Current implementation:
+
+- supported for `openai.responses` with provider `openai`
+- disabled by default
+- configured at playbook or agent level
+- observed through runtime audit events and `agentctl prompt-cache stats`
 
 Prompt cache must remain optional and disposable.
 
