@@ -1,0 +1,45 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: release-readiness
+  description: Gate bounded analysis behind deterministic release evidence.
+spec:
+  inputs:
+    testsPassed: true
+    securityScanPassed: true
+  outputs:
+    decision: "${{ tasks.analyze.output.text }}"
+  providers:
+    fake:
+      kind: fake
+  agents:
+    reviewer:
+      provider: fake
+      model: scripted
+      instructions: Summarize only the verified release evidence.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+      providerOptions:
+        finalText: RELEASE_EVIDENCE_REVIEWED
+  actions:
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: verify-tests
+      uses: action:assert
+      with:
+        that: "${{ inputs.testsPassed }}"
+        message: test gate failed
+    - id: verify-security
+      uses: action:assert
+      needs: [verify-tests]
+      with:
+        that: "${{ inputs.securityScanPassed }}"
+        message: security gate failed
+    - id: analyze
+      uses: agent:reviewer
+      needs: [verify-tests, verify-security]
+      with:
+        prompt: Summarize the verified test and security gates.

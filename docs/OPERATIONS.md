@@ -15,7 +15,7 @@ Scheduling belongs to the external platform. `agentctl` owns deterministic execu
 
 Use absolute paths and an external overlap lock when two schedules must not affect the same resource:
 
-```cron
+```text
 */15 * * * * /usr/bin/flock -n /var/lib/agentctl/report.lock /usr/local/bin/agentctl run /etc/agentctl/report.yaml --workspace /srv/app --db /var/lib/agentctl/runtime.db --inputs-file /etc/agentctl/inputs.json --timeout-seconds 600 --output json --color never >>/var/log/agentctl/report.jsonl 2>>/var/log/agentctl/report.err
 ```
 

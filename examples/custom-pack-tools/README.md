@@ -1,27 +1,5 @@
-# Custom Pack Tools
+# Custom Pack Tools (legacy)
 
-This example shows two process-backed pack tools:
+This directory is a migration fixture for the retired TypeScript playbook format. The current Rust CLI does not accept `mission.playbook.yaml` or its process-backed pack contract.
 
-- `custom/node_version`: wraps an existing host command (`node --version`)
-- `custom/fixture_audit`: runs a script shipped inside the pack
-
-Both tools are exposed to an agent through the normal `tools:` block, and both are preflight-checked before the run starts.
-
-Because both tools launch subprocesses, each agent-origin tool call is approval-gated. In an interactive TTY run, `agentctl` prompts inline and resumes automatically after approval.
-
-Run:
-
-```bash
-agentctl run examples/custom-pack-tools/mission.playbook.yaml --db .runtime/custom-pack-tools.db
-```
-
-Expected behavior:
-
-- the run pauses for approval before the agent launches the subprocess-backed tools
-- after approval, the agent calls both tools in order
-- the run succeeds without requiring any built-in write or shell tool access for the agent
-- the report is persisted to `./artifacts/custom-pack-report.md`
-- verification confirms the report mentions:
-  - the detected Node.js version
-  - the missing rollback owner
-  - the missing restore drill
+Use [`../v1/reusable-pack.yaml`](../v1/reusable-pack.yaml) and [`../v1/example.pack.yaml`](../v1/example.pack.yaml) for the supported pack format. The [workflow authoring guide](../../docs/guides/WORKFLOW_AUTHORING.md) and generated schema define current action, tool, effect, and approval fields.

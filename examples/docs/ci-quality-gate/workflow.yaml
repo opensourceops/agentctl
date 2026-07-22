@@ -1,0 +1,26 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: ci-quality-gate
+  description: Convert reviewed CI evidence into a stable process result.
+spec:
+  inputs:
+    checksPassed: true
+  outputs:
+    verdict: "${{ tasks.verdict.output.output.value }}"
+  actions:
+    assert:
+      kind: builtin.assert
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: gate
+      uses: action:assert
+      with:
+        that: "${{ inputs.checksPassed }}"
+        message: CI quality gate failed
+    - id: verdict
+      uses: action:assign
+      needs: [gate]
+      with:
+        value: pass

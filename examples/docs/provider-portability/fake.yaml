@@ -1,0 +1,27 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: portable-summary-fake
+  description: Credential-free provider portability fixture.
+spec:
+  outputs:
+    summary: "${{ tasks.summarize.output.text }}"
+  providers:
+    selected:
+      kind: fake
+  agents:
+    summarizer:
+      provider: selected
+      model: scripted
+      instructions: Return one short evidence summary.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+      providerOptions:
+        finalText: PORTABLE_SUMMARY_VERIFIED
+  tasks:
+    - id: summarize
+      uses: agent:summarizer
+      with:
+        prompt: Summarize the supplied evidence.
