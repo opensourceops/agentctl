@@ -49,6 +49,7 @@ Use `check` for strict syntax, references, templates, policy, and provider-capab
 - Files, processes, providers, MCP servers, and A2A peers require explicit policy grants.
 - Every non-pure operation is recorded before execution. A crash after an at-most-once effect starts is reported as uncertain and is never silently repeated.
 - Model turns, output tokens, tool calls, retries, and time are bounded.
+- Shell stdout/stderr capture is bounded, concurrently drained, and terminated/reaped on output, timeout, or cancellation limits.
 - Check mode predicts deterministic actions; it does not claim to predict models or remote systems.
 - The process policy is an allowlist, not an operating-system sandbox.
 
@@ -67,7 +68,7 @@ CI uses the scripted fake provider. Native, mock-tested adapters cover OpenAI Re
 - `crates/agentctl-cli`: production CLI
 - `xtask`: generated artifacts and canonical verification
 
-Start with [Product](docs/PRODUCT.md), [Architecture](docs/ARCHITECTURE.md), [DSL](docs/DSL.md), [Operations](docs/OPERATIONS.md), [Container contract](docs/CONTAINER.md), [Limitations](docs/LIMITATIONS.md), [Security](docs/SECURITY.md), and the [generated CLI reference](docs/generated/CLI.md). Run the release-readiness layers with:
+Start with [Product](docs/PRODUCT.md), [Architecture](docs/ARCHITECTURE.md), [DSL](docs/DSL.md), [Operations](docs/OPERATIONS.md), [Container contract](docs/CONTAINER.md), [Release process](docs/RELEASE_PROCESS.md), [Limitations](docs/LIMITATIONS.md), [Security](docs/SECURITY.md), and the [generated CLI reference](docs/generated/CLI.md). Run the release-readiness layers with:
 
 ```console
 cargo xtask verify

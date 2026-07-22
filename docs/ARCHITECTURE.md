@@ -29,7 +29,7 @@ Clock and identifier generation are injected. Provider responses, tools, and ext
 
 ## Platform and packaging
 
-The workspace uses Rust edition 2024, pins Rust 1.88 as the MSRV, forbids unsafe code, and denies clippy warnings. HTTP uses rustls and disables redirects. Subprocesses use direct argv, a cleared environment, explicit allowlists, timeout, and cancellation. SQLite is bundled for predictable installation and creates private files on Unix. SIGINT and SIGTERM converge on durable cancellation.
+The workspace uses Rust edition 2024, pins Rust 1.88 as the MSRV, forbids unsafe code, and denies clippy warnings. HTTP uses rustls and disables redirects. Subprocesses use direct argv, a cleared environment, explicit allowlists, validated timeout/output limits, concurrent bounded pipe draining, cancellation, and kill/reap cleanup. SQLite is bundled for predictable installation and creates private files on Unix. SIGINT and SIGTERM converge on durable cancellation.
 
 The OCI build is multi-stage: only the optimized Rust binary enters a maintained distroless runtime with CA roots and a non-root identity. `/config` is workflow configuration, `/workspace` is the read-only working tree, `/state` holds SQLite, and `/artifacts` receives declared outputs. State must be mounted again for inspect/resume/replay. The root filesystem may be read-only. See [Container contract](CONTAINER.md) and ADR 0007.
 

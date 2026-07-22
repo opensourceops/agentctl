@@ -4,7 +4,7 @@ This classification is part of the product contract. A deferred feature is not a
 
 ## Release blockers
 
-No known P0/P1 implementation defect remains for the stated local, scheduled, and OCI journeys after the independent review. The exact final live OpenAI database passed another credential-free replay with identical output, zero fresh effects/tool calls/provider sessions, and explicit source-effect provenance. Hosted cross-platform CI has never run for the Rust branch, and the current default image build was blocked by this host's container CA before a current Trivy/SBOM run. These are release-candidate evidence blockers, so the current recommendation is internal review, not `v1alpha1` RC or stable v1.0.
+No known P0/P1 implementation defect remains for the stated local, scheduled, and OCI journeys. The local container build now has a secure optional CA secret path, and the current image passed OCI acceptance, Trivy 0.72.0, and CycloneDX validation. The remaining RC gate is external evidence: the new Linux x64, macOS arm64, Windows x64, container, security, package, and SBOM workflows are configured and locally linted but have not been pushed or dispatched. The recommendation is **Ready for hosted RC validation**, not an already validated RC or stable v1.0.
 
 ## Required hardening completed for this release
 
@@ -14,6 +14,8 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 - Timeout/transport ambiguity is not automatically retried; confirmed effects survive resume; call IDs are scoped by run; missing credentials fail before run/database creation.
 - Non-interactive approvals durably pause, signals cancel safely, JSON errors include available run/trace correlation, and SQLite uses WAL plus a bounded lock wait.
 - The packaged CLI, clean-directory quickstart, cron-like empty environment, and non-root/read-only OCI contract have executable acceptance coverage.
+- Shell execution and acceptance/container helpers use bounded concurrent capture. Output overflow terminates/reaps the child with a structured secret-safe error; timeouts and cancellation retain durable uncertain-effect semantics.
+- Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
 ## Post-v1 features
 
@@ -23,7 +25,7 @@ These are useful extensions but are not required by the product thesis. They nee
 - structured agent teams and handoffs;
 - model token streaming into CLI/workflow state;
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
-- pack dependency resolution, pack lockfiles, remote fetching, publisher signatures, process-backed pack tools, and a versioned plugin ABI;
+- pack dependency resolution, pack lockfiles, remote fetching, publisher signatures, and a versioned plugin ABI;
 - vector memory;
 - encrypted application-level persistence and external secret-manager adapters;
 - reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
@@ -44,5 +46,5 @@ These are useful extensions but are not required by the product thesis. They nee
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
 - Tool-using OpenAI/Azure agents require stored-response continuation. `store: false` is rejected until stateless response-item replay is implemented.
 - Anthropic, Google, Azure OpenAI, MCP, and A2A are native and mock-tested in this release, not live-tested. Only the OpenAI GPT-5.6 tool path has live end-to-end evidence.
-- The current local OCI runtime evidence is Linux arm64. Linux amd64 is configured in the unpushed Ubuntu CI workflow but has not executed.
-- The earlier native arm64 image scan reported no HIGH/CRITICAL findings and produced a CycloneDX SBOM. The current source changes have no fresh completed image-build/scan/SBOM record because this host's container CA blocked dependency retrieval.
+- The current local OCI runtime, vulnerability-scan, and SBOM evidence is Linux arm64. Linux x64 is configured in the unpushed Ubuntu workflow but has not executed.
+- GitHub runner availability, organization action policy, branch protection, and required-check configuration are repository-owner operations and cannot be proven by repository-local lint.

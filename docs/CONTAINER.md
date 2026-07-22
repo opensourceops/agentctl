@@ -2,6 +2,19 @@
 
 The repository `Containerfile` builds the Rust CLI in a pinned Rust 1.88 builder and copies only the optimized binary into a maintained distroless Debian runtime. The runtime has CA roots, version/source/license OCI labels, runs as `nonroot`, has a deterministic `agentctl` entrypoint, and contains no Node.js runtime, TypeScript source, credentials, workflows, or fixtures.
 
+## Optional build-network CA
+
+The default build uses the builder's public CA roots. Networks that intercept TLS may supply a reviewed public CA certificate or bundle through a build secret:
+
+```console
+docker build --secret id=agentctl_ca,src=/protected/path/build-ca.pem \
+  --tag agentctl:local --file Containerfile .
+```
+
+For the repository acceptance wrapper, set `AGENTCTL_BUILD_CA_FILE=/protected/path/build-ca.pem` before `cargo xtask acceptance-container`. Hosted CI accepts the protected secret `AGENTCTL_BUILD_CA_PEM`, materializes it only in the runner's temporary directory, and removes it after the build.
+
+The `Containerfile` combines the secret with public roots on a tmpfs mount for the single Cargo build step. The CA value is not a build argument, image environment value, build-context file, layer, history value, runtime file, or artifact. Never use `--insecure`, `CARGO_HTTP_CHECK_REVOKE=false`, a TLS-verification disable flag, or a committed certificate.
+
 ## Mounts and inputs
 
 | Path | Contract |
@@ -44,7 +57,7 @@ jobs:
   agentctl:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: mkdir -p .agentctl-state artifacts && chmod 0777 .agentctl-state artifacts
       - name: Run agentctl image
         env:
@@ -62,7 +75,7 @@ jobs:
       - name: Make mounted outputs collectable
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" .agentctl-state artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: agentctl-state-and-artifacts
@@ -249,4 +262,4 @@ For a one-time invocation, use the same Pod template in a `batch/v1` `Job` and o
 
 ## Validation level
 
-The native-arm image was executed with Podman as non-root with a read-only root. The final audit exercised a mock tool workflow, artifact and durable inspection, missing-secret and invalid-workflow exit propagation, SIGTERM, and recorded replay under `--network none`. The exact retained GPT-5.6 live database also replayed with no credential and `--network none`, identical declared output, an unchanged artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect audit links. Trivy 0.70.0 found no HIGH/CRITICAL findings, both with and without `--ignore-unfixed`, and generated a CycloneDX JSON SBOM in the ignored verification area. GitHub, GitLab, Jenkins, Harness, and Kubernetes examples were documentation-reviewed but not dispatched to those external platforms. The configured Ubuntu CI container job is the Linux amd64 execution, scan, and SBOM gate when that workflow runs.
+The current native-arm image was built through the optional secret-mounted CA path and executed with Podman as non-root with a read-only root. The suite exercised a mock tool workflow, artifact and durable inspection, missing-secret and invalid-workflow exit propagation, SIGTERM, and recorded replay under `--network none`. Checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings and generated valid CycloneDX JSON. The exact retained GPT-5.6 live database had previously replayed with no credential and no network, identical output and artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect audit links. GitHub, GitLab, Jenkins, Harness, and Kubernetes examples remain documentation-reviewed only; the automatic Ubuntu Linux x64 build, scan, and SBOM job is locally linted but has not been dispatched.

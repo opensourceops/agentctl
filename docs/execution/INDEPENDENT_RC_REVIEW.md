@@ -1,5 +1,7 @@
 # Independent release-candidate review
 
+> Point-in-time review snapshot. Its residual-risk and recommendation sections describe the reviewed baseline before the final bounded-process and hosted-CI hardening. Current status: [HOSTED_CI_PREPARATION.md](HOSTED_CI_PREPARATION.md) and [STATUS.md](STATUS.md).
+
 Review date: 2026-07-22 (Asia/Kolkata)
 
 Recommendation: **Ready for internal review**.

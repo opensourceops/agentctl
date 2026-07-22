@@ -4,6 +4,12 @@ Date: 2026-07-22, Asia/Kolkata. Secret values were never printed, passed as argu
 
 The independent final audit and the completed exact live-state replay are authoritative in [RELEASE_AUDIT.md](RELEASE_AUDIT.md) and [LIVE_OPENAI_REPLAY_EVIDENCE.md](LIVE_OPENAI_REPLAY_EVIDENCE.md).
 
+## Final hosted-CI and bounded-process hardening
+
+The final repository-local gate replaced unbounded subprocess `output()`/`wait_with_output()` capture in the runtime and verification/container helpers. Shell actions now drain stdout/stderr concurrently under independent and combined byte ceilings, isolate Unix process groups, terminate Windows process trees, kill/reap on output/timeout/cancellation paths, record structured output-limit failures, omit diagnostic output when secret environment values are present, and preserve uncertain-effect recovery for timeout/cancellation. Tests cover stdout, stderr, combined/interleaved output, normal parseable JSON, timeout, cancellation, direct-child and descendant termination, secret-safe durable errors, pack actions, and invalid configuration.
+
+Hosted workflows now target Linux x64, macOS arm64, and Windows x64; build the Linux container; run current dependency, secret, and vulnerability tools; and retain package plus production/image CycloneDX artifacts with digests. All actions use full commit SHAs with exact-version comments. Checksum-verified actionlint 1.7.12 accepted the workflows locally. Gitleaks 8.30.1 found no leak in all 21 commits or the current tracked tree and rejected the synthetic fixture. These workflows remain undispatched.
+
 ## Independent audit corrections
 
 The reopened audit found that the earlier provider-only smoke did not substantiate runtime production readiness. It also found concrete implementation gaps: packaged YAML tools were not registered; declared outputs could not read workflow inputs; traces and provider/tool continuation evidence were not durable/publicly inspectable; non-interactive approvals did not durably pause; SIGTERM and in-flight provider cancellation were misclassified; resume/fork lost the original workspace; missing credentials created partial database state; provider options could be ignored; ambiguous transport failures could be retried; function-call IDs were treated as globally unique; and the repository had no user-journey, cron, or OCI acceptance layer.
@@ -14,9 +20,9 @@ All release-blocking gaps above were fixed and covered by focused regression or 
 
 | Command | Result |
 | --- | --- |
-| `cargo xtask verify` | passed all 12 gates; 66 unit/integration/compatibility tests, doc tests, six fuzz-target builds, denied-warning clippy, generated artifacts, examples, source install, supply-chain/secret/Rust-only boundaries |
+| `cargo xtask verify` | passed all 12 gates; 94 unit/integration/compatibility tests, doc tests, six fuzz-target builds, denied-warning clippy, generated artifacts, examples, source install, supply-chain/secret/action-pin/Rust-only boundaries |
 | `cargo xtask acceptance` | passed 25 credential-free public-binary scenarios covering the required deterministic/mock/tool/schema/policy/approval/resume/replay/fork/timeout/retry/auth/output/input/artifact/concurrency/SIGTERM/package-style/cron/quickstart journeys |
-| `cargo xtask acceptance-container` | passed on Linux arm64 through Podman: non-root UID/GID, read-only root, mounted config/workspace/state/artifacts, strict tool continuation, parseable JSON, public inspect, expected artifact |
+| `cargo xtask acceptance-container` | passed on Linux arm64 through Podman using the optional CA secret mount: non-root UID/GID, read-only root, mounted config/workspace/state/artifacts, strict tool continuation, parseable JSON, inspect/replay/failure/signal cases |
 | Manual final live/replay gate | packaged macOS arm64 GPT-5.6 tool workflow passed; its exact retained state replayed in the production Linux arm64 image with no credential, `--network none`, identical output/artifact digest, and zero fresh effects/tool calls |
 | `cargo xtask package` | passed; optimized binary, Bash/Zsh/Fish/PowerShell completions, README, license, and SHA-256 manifest at `dist/agentctl-0.2.0-aarch64-apple-darwin` |
 
@@ -38,7 +44,7 @@ Official feature/pricing references used for the audit: [GPT-5.6 model catalog](
 - An empty-environment, non-TTY cron-equivalent run passed with stable JSON and explicit paths. Approval pause, overall timeout, SIGTERM exit `130`, concurrent SQLite use, and recovery paths passed.
 - Mock tests cover redacted non-retryable authentication errors, explicit 429 retryability, malformed success responses, provider cancellation, tool timeout/cancellation, invalid UTF-8, the 1 MiB workspace-read bound, read-only artifact failure, traversal/symlink escape, database lock/corruption, and protocol malformed/version/origin/timeout cases.
 - The OCI image inspection reported `linux arm64`, `nonroot:nonroot`, and version label `0.2.0`. The acceptance invocation used `--read-only` plus only mounted writable state/artifact paths.
-- The preceding Trivy run used `--ignore-unfixed`; the final audit repeated Trivy 0.70.0 both with and without that filter and found no HIGH/CRITICAL findings. A CycloneDX JSON SBOM was generated under the ignored `.runtime/scan` verification area.
-- GitHub Actions, GitLab CI, Jenkins, Harness CI, Docker, and Kubernetes examples are syntax/documentation-validated only; they were not dispatched to external vendor platforms. Ubuntu CI is configured to execute the Linux amd64 container, scan, and SBOM gates.
+- Checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings in the current image and generated valid CycloneDX JSON. The temporary local SBOM was validation evidence, not the still-pending hosted artifact; hosted jobs surface retained artifact and file digests.
+- GitHub Actions, GitLab CI, Jenkins, Harness CI, Docker, and Kubernetes examples were not dispatched to external vendor platforms. The GitHub workflow syntax/lint is validated locally; hosted dispatch is pending.
 
 `cargo deny check` passed advisories, bans, licenses, and sources. Duplicate-version reports remain reviewed non-blocking warnings.

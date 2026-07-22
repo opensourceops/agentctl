@@ -5,7 +5,7 @@
 - Workflow parsing is strict, bounded to 1 MiB, source-aware, and has no executable expression language.
 - Environment-backed primary credentials are resolved immediately before provider dispatch; custom header references are resolved while constructing the adapter, before a run or database is created. There are no API-key flags. Provider/protocol response JSON keys and values, provider request IDs, errors, subprocess output, and traces redact every known configured secret value before persistence or output.
 - Canonical read/write roots reject `..` and symlink escape. Writes use temporary files and rename.
-- Processes require an allowed executable basename, direct argv, cleared environment, selected variables, timeout, and cancellation.
+- Processes require an allowed executable basename, direct argv, cleared environment, selected variables, validated output/timeout bounds, concurrent stdout/stderr draining, and cancellation. Output-limit, timeout, and cancellation paths terminate and reap the child; diagnostics are bounded and omit captured output when secret environment values are present.
 - Network destinations require an exact/wildcard host grant. Provider and protocol clients disable redirects and use rustls.
 - Tool input and output JSON Schemas are enforced. Models, MCP annotations, A2A cards, remote schemas, and results cannot grant capabilities.
 - Requests are ledgered before effects. Global denial or approval cannot be weakened by a tool contract. Approval is durable; non-interactive mode pauses with exit `3` or uses an explicitly stricter deny/fail mode, never a prompt or implicit approval.

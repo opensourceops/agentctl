@@ -14,9 +14,9 @@ Status values distinguish **deterministically tested**, **mock-provider tested**
 | Resume/reject/uncertainty/fork/retry/auth/rate-limit/malformed/cancellation semantics | deterministically tested | focused provider/runtime/store tests and acceptance scenarios |
 | Non-interactive approvals, cron, inputs, timeout, SIGTERM | operationally tested | empty-environment and signal acceptance; operations guide |
 | OCI non-root/read-only/mount/JSON/artifact/state contract | operationally tested | current-source Linux arm64 binary passed mock/failure/signal cases; earlier exact live-state replay ran as UID/GID 65532 |
-| Image high/critical scan and SBOM | historical arm64 evidence only | earlier Trivy result and CycloneDX artifact recorded in verification ledger; current rebuild/scan pending |
-| Linux amd64 image and external CI/vendor pipelines | syntax/configuration validated only | GitHub job and pipeline examples; not remotely dispatched here |
+| Image high/critical scan and SBOM | locally operationally tested; hosted configured | current secret-CA build and OCI suite; checksum-verified Trivy 0.72.0 zero fixed HIGH/CRITICAL; valid CycloneDX JSON; hosted artifacts not dispatched |
+| Linux x64, hosted macOS arm64, hosted Windows x64 | workflow syntax/lint validated only | automatic full gates and packages configured with standard GitHub runner labels; not remotely dispatched |
 | Anthropic/Google/Azure adapters; MCP/A2A | mock-provider/protocol tested | native mapping/protocol tests; not live-tested |
-| Advisories/licenses/sources/secrets | deterministically tested | cargo-deny, metadata, source, and secret gates |
+| Advisories/licenses/sources/secrets/actions | deterministically and locally security-tested | cargo-deny; metadata/source; deterministic scan; Gitleaks complete history/tree and synthetic detection; full-SHA action-pin check; actionlint |
 | Parallel/dynamic orchestration, pack ecosystem, vector/encrypted/distributed additions | deferred or non-goal | `docs/LIMITATIONS.md`, ADR 0005/0006/0007 |
-| No known P0/P1 correctness/security defect in implemented boundary | verified for internal review | independent RC review and regressions; hosted CI and current image build/scan remain RC evidence blockers |
+| No known P0/P1 correctness/security defect in implemented boundary | Ready for hosted RC validation | independent RC review, bounded-process regressions, credential-free gates, current local image security evidence; hosted checks/artifacts remain external evidence |
