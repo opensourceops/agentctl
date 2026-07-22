@@ -356,7 +356,8 @@ impl CliError {
 
 #[tokio::main]
 async fn main() {
-    let args = std::env::args_os().collect::<Vec<_>>();
+    let mut args = std::env::args_os().collect::<Vec<_>>();
+    normalize_binary_name(&mut args);
     let requested_output = requested_output(&args);
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
@@ -390,6 +391,12 @@ async fn main() {
             render_error(output, &error);
             std::process::exit(i32::from(error.code));
         }
+    }
+}
+
+fn normalize_binary_name(args: &mut [OsString]) {
+    if let Some(binary_name) = args.first_mut() {
+        *binary_name = OsString::from("agentctl");
     }
 }
 
@@ -1657,6 +1664,16 @@ mod tests {
         let error = Cli::try_parse_from(["agentctl", "run"]).expect_err("missing file");
         assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
         assert_eq!(error.exit_code(), i32::from(EXIT_VALIDATION));
+    }
+
+    #[test]
+    fn executable_suffix_does_not_change_help_reference() {
+        let mut args = vec![OsString::from("agentctl.exe"), OsString::from("--help")];
+        normalize_binary_name(&mut args);
+        let error = Cli::try_parse_from(args).expect_err("help exits through clap");
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        assert!(error.to_string().contains("Usage: agentctl "));
+        assert!(!error.to_string().contains("agentctl.exe"));
     }
 
     #[test]
