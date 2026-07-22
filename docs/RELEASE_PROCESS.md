@@ -29,6 +29,16 @@ env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
 cargo xtask package
 ```
 
+Reproduce the production binary dependency SBOM with the pinned generator used in CI:
+
+```console
+cargo install cargo-cyclonedx --version 0.5.9 --locked
+cargo cyclonedx --manifest-path crates/agentctl-cli/Cargo.toml --format json \
+  --describe binaries --target x86_64-unknown-linux-gnu --spec-version 1.5 \
+  --no-build-deps
+mv crates/agentctl-cli/agentctl_bin.cdx.json agentctl-production.cdx.json
+```
+
 Run `cargo xtask acceptance-container` when Docker or Podman is available. If the builder requires an enterprise CA, provide a protected PEM file through `AGENTCTL_BUILD_CA_FILE`; see [Container](CONTAINER.md). Never disable TLS verification.
 
 Run checksum-verified actionlint against `.github/workflows`, then run Gitleaks against both `git log --all` and the checked-out tree. `cargo xtask secret-scan` retains the deterministic repository scan and verifies every action reference is a full 40-character commit SHA with an exact-version comment.

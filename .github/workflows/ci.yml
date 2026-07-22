@@ -17,6 +17,8 @@ concurrency:
 env:
   RUST_TOOLCHAIN: "1.88.0"
   CARGO_DENY_VERSION: "0.20.2"
+  CARGO_CYCLONEDX_VERSION: "0.5.9"
+  CARGO_CYCLONEDX_LINUX_X64_SHA256: "fb8dbee9f182173e062a64a387b21a0badc6fab8b2abf9294973f012972bf6d8"
 
 jobs:
   gates:
@@ -88,24 +90,44 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
 
-      - name: Build production package for SBOM input
-        run: cargo xtask package
+      - name: Install pinned cargo-cyclonedx
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/cargo-cyclonedx.tar.xz"
+          tool_dir="$RUNNER_TEMP/cargo-cyclonedx"
+          curl --proto '=https' --tlsv1.2 --retry 3 --fail --location \
+            "https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-${CARGO_CYCLONEDX_VERSION}/cargo-cyclonedx-x86_64-unknown-linux-gnu.tar.xz" \
+            --output "$archive"
+          echo "$CARGO_CYCLONEDX_LINUX_X64_SHA256  $archive" | sha256sum --check -
+          mkdir -p "$tool_dir"
+          tar -xJf "$archive" -C "$tool_dir"
+          "$tool_dir/cargo-cyclonedx" cyclonedx --version
+          echo "$tool_dir" >> "$GITHUB_PATH"
 
       - name: Generate CycloneDX production SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: dist/
-          format: cyclonedx-json
-          output-file: agentctl-production.cdx.json
-          syft-version: v1.49.0
-          upload-artifact: false
-          upload-release-assets: false
+        run: |
+          set -euo pipefail
+          cargo cyclonedx \
+            --manifest-path crates/agentctl-cli/Cargo.toml \
+            --format json \
+            --describe binaries \
+            --target x86_64-unknown-linux-gnu \
+            --spec-version 1.5 \
+            --no-build-deps
+          mv crates/agentctl-cli/agentctl_bin.cdx.json agentctl-production.cdx.json
 
       - name: Validate and digest production SBOM
         id: sbom_file
         run: |
           set -euo pipefail
-          jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' agentctl-production.cdx.json >/dev/null
+          jq -e '
+            .bomFormat == "CycloneDX"
+            and .specVersion == "1.5"
+            and .metadata.component.name == "agentctl"
+            and ((.components | type) == "array")
+            and ((.components | length) > 0)
+            and any(.components[]; ((.purl // "") | startswith("pkg:cargo/")))
+          ' agentctl-production.cdx.json >/dev/null
           digest="$(sha256sum agentctl-production.cdx.json | cut -d ' ' -f 1)"
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
           echo "agentctl-production.cdx.json SHA-256 $digest" >> "$GITHUB_STEP_SUMMARY"
