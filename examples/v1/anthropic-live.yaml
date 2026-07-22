@@ -1,0 +1,19 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: anthropic-live }
+spec:
+  providers:
+    anthropic:
+      kind: anthropic
+      credential: { env: ANTHROPIC_API_KEY }
+  policy:
+    networkAllowlist: [api.anthropic.com]
+  agents:
+    answer:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      instructions: Reply with one short sentence.
+      maxTurns: 1
+      maxOutputTokens: 64
+  tasks:
+    - { id: answer, uses: "agent:answer", with: { prompt: Say hello. } }

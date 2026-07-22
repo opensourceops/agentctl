@@ -1,0 +1,11 @@
+{
+  "migratedLegacy": true,
+  "workflowName": "compatibility-assign",
+  "order": ["copy"],
+  "task": {
+    "id": "copy",
+    "useKind": "action",
+    "reference": "copy",
+    "needs": []
+  }
+}

@@ -1,0 +1,913 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workflow",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/WorkflowKind"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/WorkflowSpec"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "$defs": {
+    "WorkflowKind": {
+      "type": "string",
+      "enum": [
+        "Workflow"
+      ]
+    },
+    "Metadata": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "WorkflowSpec": {
+      "type": "object",
+      "properties": {
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ProviderDefinition"
+          },
+          "default": {}
+        },
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AgentDefinition"
+          },
+          "default": {}
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ActionDefinition"
+          },
+          "default": {}
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ToolDefinition"
+          },
+          "default": {}
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskDefinition"
+          }
+        },
+        "policy": {
+          "$ref": "#/$defs/PolicyDefinition",
+          "default": {
+            "workspaceRoot": ".",
+            "writableRoots": [],
+            "environmentAllowlist": [],
+            "networkAllowlist": [],
+            "processAllowlist": [],
+            "providers": [],
+            "toolsAllow": [],
+            "toolsDeny": [],
+            "approval": "mutations",
+            "nonInteractive": "pause"
+          }
+        },
+        "memory": {
+          "$ref": "#/$defs/MemoryDefinition",
+          "default": {
+            "working": {}
+          }
+        },
+        "mcpServers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/McpServerDefinition"
+          },
+          "default": {}
+        },
+        "a2aPeers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/A2aPeerDefinition"
+          },
+          "default": {}
+        },
+        "packs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PackReference"
+          },
+          "default": []
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeDefinition",
+          "default": {
+            "maxConcurrency": 1,
+            "defaultTimeoutSeconds": 120
+          }
+        },
+        "output": {
+          "$ref": "#/$defs/OutputDefinition",
+          "default": {
+            "verbose": false,
+            "showDiff": true
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tasks"
+      ]
+    },
+    "ProviderDefinition": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ProviderKind"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "apiVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "ProviderKind": {
+      "type": "string",
+      "enum": [
+        "fake",
+        "openai",
+        "anthropic",
+        "google",
+        "azure_openai"
+      ]
+    },
+    "SecretReference": {
+      "type": "object",
+      "properties": {
+        "env": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "env"
+      ]
+    },
+    "AgentDefinition": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructionsFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "maxTurns": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 8
+        },
+        "maxToolCalls": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 16
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 2048
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 120
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryDefinition",
+          "default": {
+            "maxAttempts": 1,
+            "backoffMs": 0
+          }
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "structuredOutput": true,
+        "usageLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageLimitDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "providerOptions": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model"
+      ]
+    },
+    "RetryDefinition": {
+      "type": "object",
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 1
+        },
+        "backoffMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReasoningDefinition": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/ReasoningEffort"
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "effort"
+      ]
+    },
+    "ReasoningEffort": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "UsageLimitDefinition": {
+      "type": "object",
+      "properties": {
+        "maxInputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxOutputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ActionDefinition": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "default": {}
+        },
+        "timeoutSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "ActionKind": {
+      "type": "string",
+      "enum": [
+        "builtin.assign",
+        "builtin.assert",
+        "builtin.read",
+        "builtin.write",
+        "builtin.shell.exec",
+        "builtin.memory.read",
+        "builtin.memory.write",
+        "builtin.long_term_memory.read",
+        "builtin.long_term_memory.write",
+        "mcp.call",
+        "a2a.delegate"
+      ]
+    },
+    "ToolDefinition": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolKind"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": true,
+        "outputSchema": true,
+        "capability": {
+          "type": "string"
+        },
+        "risk": {
+          "$ref": "#/$defs/Risk"
+        },
+        "effectClass": {
+          "$ref": "#/$defs/EffectClass"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/Idempotency"
+        },
+        "retrySafe": {
+          "type": "boolean"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "default": []
+        },
+        "network": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalRequirement",
+          "default": "policy"
+        },
+        "compensation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "description",
+        "inputSchema",
+        "outputSchema",
+        "capability",
+        "risk",
+        "effectClass",
+        "idempotency",
+        "retrySafe",
+        "timeoutSeconds"
+      ]
+    },
+    "ToolKind": {
+      "type": "string",
+      "enum": [
+        "builtin.workspace.read",
+        "builtin.workspace.write",
+        "builtin.echo"
+      ]
+    },
+    "Risk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "EffectClass": {
+      "type": "string",
+      "enum": [
+        "pure",
+        "internal_state",
+        "observe",
+        "workspace_mutate",
+        "external_mutate",
+        "process_execution",
+        "network",
+        "model",
+        "remote_agent"
+      ]
+    },
+    "Idempotency": {
+      "type": "string",
+      "enum": [
+        "pure",
+        "idempotent",
+        "keyed",
+        "at_most_once",
+        "unknown"
+      ]
+    },
+    "ApprovalRequirement": {
+      "type": "string",
+      "enum": [
+        "policy",
+        "never",
+        "always"
+      ]
+    },
+    "TaskDefinition": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "uses": {
+          "type": "string"
+        },
+        "needs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "when": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryDefinition",
+          "default": {
+            "maxAttempts": 1,
+            "backoffMs": 0
+          }
+        },
+        "timeoutSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "failure": {
+          "$ref": "#/$defs/FailureBehavior",
+          "default": "stop"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uses"
+      ]
+    },
+    "FailureBehavior": {
+      "type": "string",
+      "enum": [
+        "stop",
+        "continue"
+      ]
+    },
+    "PolicyDefinition": {
+      "type": "object",
+      "properties": {
+        "workspaceRoot": {
+          "type": "string",
+          "default": "."
+        },
+        "writableRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "environmentAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "networkAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "processAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "toolsAllow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "toolsDeny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalMode",
+          "default": "mutations"
+        },
+        "nonInteractive": {
+          "$ref": "#/$defs/NonInteractiveMode",
+          "default": "pause"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApprovalMode": {
+      "type": "string",
+      "enum": [
+        "never",
+        "mutations",
+        "high_risk",
+        "always"
+      ]
+    },
+    "NonInteractiveMode": {
+      "type": "string",
+      "enum": [
+        "pause",
+        "deny_approval",
+        "fail"
+      ]
+    },
+    "MemoryDefinition": {
+      "type": "object",
+      "properties": {
+        "working": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "longTerm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LongTermMemoryDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "LongTermMemoryDefinition": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "default": "sqlite"
+        },
+        "namespace": {
+          "type": "string",
+          "default": "default"
+        },
+        "retentionDays": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpServerDefinition": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "default": {}
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 120
+        },
+        "protocolVersion": {
+          "type": "string",
+          "default": "2025-11-25"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ]
+    },
+    "A2aPeerDefinition": {
+      "type": "object",
+      "properties": {
+        "cardUrl": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "default": {}
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 120
+        },
+        "protocolVersion": {
+          "type": "string",
+          "default": "1.0"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cardUrl"
+      ]
+    },
+    "PackReference": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "integrity": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "path",
+        "integrity"
+      ]
+    },
+    "RuntimeDefinition": {
+      "type": "object",
+      "properties": {
+        "maxConcurrency": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1
+        },
+        "defaultTimeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 120
+        }
+      },
+      "additionalProperties": false
+    },
+    "OutputDefinition": {
+      "type": "object",
+      "properties": {
+        "verbose": {
+          "type": "boolean",
+          "default": false
+        },
+        "showDiff": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

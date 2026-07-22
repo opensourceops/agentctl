@@ -1,0 +1,19 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: condition
+spec:
+  inputs:
+    deploy: false
+  actions:
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: always
+      uses: action:assign
+      with: { message: always }
+    - id: conditional
+      uses: action:assign
+      needs: [always]
+      when: "${{ inputs.deploy == true }}"
+      with: { message: deployed }

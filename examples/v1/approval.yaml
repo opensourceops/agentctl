@@ -1,0 +1,18 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: approval-gated-write
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: mutations
+  actions:
+    write:
+      kind: builtin.write
+  tasks:
+    - id: gated
+      uses: action:write
+      with:
+        path: artifacts/approved.txt
+        content: approval was durable

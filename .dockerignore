@@ -1,0 +1,16 @@
+.git
+.agentctl
+.runtime
+archive
+artifacts
+dist
+docs
+examples
+fixture
+fixtures
+fuzz
+node_modules
+schemas
+target
+*.db
+*.log

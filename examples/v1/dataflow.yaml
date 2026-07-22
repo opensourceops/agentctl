@@ -1,0 +1,27 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: typed-dataflow
+spec:
+  inputs:
+    scalar: 7
+    object:
+      enabled: true
+      labels: [safe, local]
+  actions:
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: copy
+      uses: action:assign
+      with:
+        scalar: "${{ inputs.scalar }}"
+        object: "${{ inputs.object }}"
+    - id: verify
+      uses: action:assert
+      needs: [copy]
+      with:
+        that: "${{ tasks.copy.output.output.object.enabled }}"
+        message: typed object dataflow failed

@@ -1,0 +1,15 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: reusable-pack
+spec:
+  packs:
+    - name: example.utility
+      version: 1.0.0
+      path: example.pack.yaml
+      integrity: sha256:1996dafe44c3b1ceec5f3afe39eae566e35155eec298f148377c5b85ee964ea5
+  tasks:
+    - id: packed
+      uses: action:example.utility.assign
+      with:
+        source: verified-pack

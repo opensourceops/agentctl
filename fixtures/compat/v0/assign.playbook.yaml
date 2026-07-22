@@ -1,0 +1,12 @@
+playbook: compatibility-assign
+version: 0.1.0
+inputs:
+  message: hello
+modules:
+  copy:
+    kind: builtin.assign
+tasks:
+  - id: copy
+    uses: module:copy
+    with:
+      message: "${{ inputs.message }}"

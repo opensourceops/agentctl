@@ -1,0 +1,9 @@
+apiVersion: agentctl.dev/pack/v1alpha1
+name: example.utility
+version: 1.0.0
+agentctl: ">=0.2.0, <1.0.0"
+capabilities: [internal]
+providers: []
+actions:
+  assign:
+    kind: builtin.assign

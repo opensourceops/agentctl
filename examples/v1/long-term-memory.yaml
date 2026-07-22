@@ -1,0 +1,25 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: long-term-memory
+spec:
+  memory:
+    longTerm:
+      provider: sqlite
+      namespace: example
+      retentionDays: 30
+  policy:
+    approval: never
+  actions:
+    write:
+      kind: builtin.long_term_memory.write
+    read:
+      kind: builtin.long_term_memory.read
+  tasks:
+    - id: write
+      uses: action:write
+      with: { key: greeting, value: hello }
+    - id: read
+      uses: action:read
+      needs: [write]
+      with: { key: greeting }
