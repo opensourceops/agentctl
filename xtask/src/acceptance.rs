@@ -878,7 +878,10 @@ fn signal_acceptance(binary: &Path, workspace: &Path, directory: &Path) -> Resul
         ensure_eq(&value, "/data/state", "cancelled")?;
     }
     #[cfg(not(unix))]
-    println!("SIGTERM acceptance is not applicable on this platform");
+    {
+        let _ = (binary, workspace, directory);
+        println!("SIGTERM acceptance is not applicable on this platform");
+    }
     Ok(())
 }
 
@@ -907,6 +910,8 @@ fn read_only_write_acceptance(binary: &Path, directory: &Path) -> Result<()> {
         result?;
         ensure!(!workspace.join("result.txt").exists());
     }
+    #[cfg(not(unix))]
+    let _ = (binary, directory);
     Ok(())
 }
 
