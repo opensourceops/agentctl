@@ -7,7 +7,9 @@ use serde_json::Value;
 use thiserror::Error;
 use url::Url;
 
-use crate::dsl::{ApprovalMode, EffectClass, NonInteractiveMode, PolicyDefinition, Risk};
+use crate::dsl::{
+    ApprovalMode, ApprovalRequirement, EffectClass, NonInteractiveMode, PolicyDefinition, Risk,
+};
 
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
@@ -83,26 +85,28 @@ impl PolicyEngine {
 
     #[must_use]
     pub fn decide(&self, context: &PolicyContext) -> PolicyDecision {
-        if self
-            .policy
-            .tools_deny
-            .iter()
-            .any(|tool| tool == &context.tool)
-        {
-            return PolicyDecision::Deny {
-                reason: "tool is explicitly denied".to_owned(),
-            };
-        }
-        if !self.policy.tools_allow.is_empty()
-            && !self
+        if context.provider.is_none() {
+            if self
                 .policy
-                .tools_allow
+                .tools_deny
                 .iter()
                 .any(|tool| tool == &context.tool)
-        {
-            return PolicyDecision::Deny {
-                reason: "tool is not in the allowlist".to_owned(),
-            };
+            {
+                return PolicyDecision::Deny {
+                    reason: "tool is explicitly denied".to_owned(),
+                };
+            }
+            if !self.policy.tools_allow.is_empty()
+                && !self
+                    .policy
+                    .tools_allow
+                    .iter()
+                    .any(|tool| tool == &context.tool)
+            {
+                return PolicyDecision::Deny {
+                    reason: "tool is not in the allowlist".to_owned(),
+                };
+            }
         }
         if let Some(provider) = &context.provider
             && !self.policy.providers.is_empty()
@@ -149,6 +153,43 @@ impl PolicyEngine {
             PolicyDecision::Allow {
                 reason: "request satisfies policy".to_owned(),
             }
+        }
+    }
+
+    #[must_use]
+    pub fn decide_with_approval(
+        &self,
+        context: &PolicyContext,
+        approval: ApprovalRequirement,
+    ) -> PolicyDecision {
+        match self.decide(context) {
+            denied @ PolicyDecision::Deny { .. } => denied,
+            required @ PolicyDecision::RequireApproval { .. } => required,
+            allowed @ PolicyDecision::Allow { .. }
+                if approval != ApprovalRequirement::Always =>
+            {
+                allowed
+            }
+            PolicyDecision::Allow { .. } if context.interactive => {
+                PolicyDecision::RequireApproval {
+                    reason: "tool contract always requires approval".to_owned(),
+                }
+            }
+            PolicyDecision::Allow { .. } => match self.policy.non_interactive {
+                NonInteractiveMode::Pause => PolicyDecision::RequireApproval {
+                    reason: "tool contract requires approval; the non-interactive run will pause durably"
+                        .to_owned(),
+                },
+                NonInteractiveMode::DenyApproval => PolicyDecision::Deny {
+                    reason:
+                        "tool contract requires approval and non-interactive policy denies approval"
+                            .to_owned(),
+                },
+                NonInteractiveMode::Fail => PolicyDecision::Deny {
+                    reason: "tool contract requires approval and non-interactive policy is fail"
+                        .to_owned(),
+                },
+            },
         }
     }
 
@@ -260,19 +301,23 @@ impl PolicyEngine {
 }
 
 fn canonicalize_existing_or_parent(path: &Path) -> Result<PathBuf, PolicyError> {
-    if path.exists() {
-        return fs::canonicalize(path)
-            .map_err(|error| PolicyError::Workspace(format!("{}: {error}", path.display())));
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| PolicyError::Workspace(path.display().to_string()))?;
+        missing.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| PolicyError::Workspace(path.display().to_string()))?;
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| PolicyError::Workspace(path.display().to_string()))?;
-    let canonical_parent = fs::canonicalize(parent)
-        .map_err(|error| PolicyError::Workspace(format!("{}: {error}", parent.display())))?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| PolicyError::Workspace(path.display().to_string()))?;
-    Ok(canonical_parent.join(name))
+    let mut canonical = fs::canonicalize(existing)
+        .map_err(|error| PolicyError::Workspace(format!("{}: {error}", existing.display())))?;
+    for component in missing.into_iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
 }
 
 fn host_matches(host: &str, rule: &str) -> bool {
@@ -347,6 +392,20 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn permits_nested_missing_paths_below_a_writable_root() {
+        let root = tempdir().expect("temp dir");
+        fs::create_dir(root.path().join("safe")).expect("safe dir");
+        assert_eq!(
+            policy(root.path())
+                .resolve_write_path("safe/new/nested/output.txt")
+                .expect("nested path"),
+            fs::canonicalize(root.path())
+                .expect("canonical root")
+                .join("safe/new/nested/output.txt")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_escape() {
@@ -382,6 +441,77 @@ mod tests {
                 .authorize_network(&Url::parse("https://api.example.com.evil/a").expect("url"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn provider_and_tool_allowlists_are_evaluated_independently() {
+        let root = tempdir().expect("temp dir");
+        let engine = PolicyEngine::new(
+            PolicyDefinition {
+                workspace_root: root.path().display().to_string(),
+                providers: vec!["primary".to_owned()],
+                tools_allow: vec!["echo".to_owned()],
+                approval: ApprovalMode::Never,
+                ..PolicyDefinition::default()
+            },
+            root.path(),
+        )
+        .expect("policy");
+        let provider = PolicyContext {
+            run_id: "run".to_owned(),
+            trace_id: "trace".to_owned(),
+            task_id: "task".to_owned(),
+            agent: Some("worker".to_owned()),
+            tool: "provider.openai".to_owned(),
+            capability: "model".to_owned(),
+            effect_class: EffectClass::Model,
+            risk: Risk::Medium,
+            resource: None,
+            provider: Some("primary".to_owned()),
+            input: Value::Null,
+            interactive: false,
+        };
+        assert!(matches!(
+            engine.decide(&provider),
+            PolicyDecision::Allow { .. }
+        ));
+        let mut tool = provider;
+        tool.provider = None;
+        tool.tool = "other".to_owned();
+        assert!(matches!(engine.decide(&tool), PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn contract_approval_honors_non_interactive_deny_policy() {
+        let root = tempdir().expect("temp dir");
+        let engine = PolicyEngine::new(
+            PolicyDefinition {
+                workspace_root: root.path().display().to_string(),
+                approval: ApprovalMode::Never,
+                non_interactive: NonInteractiveMode::DenyApproval,
+                ..PolicyDefinition::default()
+            },
+            root.path(),
+        )
+        .expect("policy");
+        let context = PolicyContext {
+            run_id: "run".to_owned(),
+            trace_id: "trace".to_owned(),
+            task_id: "task".to_owned(),
+            agent: Some("worker".to_owned()),
+            tool: "echo".to_owned(),
+            capability: "internal".to_owned(),
+            effect_class: EffectClass::Pure,
+            risk: Risk::Low,
+            resource: None,
+            provider: None,
+            input: Value::Null,
+            interactive: false,
+        };
+        assert!(matches!(
+            engine.decide_with_approval(&context, ApprovalRequirement::Always),
+            PolicyDecision::Deny { .. }
+        ));
     }
 
     #[test]

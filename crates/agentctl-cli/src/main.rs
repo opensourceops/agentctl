@@ -34,6 +34,7 @@ const EXIT_RUN_FAILED: u8 = 4;
 const EXIT_PERSISTENCE: u8 = 5;
 const EXIT_REMOTE: u8 = 6;
 const EXIT_CANCELLED: u8 = 130;
+const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 static VERBOSE_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
 
@@ -475,7 +476,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                     outcome.run_id, outcome.state
                 ),
             )?;
-            Ok(EXIT_OK)
+            Ok(outcome_exit_code(outcome.state))
         }
         Command::Fork(args) => {
             validate_interactive(args.interactive)?;
@@ -719,13 +720,17 @@ fn print_outcome(
             outcome.run_id, outcome.state, outcome.trace_id
         ),
     )?;
-    Ok(match outcome.state {
+    Ok(outcome_exit_code(outcome.state))
+}
+
+const fn outcome_exit_code(state: agentctl_core::state::RunState) -> u8 {
+    match state {
         agentctl_core::state::RunState::Succeeded => EXIT_OK,
         agentctl_core::state::RunState::Paused => EXIT_POLICY,
         agentctl_core::state::RunState::Cancelled => EXIT_CANCELLED,
         agentctl_core::state::RunState::Failed => EXIT_RUN_FAILED,
         agentctl_core::state::RunState::Running => EXIT_RUN_FAILED,
-    })
+    }
 }
 
 fn approval_command(output: OutputFormat, args: ApprovalArgs) -> Result<u8, CliError> {
@@ -1442,8 +1447,22 @@ fn parse_inputs(raw: &str, source: &str) -> Result<serde_json::Map<String, Value
 }
 
 fn read_text(path: &Path) -> Result<String, CliError> {
-    std::fs::read_to_string(path)
-        .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path)
+        .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))?;
+    let mut reader = file.take(MAX_TEXT_FILE_BYTES + 1);
+    let mut content = String::new();
+    reader
+        .read_to_string(&mut content)
+        .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))?;
+    if content.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err(CliError::validation(format!(
+            "{} exceeds {MAX_TEXT_FILE_BYTES} bytes",
+            path.display()
+        )));
+    }
+    Ok(content)
 }
 
 fn write_text(path: &Path, content: &str) -> Result<(), CliError> {
@@ -1685,5 +1704,16 @@ mod tests {
         ])
         .expect("valid flags");
         assert_eq!(cli.output, OutputFormat::Json);
+    }
+
+    #[test]
+    fn text_inputs_are_read_with_a_hard_size_limit() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("oversized.yaml");
+        std::fs::write(&path, vec![b'x'; MAX_TEXT_FILE_BYTES as usize + 1])
+            .expect("oversized fixture");
+        let error = read_text(&path).expect_err("oversized input must fail");
+        assert_eq!(error.code, EXIT_VALIDATION);
+        assert!(error.message.contains("exceeds 1048576 bytes"));
     }
 }

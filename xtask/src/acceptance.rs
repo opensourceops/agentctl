@@ -420,6 +420,20 @@ pub fn run(root: &Path) -> Result<()> {
     ensure!(replay_id != mock_id);
     let replay_inspect = inspect(&binary, &mock_workspace, &mock_db, replay_id)?;
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    let failed_replay = json_with_code(
+        &binary,
+        &workspace,
+        &strings([
+            "replay",
+            rejected_id,
+            "--db",
+            path(&reject_db)?,
+            "--output",
+            "json",
+        ]),
+        4,
+    )?;
+    ensure_eq(&failed_replay, "/data/state", "failed")?;
 
     scenario(14, "fork creates a distinct run with fresh effects");
     let fork = successful_json(
@@ -1416,7 +1430,8 @@ fn build_image(root: &Path, engine: &Path) -> Result<()> {
         Ok(())
     } else {
         bail!(
-            "OCI image build failed:\n{}",
+            "OCI image build failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )
     }

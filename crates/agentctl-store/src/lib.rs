@@ -1305,44 +1305,75 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn complete_tool_call(
+    pub fn complete_tool_effect(
         &self,
+        effect_id: &str,
         run_id: &str,
         call_id: &str,
+        result: Result<&Value, &str>,
         output_digest: Option<&str>,
-        succeeded: bool,
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        let changed = self.connection.lock().execute(
-            "UPDATE tool_calls SET output_digest = ?3, status = ?4, completed_at = ?5 WHERE run_id = ?1 AND call_id = ?2 AND status = 'started'",
-            params![run_id, call_id, output_digest, if succeeded { "succeeded" } else { "failed" }, now.to_rfc3339()],
+        let (effect_status, output, error, confirmed, call_status) = match result {
+            Ok(output) => (
+                EffectStatus::Succeeded,
+                Some(encode(output)?),
+                None,
+                true,
+                "succeeded",
+            ),
+            Err(error) => (EffectStatus::Failed, None, Some(error), false, "failed"),
+        };
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let effect_changed = transaction.execute(
+            "UPDATE effects SET status = ?2, result_json = ?3, error = ?4, confirmed = ?5, completed_at = ?6 WHERE effect_id = ?1 AND status = ?7",
+            params![effect_id, encode_enum(effect_status)?, output, error, confirmed, now.to_rfc3339(), encode_enum(EffectStatus::Started)?],
         )?;
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(StoreError::Incompatible(format!(
-                "tool call `{call_id}` in run `{run_id}` is missing or terminal"
-            )))
+        if effect_changed != 1 {
+            return Err(StoreError::EffectNotFound(effect_id.to_owned()));
         }
+        let call_changed = transaction.execute(
+            "UPDATE tool_calls SET output_digest = ?3, status = ?4, completed_at = ?5 WHERE run_id = ?1 AND call_id = ?2 AND status = 'started'",
+            params![run_id, call_id, output_digest, call_status, now.to_rfc3339()],
+        )?;
+        if call_changed != 1 {
+            return Err(StoreError::Incompatible(format!(
+                "tool call `{call_id}` in run `{run_id}` is missing or terminal"
+            )));
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
-    pub fn mark_tool_call_uncertain(
+    pub fn mark_tool_effect_uncertain(
         &self,
+        effect_id: &str,
         run_id: &str,
         call_id: &str,
+        error: &str,
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        let changed = self.connection.lock().execute(
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let effect_changed = transaction.execute(
+            "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE effect_id = ?1 AND status = ?5",
+            params![effect_id, encode_enum(EffectStatus::Uncertain)?, error, now.to_rfc3339(), encode_enum(EffectStatus::Started)?],
+        )?;
+        if effect_changed != 1 {
+            return Err(StoreError::EffectNotFound(effect_id.to_owned()));
+        }
+        let call_changed = transaction.execute(
             "UPDATE tool_calls SET status = 'uncertain', completed_at = ?3 WHERE run_id = ?1 AND call_id = ?2 AND status = 'started'",
             params![run_id, call_id, now.to_rfc3339()],
         )?;
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(StoreError::Incompatible(format!(
+        if call_changed != 1 {
+            return Err(StoreError::Incompatible(format!(
                 "tool call `{call_id}` in run `{run_id}` is missing or terminal"
-            )))
+            )));
         }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn get_long_term_memory(
@@ -1727,6 +1758,80 @@ spec:
         assert_eq!(
             store.unresolved_effects("run").expect("unresolved"),
             [request.id]
+        );
+    }
+
+    #[test]
+    fn tool_effect_and_call_completion_commit_atomically() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        let request = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            1,
+            "tool.echo",
+            EffectClass::Pure,
+            Risk::Low,
+            Idempotency::Pure,
+            serde_json::json!({"text": "hello"}),
+            "execute echo",
+            "trace",
+        );
+        let now = Utc::now();
+        store
+            .record_effect_request(&request, now)
+            .expect("record effect");
+        store
+            .mark_effect_started(&request.id, now)
+            .expect("start effect");
+        store
+            .start_tool_call(
+                "call-1",
+                "run",
+                "one",
+                &request.id,
+                "echo",
+                &request.input_digest,
+                now,
+            )
+            .expect("start call");
+        let output = serde_json::json!({"text": "hello"});
+
+        assert!(
+            store
+                .complete_tool_effect(
+                    &request.id,
+                    "run",
+                    "missing-call",
+                    Ok(&output),
+                    Some("digest"),
+                    now,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.load_effect(&request.id).expect("effect").status,
+            EffectStatus::Started
+        );
+        assert_eq!(store.tool_calls("run").expect("calls")[0].status, "started");
+
+        store
+            .complete_tool_effect(
+                &request.id,
+                "run",
+                "call-1",
+                Ok(&output),
+                Some("digest"),
+                now,
+            )
+            .expect("complete atomically");
+        let effect = store.load_effect(&request.id).expect("effect");
+        assert_eq!(effect.status, EffectStatus::Succeeded);
+        assert!(effect.confirmed);
+        assert_eq!(
+            store.tool_calls("run").expect("calls")[0].status,
+            "succeeded"
         );
     }
 

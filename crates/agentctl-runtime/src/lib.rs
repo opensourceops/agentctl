@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -68,7 +68,7 @@ pub trait ExternalActionHandler: Send + Sync {
     ) -> Result<Value, RuntimeError>;
 }
 
-const MAX_WORKSPACE_TOOL_BYTES: u64 = 1024 * 1024;
+const MAX_WORKSPACE_FILE_BYTES: u64 = 1024 * 1024;
 
 pub struct BuiltinToolExecutor {
     contract: ToolContract,
@@ -127,15 +127,7 @@ impl ToolExecutor for BuiltinToolExecutor {
                     .policy
                     .resolve_read_path(path)
                     .map_err(|error| ToolContractError::Execution(error.to_string()))?;
-                let metadata = tokio::fs::metadata(&resolved)
-                    .await
-                    .map_err(|error| ToolContractError::Execution(error.to_string()))?;
-                if metadata.len() > MAX_WORKSPACE_TOOL_BYTES {
-                    return Err(ToolContractError::Execution(format!(
-                        "workspace read exceeds {MAX_WORKSPACE_TOOL_BYTES} bytes"
-                    )));
-                }
-                let content = tokio::fs::read_to_string(&resolved)
+                let content = read_bounded_text(&resolved)
                     .await
                     .map_err(|error| ToolContractError::Execution(error.to_string()))?;
                 let bytes = content.len();
@@ -828,7 +820,15 @@ impl Runtime {
                         )?;
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_millis(task.retry.backoff_ms)) => {}
-                            () = cancellation.cancelled() => return Err(RuntimeError::Cancelled),
+                            () = cancellation.cancelled() => {
+                                self.cancel_non_terminal(run_id, trace_id)?;
+                                return Ok(RunOutcome {
+                                    run_id: run_id.to_owned(),
+                                    trace_id: trace_id.to_owned(),
+                                    state: RunState::Cancelled,
+                                    output: None,
+                                });
+                            },
                         }
                         self.store.transition_task(
                             run_id,
@@ -897,7 +897,12 @@ impl Runtime {
         cancellation: &CancellationToken,
     ) -> Result<TaskExecution, RuntimeError> {
         let tasks = self.store.list_tasks(&run.run_id)?;
-        let context = context_for(run, &tasks)?;
+        let mut context = context_for(run, &tasks)?;
+        context.vars = task
+            .vars
+            .iter()
+            .map(|(name, value)| render(value, &context).map(|value| (name.clone(), value)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let raw_input = serde_json::to_value(&task.input)?;
         let input = render(&raw_input, &context)?;
         match &task.uses {
@@ -1088,7 +1093,7 @@ impl Runtime {
                     PreparedEffect::Execute => {
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
-                        let content = tokio::fs::read_to_string(resolved).await;
+                        let content = read_bounded_text(&resolved).await;
                         match content {
                             Ok(content) => {
                                 let output = serde_json::json!({"status": "unchanged", "changed": false, "content": content});
@@ -1118,7 +1123,11 @@ impl Runtime {
                 let path = required_string(&input, "path")?;
                 let content = required_string(&input, "content")?;
                 let resolved = policy.resolve_write_path(&path)?;
-                let before = tokio::fs::read_to_string(&resolved).await.ok();
+                let before = match read_bounded_text(&resolved).await {
+                    Ok(content) => Some(content),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(RuntimeError::Io(error)),
+                };
                 let changed = before.as_deref() != Some(&content);
                 let diff = options
                     .diff
@@ -1627,7 +1636,7 @@ impl Runtime {
                     PreparedEffect::Execute => {
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
-                        match tokio::fs::read_to_string(resolved).await {
+                        match read_bounded_text(&resolved).await {
                             Ok(content) => {
                                 let output = serde_json::json!({"content": content});
                                 self.store.complete_effect(
@@ -1845,74 +1854,54 @@ impl Runtime {
                             match result {
                                 Ok(Ok(result)) => {
                                     if let Err(error) = contract.validate_output(&result.output) {
-                                        self.store.complete_effect(
+                                        self.store.complete_tool_effect(
                                             &tool_effect.id,
-                                            Err(&error.to_string()),
-                                            self.clock.now(),
-                                        )?;
-                                        self.store.complete_tool_call(
                                             &run.run_id,
                                             &call_id,
+                                            Err(&error.to_string()),
                                             None,
-                                            false,
                                             self.clock.now(),
                                         )?;
                                         return Err(RuntimeError::Tool(error));
                                     }
-                                    self.store.complete_effect(
+                                    self.store.complete_tool_effect(
                                         &tool_effect.id,
-                                        Ok(&result.output),
-                                        self.clock.now(),
-                                    )?;
-                                    let output_digest =
-                                        digest(&serde_json::to_vec(&result.output)?);
-                                    self.store.complete_tool_call(
                                         &run.run_id,
                                         &call_id,
-                                        Some(&output_digest),
-                                        true,
+                                        Ok(&result.output),
+                                        Some(&digest(&serde_json::to_vec(&result.output)?)),
                                         self.clock.now(),
                                     )?;
                                     result.output
                                 }
                                 Ok(Err(ToolContractError::Cancelled))
                                 | Err(ToolContractError::Cancelled) => {
-                                    self.store.mark_effect_uncertain(
+                                    self.store.mark_tool_effect_uncertain(
                                         &tool_effect.id,
-                                        "tool execution was cancelled after dispatch",
-                                        self.clock.now(),
-                                    )?;
-                                    self.store.mark_tool_call_uncertain(
                                         &run.run_id,
                                         &call_id,
+                                        "tool execution was cancelled after dispatch",
                                         self.clock.now(),
                                     )?;
                                     return Err(RuntimeError::Cancelled);
                                 }
                                 Err(error) => {
-                                    self.store.mark_effect_uncertain(
+                                    self.store.mark_tool_effect_uncertain(
                                         &tool_effect.id,
-                                        &error.to_string(),
-                                        self.clock.now(),
-                                    )?;
-                                    self.store.mark_tool_call_uncertain(
                                         &run.run_id,
                                         &call_id,
+                                        &error.to_string(),
                                         self.clock.now(),
                                     )?;
                                     return Err(RuntimeError::Tool(error));
                                 }
                                 Ok(Err(error)) => {
-                                    self.store.complete_effect(
+                                    self.store.complete_tool_effect(
                                         &tool_effect.id,
-                                        Err(&error.to_string()),
-                                        self.clock.now(),
-                                    )?;
-                                    self.store.complete_tool_call(
                                         &run.run_id,
                                         &call_id,
+                                        Err(&error.to_string()),
                                         None,
-                                        false,
                                         self.clock.now(),
                                     )?;
                                     return Err(RuntimeError::Tool(error));
@@ -2065,19 +2054,12 @@ impl Runtime {
             effect_class: request.effect_class,
             risk: request.risk,
             resource: None,
-            provider: (request.effect_class == EffectClass::Model).then(|| tool.to_owned()),
+            provider: (request.effect_class == EffectClass::Model)
+                .then(|| request.operation.clone()),
             input: request.input.clone(),
             interactive,
         };
-        let decision = match approval {
-            ApprovalRequirement::Never => PolicyDecision::Allow {
-                reason: "tool contract does not require approval".to_owned(),
-            },
-            ApprovalRequirement::Always => PolicyDecision::RequireApproval {
-                reason: "tool contract always requires approval".to_owned(),
-            },
-            ApprovalRequirement::Policy => policy.decide(&context),
-        };
+        let decision = policy.decide_with_approval(&context, approval);
         match decision {
             PolicyDecision::Allow { .. } => Ok(PreparedEffect::Execute),
             PolicyDecision::Deny { reason } => Err(RuntimeError::Task {
@@ -2304,6 +2286,20 @@ async fn write_atomic(path: &Path, content: &[u8]) -> Result<(), std::io::Error>
     tokio::fs::rename(temporary, path).await
 }
 
+async fn read_bounded_text(path: &Path) -> Result<String, std::io::Error> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut reader = file.take(MAX_WORKSPACE_FILE_BYTES + 1);
+    let mut content = String::new();
+    reader.read_to_string(&mut content).await?;
+    if content.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("file exceeds {MAX_WORKSPACE_FILE_BYTES} bytes"),
+        ));
+    }
+    Ok(content)
+}
+
 fn add_usage(total: &mut Usage, current: &Usage) {
     total.input_tokens = total.input_tokens.saturating_add(current.input_tokens);
     total.output_tokens = total.output_tokens.saturating_add(current.output_tokens);
@@ -2455,6 +2451,64 @@ mod tests {
         }
     }
 
+    struct PromptEchoProvider;
+
+    #[async_trait]
+    impl ModelProvider for PromptEchoProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            let text = match request.messages.first() {
+                Some(Message::User(content)) => content
+                    .first()
+                    .and_then(|block| match block {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            Ok(ProviderResponse {
+                response_id: Some("prompt-echo".to_owned()),
+                text: text.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text { text }],
+                continuation: None,
+                usage: Usage::default(),
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    struct RetryableThenCancelProvider;
+
+    #[async_trait]
+    impl ModelProvider for RetryableThenCancelProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            cancellation.cancel();
+            Err(ProviderError::Http {
+                status: 503,
+                message: "retry later".to_owned(),
+                request_id: "retry-cancel".to_owned(),
+                retryable: true,
+            })
+        }
+    }
+
     #[derive(Default)]
     struct ToolCallingProvider(AtomicU64);
 
@@ -2482,6 +2536,7 @@ mod tests {
                         id: "call-1".to_owned(),
                         name: "echo".to_owned(),
                         input: serde_json::json!({"text": "hello"}),
+                        provider_metadata: None,
                     }],
                     continuation: None,
                     usage: Usage::default(),
@@ -2675,6 +2730,111 @@ spec:
         assert_eq!(
             store.load_run(&outcome.run_id).expect("run").working_memory["result"],
             "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_vars_render_agent_defaults_overrides_and_dependency_outputs() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let registry =
+            RuntimeRegistry::default().with_provider("fake", Arc::new(PromptEchoProvider));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: task-vars }
+spec:
+  inputs: { service: checkout }
+  providers: { fake: { kind: fake } }
+  agents:
+    reviewer:
+      provider: fake
+      model: scripted
+      instructions: review
+      vars: { severity: medium, service: default }
+      maxTurns: 1
+  actions: { assign: { kind: builtin.assign } }
+  tasks:
+    - id: prepare
+      uses: action:assign
+      with: { finding: restore-drill-missing }
+    - id: review
+      uses: agent:reviewer
+      needs: [prepare]
+      vars:
+        service: "${{ inputs.service }}"
+        finding: "${{ tasks.prepare.output.output.finding }}"
+      with:
+        prompt: "${{ vars.service }}:${{ vars.finding }}:${{ vars.severity }}"
+"#,
+        );
+        let outcome = runtime(store.clone(), directory.path())
+            .with_registry(registry)
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({"service": "checkout"}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("run succeeds");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        let review = store
+            .list_tasks(&outcome.run_id)
+            .expect("tasks")
+            .into_iter()
+            .find(|task| task.task_id == "review")
+            .expect("review task");
+        assert_eq!(
+            review.output.expect("review output")["text"],
+            "checkout:restore-drill-missing:medium"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_read_rejects_files_over_the_workspace_limit() {
+        let directory = tempdir().expect("tempdir");
+        std::fs::write(
+            directory.path().join("oversized.txt"),
+            vec![b'x'; MAX_WORKSPACE_FILE_BYTES as usize + 1],
+        )
+        .expect("oversized fixture");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: bounded-read }
+spec:
+  policy: { workspaceRoot: ., approval: never }
+  actions: { read: { kind: builtin.read } }
+  tasks:
+    - id: read
+      uses: action:read
+      with: { path: oversized.txt }
+"#,
+        );
+        let store = SqliteStore::open_memory().expect("store");
+        let result = runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        let run_id = match result {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed run, got {other:?}"),
+        };
+        let run = store.load_run(&run_id).expect("run");
+        assert_eq!(run.state, RunState::Failed);
+        assert_eq!(
+            store.list_effects(&run.run_id).expect("effects")[0].status,
+            EffectStatus::Failed
         );
     }
 
@@ -3032,6 +3192,54 @@ spec:
     }
 
     #[tokio::test]
+    async fn cancellation_during_retry_backoff_is_durable() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: retry-cancel }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: scripted
+      instructions: test
+  tasks:
+    - id: work
+      uses: agent:worker
+      retry: { maxAttempts: 2, backoffMs: 1000 }
+      with: { prompt: hello }
+"#,
+        );
+        let registry =
+            RuntimeRegistry::default().with_provider("fake", Arc::new(RetryableThenCancelProvider));
+        let outcome = runtime(store.clone(), directory.path())
+            .with_registry(registry)
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("cancelled outcome");
+
+        assert_eq!(outcome.state, RunState::Cancelled);
+        assert_eq!(
+            store.load_run(&outcome.run_id).expect("run").state,
+            RunState::Cancelled
+        );
+        assert_eq!(
+            store.list_tasks(&outcome.run_id).expect("tasks")[0].state,
+            TaskState::Cancelled
+        );
+    }
+
+    #[tokio::test]
     async fn agent_tool_loop_validates_tool_output_before_model_continuation() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
@@ -3039,6 +3247,7 @@ apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
 metadata: { name: tools }
 spec:
+  policy: { providers: [fake] }
   providers: { fake: { kind: fake } }
   tools:
     echo:
@@ -3103,6 +3312,60 @@ spec:
             )
             .await;
         assert!(matches!(result, Err(RuntimeError::RunFailed { .. })));
+    }
+
+    #[tokio::test]
+    async fn tool_approval_override_cannot_bypass_global_policy_denial() {
+        let directory = tempdir().expect("tempdir");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: denied-tool }
+spec:
+  policy: { toolsDeny: [echo], approval: never }
+  providers: { fake: { kind: fake } }
+  tools:
+    echo:
+      kind: builtin.echo
+      description: echo
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    worker:
+      provider: fake
+      model: scripted
+      instructions: use the tool
+      tools: [echo]
+      maxTurns: 2
+      maxToolCalls: 1
+  tasks: [{ id: work, uses: "agent:worker", with: { prompt: hello } }]
+"#,
+        );
+        let registry = RuntimeRegistry::default()
+            .with_provider("fake", Arc::new(ToolCallingProvider::default()))
+            .with_tool("echo", Arc::new(FixtureTool::new(false)));
+        let store = SqliteStore::open_memory().expect("store");
+        let result = runtime(store.clone(), directory.path())
+            .with_registry(registry)
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(matches!(result, Err(RuntimeError::RunFailed { .. })));
+        assert_eq!(store.stats().expect("stats").tool_calls, 0);
     }
 
     #[tokio::test]
