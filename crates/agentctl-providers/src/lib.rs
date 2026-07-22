@@ -145,7 +145,8 @@ impl ModelProvider for OpenAiProvider {
         if let Some(project) = &self.config.project {
             http = http.header("OpenAI-Project", project);
         }
-        let response = send(http, cancellation, &credential).await?;
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send(http, cancellation, &secrets).await?;
         parse_openai(response)
     }
 }
@@ -307,7 +308,9 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
                             "type": "output_text",
                             "text": value
                         })),
-                        ContentBlock::ToolCall { id, name, input } => output.push(serde_json::json!({
+                        ContentBlock::ToolCall {
+                            id, name, input, ..
+                        } => output.push(serde_json::json!({
                             "type": "function_call",
                             "call_id": id,
                             "name": name,
@@ -382,7 +385,12 @@ fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
                     name: name.clone(),
                     input: input.clone(),
                 });
-                assistant_content.push(ContentBlock::ToolCall { id, name, input });
+                assistant_content.push(ContentBlock::ToolCall {
+                    id,
+                    name,
+                    input,
+                    provider_metadata: None,
+                });
             }
             Some("reasoning") => assistant_content.push(ContentBlock::OpaqueReasoning {
                 value: item.clone(),
@@ -463,7 +471,8 @@ impl ModelProvider for AnthropicProvider {
         let http = http
             .header("x-api-key", &credential)
             .header("anthropic-version", ANTHROPIC_VERSION);
-        let response = send(http, cancellation, &credential).await?;
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send(http, cancellation, &secrets).await?;
         parse_anthropic(response, request)
     }
 }
@@ -532,7 +541,9 @@ fn anthropic_messages(messages: &[Message]) -> Result<Vec<Value>, ProviderError>
                     ContentBlock::Text { text } => {
                         Some(serde_json::json!({"type": "text", "text": text}))
                     }
-                    ContentBlock::ToolCall { id, name, input } => Some(serde_json::json!({
+                    ContentBlock::ToolCall {
+                        id, name, input, ..
+                    } => Some(serde_json::json!({
                         "type": "tool_use", "id": id, "name": name, "input": input
                     })),
                     ContentBlock::ToolResult {
@@ -545,7 +556,7 @@ fn anthropic_messages(messages: &[Message]) -> Result<Vec<Value>, ProviderError>
                         "content": serde_json::to_string(output).ok()?,
                         "is_error": is_error,
                     })),
-                    ContentBlock::OpaqueReasoning { .. } => None,
+                    ContentBlock::OpaqueReasoning { value } => Some(value.clone()),
                 })
                 .collect();
             Some(serde_json::json!({"role": role, "content": content}))
@@ -585,8 +596,14 @@ fn parse_anthropic(
                     id: call.id.clone(),
                     name: call.name.clone(),
                     input: call.input.clone(),
+                    provider_metadata: None,
                 });
                 tool_calls.push(call);
+            }
+            Some("thinking" | "redacted_thinking") => {
+                assistant_content.push(ContentBlock::OpaqueReasoning {
+                    value: block.clone(),
+                });
             }
             _ => {}
         }
@@ -660,7 +677,8 @@ impl ModelProvider for GoogleProvider {
             .iter()
             .fold(http, |request, (name, value)| request.header(name, value));
         let http = http.header("x-goog-api-key", &credential);
-        let response = send(http, cancellation, &credential).await?;
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send(http, cancellation, &secrets).await?;
         parse_google(response, request)
     }
 }
@@ -706,6 +724,16 @@ fn google_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
 }
 
 fn google_contents(messages: &[Message]) -> Result<Vec<Value>, ProviderError> {
+    let tool_names = messages
+        .iter()
+        .flat_map(|message| match message {
+            Message::User(blocks) | Message::Assistant(blocks) => blocks,
+        })
+        .filter_map(|block| match block {
+            ContentBlock::ToolCall { id, name, .. } => Some((id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
     messages
         .iter()
         .map(|message| {
@@ -715,17 +743,40 @@ fn google_contents(messages: &[Message]) -> Result<Vec<Value>, ProviderError> {
             };
             let parts = blocks
                 .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => Some(serde_json::json!({"text": text})),
-                    ContentBlock::ToolCall { id, name, input } => Some(serde_json::json!({
-                        "functionCall": {"id": id, "name": name, "args": input}
-                    })),
-                    ContentBlock::ToolResult { id, output, .. } => Some(serde_json::json!({
-                        "functionResponse": {"id": id, "name": "agentctl_tool", "response": output}
-                    })),
-                    ContentBlock::OpaqueReasoning { .. } => None,
+                .map(|block| match block {
+                    ContentBlock::Text { text } => Ok(serde_json::json!({"text": text})),
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        input,
+                        provider_metadata,
+                    } => {
+                        let mut part = serde_json::json!({
+                            "functionCall": {"id": id, "name": name, "args": input}
+                        });
+                        if let Some(signature) = provider_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("thoughtSignature"))
+                        {
+                            part["thoughtSignature"] = signature.clone();
+                        }
+                        Ok(part)
+                    }
+                    ContentBlock::ToolResult { id, output, .. } => tool_names.get(id).map_or_else(
+                        || {
+                            Err(ProviderError::Malformed(format!(
+                                "Gemini tool result `{id}` has no matching function name"
+                            )))
+                        },
+                        |name| {
+                            Ok(serde_json::json!({
+                                "functionResponse": {"id": id, "name": name, "response": output}
+                            }))
+                        },
+                    ),
+                    ContentBlock::OpaqueReasoning { value } => Ok(value.clone()),
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(serde_json::json!({"role": role, "parts": parts}))
         })
         .collect()
@@ -743,6 +794,10 @@ fn parse_google(
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut assistant_content = Vec::new();
+    let response_scope = value
+        .get("responseId")
+        .and_then(Value::as_str)
+        .unwrap_or("response");
     for part in candidate
         .pointer("/content/parts")
         .and_then(Value::as_array)
@@ -758,7 +813,7 @@ fn parse_google(
         if let Some(call) = part.get("functionCall") {
             let tool_call = ToolCall {
                 id: call.get("id").and_then(Value::as_str).map_or_else(
-                    || format!("gemini-call-{}", tool_calls.len()),
+                    || format!("gemini-{response_scope}-call-{}", tool_calls.len()),
                     ToOwned::to_owned,
                 ),
                 name: required_field(call, "name")?,
@@ -771,6 +826,9 @@ fn parse_google(
                 id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 input: tool_call.input.clone(),
+                provider_metadata: part
+                    .get("thoughtSignature")
+                    .map(|signature| serde_json::json!({"thoughtSignature": signature})),
             });
             tool_calls.push(tool_call);
         }
@@ -905,6 +963,7 @@ impl ModelProvider for FakeProvider {
                     id: "fake-call-1".to_owned(),
                     name: tool.id.clone(),
                     input,
+                    provider_metadata: None,
                 }],
                 continuation: None,
                 usage: Usage {
@@ -951,7 +1010,7 @@ impl ModelProvider for FakeProvider {
 async fn send(
     request: reqwest::RequestBuilder,
     cancellation: &CancellationToken,
-    credential: &str,
+    secrets: &[&str],
 ) -> Result<Value, ProviderError> {
     let response = tokio::select! {
         response = request.send() => response.map_err(normalize_transport)?,
@@ -963,8 +1022,9 @@ async fn send(
         .get("x-request-id")
         .or_else(|| response.headers().get("request-id"))
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("unavailable")
-        .to_owned();
+        .unwrap_or("unavailable");
+    let mut request_id = redact_text(request_id, secrets);
+    request_id.truncate(512);
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
     loop {
@@ -981,8 +1041,9 @@ async fn send(
         }
         bytes.extend_from_slice(&chunk);
     }
-    let body: Value = serde_json::from_slice(&bytes)
+    let mut body: Value = serde_json::from_slice(&bytes)
         .map_err(|error| ProviderError::Malformed(error.to_string()))?;
+    redact_value(&mut body, secrets);
     if status.is_success() {
         Ok(body)
     } else {
@@ -991,7 +1052,7 @@ async fn send(
             .or_else(|| body.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("provider request failed");
-        let mut safe = message.replace(credential, "[REDACTED]");
+        let mut safe = redact_text(message, secrets);
         safe.truncate(512);
         Err(ProviderError::Http {
             status: status.as_u16(),
@@ -1000,6 +1061,44 @@ async fn send(
             retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
         })
     }
+}
+
+fn configured_secrets<'a>(
+    credential: &'a str,
+    headers: &'a BTreeMap<String, String>,
+) -> Vec<&'a str> {
+    std::iter::once(credential)
+        .chain(headers.values().map(String::as_str))
+        .filter(|secret| !secret.is_empty())
+        .collect()
+}
+
+fn redact_value(value: &mut Value, secrets: &[&str]) {
+    match value {
+        Value::String(text) => *text = redact_text(text, secrets),
+        Value::Array(values) => {
+            for value in values {
+                redact_value(value, secrets);
+            }
+        }
+        Value::Object(values) => {
+            let entries = std::mem::take(values);
+            for (name, mut value) in entries {
+                redact_value(&mut value, secrets);
+                values.insert(redact_text(&name, secrets), value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn redact_text(value: &str, secrets: &[&str]) -> String {
+    secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .fold(value.to_owned(), |text, secret| {
+            text.replace(secret, "[REDACTED]")
+        })
 }
 
 fn normalize_transport(error: reqwest::Error) -> ProviderError {
@@ -1260,6 +1359,71 @@ mod tests {
         assert_eq!(response.usage.cache_read_tokens, 4);
     }
 
+    #[test]
+    fn google_preserves_function_identity_and_thought_signature_on_continuation() {
+        let response = parse_google(
+            serde_json::json!({
+                "responseId": "gemini_tools",
+                "candidates": [{
+                    "content": {"parts": [{
+                        "functionCall": {"id": "call-7", "name": "echo", "args": {"text": "hello"}},
+                        "thoughtSignature": "encrypted-signature"
+                    }]},
+                    "finishReason": "STOP"
+                }]
+            }),
+            &request(),
+        )
+        .expect("Gemini tool response");
+        let mut messages = request().messages;
+        messages.push(Message::Assistant(response.assistant_content));
+        messages.push(Message::User(vec![ContentBlock::ToolResult {
+            id: "call-7".to_owned(),
+            output: serde_json::json!({"text": "hello"}),
+            is_error: false,
+        }]));
+
+        let contents = google_contents(&messages).expect("Gemini continuation");
+        assert_eq!(
+            contents[1].pointer("/parts/0/thoughtSignature"),
+            Some(&Value::String("encrypted-signature".to_owned()))
+        );
+        assert_eq!(
+            contents[2].pointer("/parts/0/functionResponse/id"),
+            Some(&Value::String("call-7".to_owned()))
+        );
+        assert_eq!(
+            contents[2].pointer("/parts/0/functionResponse/name"),
+            Some(&Value::String("echo".to_owned()))
+        );
+    }
+
+    #[test]
+    fn anthropic_preserves_thinking_blocks_on_continuation() {
+        let response = parse_anthropic(
+            serde_json::json!({
+                "id": "msg-thinking",
+                "content": [
+                    {"type": "thinking", "thinking": "hidden", "signature": "signed"},
+                    {"type": "tool_use", "id": "toolu-1", "name": "echo", "input": {"text": "hello"}}
+                ],
+                "stop_reason": "tool_use"
+            }),
+            &request(),
+        )
+        .expect("Anthropic tool response");
+        let message = Message::Assistant(response.assistant_content);
+        let mapped = anthropic_messages(&[message]).expect("Anthropic continuation");
+        assert_eq!(
+            mapped[0].pointer("/content/0/type"),
+            Some(&Value::String("thinking".to_owned()))
+        );
+        assert_eq!(
+            mapped[0].pointer("/content/0/signature"),
+            Some(&Value::String("signed".to_owned()))
+        );
+    }
+
     #[tokio::test]
     async fn azure_uses_api_key_and_v1_responses_path() {
         let server = MockServer::start().await;
@@ -1299,15 +1463,18 @@ mod tests {
             .and(path("/v1/responses"))
             .respond_with(
                 ResponseTemplate::new(401)
-                    .insert_header("x-request-id", "request-auth")
+                    .insert_header("x-request-id", "request-header-secret")
                     .set_body_json(serde_json::json!({
-                        "error": {"message": "invalid credential test-key"}
+                        "error": {"message": "invalid credentials test-key and header-secret"}
                     })),
             )
             .mount(&server)
             .await;
         let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
         config.endpoint = format!("{}/v1/responses", server.uri());
+        config
+            .headers
+            .insert("x-custom-auth".to_owned(), "header-secret".to_owned());
         let error = OpenAiProvider::new(config)
             .expect("provider")
             .complete(&request(), &CancellationToken::new())
@@ -1321,12 +1488,44 @@ mod tests {
                 retryable,
             } => {
                 assert_eq!(status, 401);
-                assert_eq!(message, "invalid credential [REDACTED]");
-                assert_eq!(request_id, "request-auth");
+                assert_eq!(message, "invalid credentials [REDACTED] and [REDACTED]");
+                assert_eq!(request_id, "request-[REDACTED]");
                 assert!(!retryable);
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn provider_success_payloads_cannot_echo_configured_header_secrets() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(header("x-custom-auth", "header-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_header-secret",
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "header-secret": "test-key"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "echo header-secret and test-key"}]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        config
+            .headers
+            .insert("x-custom-auth".to_owned(), "header-secret".to_owned());
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete(&request(), &CancellationToken::new())
+            .await
+            .expect("response");
+        let serialized = serde_json::to_string(&response).expect("serialized response");
+        assert!(!serialized.contains("header-secret"));
+        assert!(!serialized.contains("test-key"));
+        assert_eq!(response.text, "echo [REDACTED] and [REDACTED]");
     }
 
     #[tokio::test]

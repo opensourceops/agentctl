@@ -219,7 +219,13 @@ impl McpClient {
                 ProtocolError::Transport("MCP session lock was poisoned".to_owned())
             })? = Some(session.to_owned());
         }
-        let value = response_value(response, self.config.timeout, cancellation).await?;
+        let value = response_value(
+            response,
+            self.config.timeout,
+            cancellation,
+            &self.config.headers,
+        )
+        .await?;
         json_rpc_result(value)
     }
 
@@ -349,8 +355,13 @@ impl A2aClient {
         );
         let response =
             execute_request(request, self.card_config.timeout, cancellation, None).await?;
-        let card: AgentCard =
-            response_json(response, self.card_config.timeout, cancellation).await?;
+        let card: AgentCard = response_json(
+            response,
+            self.card_config.timeout,
+            cancellation,
+            &self.card_config.headers,
+        )
+        .await?;
         if card.name.trim().is_empty() || card.supported_interfaces.is_empty() {
             return Err(ProtocolError::Malformed(
                 "Agent Card requires a name and supportedInterfaces".to_owned(),
@@ -489,7 +500,13 @@ impl A2aClient {
         let request = self.request(&interface)?.json(&body);
         let response =
             execute_request(request, self.card_config.timeout, cancellation, None).await?;
-        let values = response_values(response, self.card_config.timeout, cancellation).await?;
+        let values = response_values(
+            response,
+            self.card_config.timeout,
+            cancellation,
+            &self.card_config.headers,
+        )
+        .await?;
         values.into_iter().map(json_rpc_result).collect()
     }
 
@@ -510,7 +527,15 @@ impl A2aClient {
             None,
         )
         .await?;
-        json_rpc_result(response_value(response, self.card_config.timeout, cancellation).await?)
+        json_rpc_result(
+            response_value(
+                response,
+                self.card_config.timeout,
+                cancellation,
+                &self.card_config.headers,
+            )
+            .await?,
+        )
     }
 
     fn selected_interface(&self) -> Result<AgentInterface, ProtocolError> {
@@ -658,20 +683,25 @@ async fn response_json<T: for<'de> Deserialize<'de>>(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
+    headers: &BTreeMap<String, String>,
 ) -> Result<T, ProtocolError> {
     if !response.status().is_success() {
         return Err(http_error(response).await);
     }
     let bytes = bounded_response(response, timeout, cancellation).await?;
-    serde_json::from_slice(&bytes).map_err(|error| ProtocolError::Malformed(error.to_string()))
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| ProtocolError::Malformed(error.to_string()))?;
+    redact_header_secrets(&mut value, headers);
+    serde_json::from_value(value).map_err(|error| ProtocolError::Malformed(error.to_string()))
 }
 
 async fn response_value(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
+    headers: &BTreeMap<String, String>,
 ) -> Result<Value, ProtocolError> {
-    response_values(response, timeout, cancellation)
+    response_values(response, timeout, cancellation, headers)
         .await?
         .into_iter()
         .last()
@@ -682,6 +712,7 @@ async fn response_values(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
+    headers: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, ProtocolError> {
     if !response.status().is_success() {
         return Err(http_error(response).await);
@@ -695,18 +726,51 @@ async fn response_values(
         let bytes = bounded_response(response, timeout, cancellation).await?;
         let text = String::from_utf8(bytes)
             .map_err(|error| ProtocolError::Malformed(format!("SSE encoding: {error}")))?;
-        text.lines()
+        let mut values = text
+            .lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .map(|data| {
                 serde_json::from_str(data.trim())
                     .map_err(|error| ProtocolError::Malformed(format!("SSE data: {error}")))
             })
-            .collect()
+            .collect::<Result<Vec<Value>, _>>()?;
+        for value in &mut values {
+            redact_header_secrets(value, headers);
+        }
+        Ok(values)
     } else {
         let bytes = bounded_response(response, timeout, cancellation).await?;
-        serde_json::from_slice(&bytes)
-            .map(|value| vec![value])
-            .map_err(|error| ProtocolError::Malformed(error.to_string()))
+        let mut value = serde_json::from_slice(&bytes)
+            .map_err(|error| ProtocolError::Malformed(error.to_string()))?;
+        redact_header_secrets(&mut value, headers);
+        Ok(vec![value])
+    }
+}
+
+fn redact_header_secrets(value: &mut Value, headers: &BTreeMap<String, String>) {
+    match value {
+        Value::String(text) => {
+            for secret in headers.values().filter(|secret| !secret.is_empty()) {
+                *text = text.replace(secret, "[REDACTED]");
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_header_secrets(value, headers);
+            }
+        }
+        Value::Object(values) => {
+            let entries = std::mem::take(values);
+            for (name, mut value) in entries {
+                redact_header_secrets(&mut value, headers);
+                let name = headers
+                    .values()
+                    .filter(|secret| !secret.is_empty())
+                    .fold(name, |name, secret| name.replace(secret, "[REDACTED]"));
+                values.insert(name, value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
@@ -838,12 +902,13 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/mcp"))
+            .and(header("authorization", "Bearer fixture"))
             .and(body_partial_json(
                 serde_json::json!({"method": "tools/call"}),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "jsonrpc": "2.0", "id": 3,
-                "result": {"structuredContent": {"echo": "ok"}, "isError": false}
+                "result": {"structuredContent": {"Bearer fixture": "Bearer fixture"}, "isError": false}
             })))
             .mount(&server)
             .await;
@@ -863,7 +928,7 @@ mod tests {
             .call_tool("echo", serde_json::json!({"text": "ok"}), &cancellation)
             .await
             .expect("call");
-        assert_eq!(result, serde_json::json!({"echo": "ok"}));
+        assert_eq!(result, serde_json::json!({"[REDACTED]": "[REDACTED]"}));
     }
 
     #[tokio::test]
