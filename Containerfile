@@ -6,7 +6,16 @@ WORKDIR /source
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY crates ./crates
 COPY xtask ./xtask
-RUN cargo build --release --locked -p agentctl
+RUN --mount=type=secret,id=agentctl_ca,required=false \
+    --mount=type=tmpfs,target=/tmp/agentctl-ca \
+    set -eu; \
+    if [ -s /run/secrets/agentctl_ca ]; then \
+      cat /etc/ssl/certs/ca-certificates.crt /run/secrets/agentctl_ca \
+        > /tmp/agentctl-ca/combined-ca.pem; \
+      export CARGO_HTTP_CAINFO=/tmp/agentctl-ca/combined-ca.pem; \
+      export SSL_CERT_FILE=/tmp/agentctl-ca/combined-ca.pem; \
+    fi; \
+    cargo build --release --locked -p agentctl
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 ARG AGENTCTL_VERSION=0.2.0

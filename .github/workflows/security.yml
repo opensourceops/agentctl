@@ -1,0 +1,101 @@
+name: supply-chain-security
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.88.0"
+  CARGO_DENY_VERSION: "0.20.2"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_LINUX_X64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+jobs:
+  security:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Prove checkout is complete
+        run: test "$(git rev-parse --is-shallow-repository)" = "false"
+
+      - name: Install checksum-pinned Gitleaks
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          install_dir="$RUNNER_TEMP/gitleaks"
+          curl --fail --silent --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --output "$archive"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  $archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" gitleaks
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Scan complete Git history
+        run: gitleaks git --redact=100 --no-banner --timeout 300 --log-opts="--all" .
+
+      - name: Scan checked-out tree
+        run: |
+          set -euo pipefail
+          tree="$(mktemp -d)"
+          trap 'rm -rf "$tree"' EXIT
+          git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$tree"
+          gitleaks dir --redact=100 --no-banner --timeout 300 "$tree"
+
+      - name: Prove scanner detects a synthetic credential
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp -d)"
+          trap 'rm -rf "$fixture"' EXIT
+          token="$(printf 'ghp_%s%s' '7f9Q2wE4rT6yU8iO0pA3' 'sD5fG7hJ9kL1zX2cV')"
+          printf 'token=%s\n' "$token" > "$fixture/credential.txt"
+          if gitleaks dir --redact=100 --no-banner "$fixture"; then
+            echo "Gitleaks failed to reject the synthetic credential" >&2
+            exit 1
+          fi
+
+      - name: Install pinned Rust and dependency audit toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+
+      - name: Run dependency and deterministic repository security gates
+        run: |
+          cargo deny check
+          cargo xtask secret-scan
+
+      - name: Install checksum-pinned actionlint
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          install_dir="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output "$archive"
+          echo "${ACTIONLINT_LINUX_X64_SHA256}  $archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" actionlint
+          "$install_dir/actionlint" -version
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Lint all hosted workflows
+        run: actionlint -color

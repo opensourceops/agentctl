@@ -9,7 +9,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::process::{bounded_output, output_diagnostics};
+
 mod acceptance;
+mod process;
 
 fn main() -> Result<()> {
     let command = env::args().nth(1).unwrap_or_else(|| "help".to_owned());
@@ -24,9 +27,13 @@ fn main() -> Result<()> {
         "acceptance-live-openai" => acceptance::live_openai(&root),
         "generate" => generate(&root),
         "package" => package(&root),
+        "secret-scan" => {
+            verify_no_secrets(&root)?;
+            verify_workflow_action_pins(&root)
+        }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask generate\ncargo xtask package"
+                "cargo xtask verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
@@ -40,7 +47,9 @@ pub(crate) fn package(root: &Path) -> Result<()> {
         "cargo",
         &["build", "--release", "-p", "agentctl", "--locked"],
     )?;
-    let host_output = Command::new("rustc").arg("-vV").output()?;
+    let mut rustc = Command::new("rustc");
+    rustc.arg("-vV");
+    let host_output = bounded_output(rustc, "rustc -vV")?;
     ensure_success(&host_output, "rustc -vV")?;
     let version = String::from_utf8_lossy(&host_output.stdout);
     let host = version
@@ -66,7 +75,9 @@ pub(crate) fn package(root: &Path) -> Result<()> {
         ("fish", "agentctl.fish"),
         ("powershell", "_agentctl.ps1"),
     ] {
-        let output = Command::new(&binary).args(["completion", shell]).output()?;
+        let mut completion = Command::new(&binary);
+        completion.args(["completion", shell]);
+        let output = bounded_output(completion, "agentctl completion")?;
         ensure_success(&output, "agentctl completion")?;
         fs::write(package.join(name), output.stdout)?;
     }
@@ -165,8 +176,9 @@ fn verify(root: &Path) -> Result<()> {
     println!("[9/12] dependency advisories and policy");
     verify_supply_chain(root)?;
 
-    println!("[10/12] secret scan");
+    println!("[10/12] deterministic secret and workflow action-pin scan");
     verify_no_secrets(root)?;
+    verify_workflow_action_pins(root)?;
 
     println!("[11/12] source installation smoke");
     verify_install(root)?;
@@ -212,13 +224,13 @@ fn verify_generated(root: &Path) -> Result<()> {
 fn generated_schema(binary: &Path) -> Result<String> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("workflow.schema.json");
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(["schema", "--write"])
         .arg(&path)
         .arg("--output")
-        .arg("json")
-        .output()
-        .context("generate schema")?;
+        .arg("json");
+    let output = bounded_output(command, "generate schema").context("generate schema")?;
     ensure_success(&output, "agentctl schema")?;
     fs::read_to_string(path).context("read generated schema")
 }
@@ -256,10 +268,9 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         "# CLI reference\n\nGenerated from the Rust CLI by `cargo xtask generate`. Do not edit by hand.\n\n",
     );
     for command in commands {
-        let output = Command::new(binary)
-            .args(*command)
-            .arg("--help")
-            .output()
+        let mut help_command = Command::new(binary);
+        help_command.args(*command).arg("--help");
+        let output = bounded_output(help_command, "agentctl --help")
             .with_context(|| format!("render help for {}", command.join(" ")))?;
         ensure_success(&output, "agentctl --help")?;
         let title = if command.is_empty() {
@@ -288,18 +299,16 @@ fn verify_examples(root: &Path) -> Result<()> {
             continue;
         }
         let expected_failure = path.file_name() == Some(OsStr::new("capability-failure.yaml"));
-        let output = Command::new(&binary)
-            .arg("check")
-            .arg(&path)
-            .args(["--output", "json"])
-            .output()
+        let mut command = Command::new(&binary);
+        command.arg("check").arg(&path).args(["--output", "json"]);
+        let output = bounded_output(command, "agentctl example check")
             .with_context(|| format!("check example {}", path.display()))?;
         if expected_failure {
             if output.status.code() != Some(2) {
                 bail!(
                     "negative capability fixture returned {:?}: {}",
                     output.status.code(),
-                    String::from_utf8_lossy(&output.stderr)
+                    output_diagnostics(&output)
                 );
             }
         } else {
@@ -356,20 +365,19 @@ fn verify_examples(root: &Path) -> Result<()> {
     }
 
     let denied_db = directory.path().join("denied.db");
-    let denied = Command::new(&binary)
-        .current_dir(root)
-        .args([
-            "run",
-            examples
-                .join("policy-denial.yaml")
-                .to_str()
-                .context("example path")?,
-            "--db",
-            denied_db.to_str().context("db path")?,
-            "--output",
-            "json",
-        ])
-        .output()?;
+    let mut denied_command = Command::new(&binary);
+    denied_command.current_dir(root).args([
+        "run",
+        examples
+            .join("policy-denial.yaml")
+            .to_str()
+            .context("example path")?,
+        "--db",
+        denied_db.to_str().context("db path")?,
+        "--output",
+        "json",
+    ]);
+    let denied = bounded_output(denied_command, "agentctl policy denial")?;
     if denied.status.success() {
         bail!("policy-denial example unexpectedly succeeded");
     }
@@ -380,10 +388,11 @@ fn verify_examples(root: &Path) -> Result<()> {
 }
 
 fn verify_metadata(root: &Path) -> Result<()> {
-    let output = Command::new("cargo")
+    let mut metadata = Command::new("cargo");
+    metadata
         .current_dir(root)
-        .args(["metadata", "--format-version", "1", "--locked"])
-        .output()?;
+        .args(["metadata", "--format-version", "1", "--locked"]);
+    let output = bounded_output(metadata, "cargo metadata")?;
     ensure_success(&output, "cargo metadata")?;
     let metadata: Value = serde_json::from_slice(&output.stdout)?;
     let packages = metadata["packages"]
@@ -428,12 +437,7 @@ fn verify_supply_chain(root: &Path) -> Result<()> {
 }
 
 fn verify_no_secrets(root: &Path) -> Result<()> {
-    let forbidden = [
-        ["sk-", "proj-"].concat(),
-        ["sk-", "ant-api"].concat(),
-        ["AI", "zaSy"].concat(),
-        ["-----BEGIN ", "PRIVATE KEY-----"].concat(),
-    ];
+    let forbidden = forbidden_secret_patterns();
     let mut files = Vec::new();
     collect_files(root, &mut files)?;
     for path in files {
@@ -451,6 +455,66 @@ fn verify_no_secrets(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn forbidden_secret_patterns() -> [String; 4] {
+    [
+        ["sk-", "proj-"].concat(),
+        ["sk-", "ant-api"].concat(),
+        ["AI", "zaSy"].concat(),
+        ["-----BEGIN ", "PRIVATE KEY-----"].concat(),
+    ]
+}
+
+fn verify_workflow_action_pins(root: &Path) -> Result<()> {
+    let workflows = root.join(".github/workflows");
+    for entry in fs::read_dir(&workflows)? {
+        let path = entry?.path();
+        if !matches!(
+            path.extension().and_then(OsStr::to_str),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let source = fs::read_to_string(&path)?;
+        for (index, line) in source.lines().enumerate() {
+            let Some(reference) = line.trim_start().strip_prefix("- uses: ") else {
+                continue;
+            };
+            if reference.starts_with("./") {
+                continue;
+            }
+            let (reference, version) = reference.split_once(" # ").ok_or_else(|| {
+                anyhow!(
+                    "{}:{} action reference requires an exact-version comment",
+                    path.display(),
+                    index + 1
+                )
+            })?;
+            let (_, revision) = reference.rsplit_once('@').ok_or_else(|| {
+                anyhow!(
+                    "{}:{} malformed action reference",
+                    path.display(),
+                    index + 1
+                )
+            })?;
+            if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!(
+                    "{}:{} action `{reference}` is not pinned to a full commit SHA",
+                    path.display(),
+                    index + 1
+                );
+            }
+            if version.trim().is_empty() {
+                bail!(
+                    "{}:{} action `{reference}` has an empty version comment",
+                    path.display(),
+                    index + 1
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<()> {
     let ignored = [
         ".git",
@@ -459,6 +523,7 @@ fn collect_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<()> {
         "dist",
         ".runtime",
         ".agentctl",
+        ".release-evidence",
     ];
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -497,7 +562,9 @@ fn verify_install(root: &Path) -> Result<()> {
     } else {
         "agentctl"
     });
-    let output = Command::new(binary).arg("version").output()?;
+    let mut version = Command::new(binary);
+    version.arg("version");
+    let output = bounded_output(version, "installed agentctl version")?;
     ensure_success(&output, "installed agentctl version")
 }
 
@@ -559,17 +626,18 @@ fn run_with_env(root: &Path, program: &str, args: &[&str], vars: &[(&str, &str)]
 }
 
 fn run_binary(root: &Path, binary: &Path, args: &[&str], expected_code: Option<i32>) -> Result<()> {
-    let output = Command::new(binary).current_dir(root).args(args).output()?;
+    let mut command = Command::new(binary);
+    command.current_dir(root).args(args);
+    let output = bounded_output(command, "agentctl verification command")?;
     if output.status.code() == expected_code {
         Ok(())
     } else {
         bail!(
-            "{} {} returned {:?}\nstdout: {}\nstderr: {}",
+            "{} {} returned {:?}\n{}",
             binary.display(),
             args.join(" "),
             output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            output_diagnostics(&output)
         )
     }
 }
@@ -579,10 +647,9 @@ fn ensure_success(output: &Output, label: &str) -> Result<()> {
         Ok(())
     } else {
         bail!(
-            "{label} failed with {:?}\nstdout: {}\nstderr: {}",
+            "{label} failed with {:?}\n{}",
             output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            output_diagnostics(output)
         )
     }
 }
@@ -595,4 +662,19 @@ fn command_exists(name: &str) -> bool {
                 || (cfg!(windows) && directory.join(format!("{name}.exe")).is_file())
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::forbidden_secret_patterns;
+
+    #[test]
+    fn deterministic_secret_detector_recognizes_a_synthetic_credential() {
+        let fake = ["sk-", "proj-", "synthetic-not-a-real-credential"].concat();
+        assert!(
+            forbidden_secret_patterns()
+                .iter()
+                .any(|pattern| fake.contains(pattern))
+        );
+    }
 }

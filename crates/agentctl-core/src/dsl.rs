@@ -192,6 +192,77 @@ pub struct ActionDefinition {
     pub env: BTreeMap<String, SecretReference>,
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_limit_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_limit_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combined_output_limit_bytes: Option<u64>,
+}
+
+pub const DEFAULT_PROCESS_STREAM_LIMIT_BYTES: u64 = 1024 * 1024;
+pub const DEFAULT_PROCESS_COMBINED_LIMIT_BYTES: u64 = 2 * 1024 * 1024;
+pub const MAX_PROCESS_OUTPUT_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_PROCESS_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+
+impl ActionDefinition {
+    #[must_use]
+    pub fn stdout_limit_bytes(&self) -> u64 {
+        self.stdout_limit_bytes
+            .unwrap_or(DEFAULT_PROCESS_STREAM_LIMIT_BYTES)
+    }
+
+    #[must_use]
+    pub fn stderr_limit_bytes(&self) -> u64 {
+        self.stderr_limit_bytes
+            .unwrap_or(DEFAULT_PROCESS_STREAM_LIMIT_BYTES)
+    }
+
+    #[must_use]
+    pub fn combined_output_limit_bytes(&self) -> u64 {
+        self.combined_output_limit_bytes
+            .unwrap_or(DEFAULT_PROCESS_COMBINED_LIMIT_BYTES)
+    }
+
+    pub fn validate_process_bounds(&self) -> Result<(), &'static str> {
+        let has_output_limit = self.stdout_limit_bytes.is_some()
+            || self.stderr_limit_bytes.is_some()
+            || self.combined_output_limit_bytes.is_some();
+        if self.kind != ActionKind::ShellExec && has_output_limit {
+            return Err("process output limits are only valid for builtin.shell.exec actions");
+        }
+        if self.kind != ActionKind::ShellExec {
+            return Ok(());
+        }
+        if self.timeout_seconds.is_some_and(|value| value == 0) {
+            return Err("timeoutSeconds must be greater than zero");
+        }
+        if self
+            .timeout_seconds
+            .is_some_and(|value| value > MAX_PROCESS_TIMEOUT_SECONDS)
+        {
+            return Err("timeoutSeconds must not exceed 86400");
+        }
+        for (value, message) in [
+            (
+                self.stdout_limit_bytes,
+                "stdoutLimitBytes must be between 1 and 16777216",
+            ),
+            (
+                self.stderr_limit_bytes,
+                "stderrLimitBytes must be between 1 and 16777216",
+            ),
+            (
+                self.combined_output_limit_bytes,
+                "combinedOutputLimitBytes must be between 1 and 16777216",
+            ),
+        ] {
+            if value.is_some_and(|value| value == 0 || value > MAX_PROCESS_OUTPUT_LIMIT_BYTES) {
+                return Err(message);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -777,6 +848,26 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
             ),
         );
     }
+    if workflow.spec.runtime.default_timeout_seconds == 0
+        || workflow.spec.runtime.default_timeout_seconds > MAX_PROCESS_TIMEOUT_SECONDS
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "runtime.defaultTimeoutSeconds must be between 1 and 86400",
+            )
+            .with_path("spec.runtime.defaultTimeoutSeconds"),
+        );
+    }
+    for (name, action) in &workflow.spec.actions {
+        if let Err(message) = action.validate_process_bounds() {
+            diagnostics.push(
+                Diagnostic::error(DiagnosticCode::SchemaViolation, file, message)
+                    .with_path(format!("spec.actions.{name}")),
+            );
+        }
+    }
     for (name, provider) in &workflow.spec.providers {
         if let Some(secret) = &provider.credential
             && !valid_env_name(&secret.env)
@@ -841,6 +932,19 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
         }
     }
     for (position, task) in workflow.spec.tasks.iter().enumerate() {
+        if task
+            .timeout_seconds
+            .is_some_and(|value| value == 0 || value > MAX_PROCESS_TIMEOUT_SECONDS)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    "task timeoutSeconds must be between 1 and 86400",
+                )
+                .with_path(format!("spec.tasks[{position}].timeoutSeconds")),
+            );
+        }
         if task.retry.max_attempts == 0 || task.retry.max_attempts > 20 {
             diagnostics.push(
                 Diagnostic::error(
@@ -960,5 +1064,29 @@ spec:
         );
         let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("bad env name");
         assert_eq!(diagnostics[0].code, DiagnosticCode::InvalidSecretReference);
+    }
+
+    #[test]
+    fn rejects_process_limits_on_non_process_actions() {
+        let source = MINIMAL.replace(
+            "      kind: builtin.assign",
+            "      kind: builtin.assign\n      stdoutLimitBytes: 64",
+        );
+        let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("invalid bound");
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("only valid for builtin.shell.exec")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_and_unreasonably_large_process_bounds() {
+        let source = MINIMAL.replace(
+            "      kind: builtin.assign",
+            "      kind: builtin.shell.exec\n      command: sh\n      stdoutLimitBytes: 0",
+        );
+        let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("invalid bound");
+        assert!(diagnostics[0].message.contains("between 1 and 16777216"));
     }
 }

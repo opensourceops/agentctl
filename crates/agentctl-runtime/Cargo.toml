@@ -23,6 +23,9 @@ tokio-util.workspace = true
 uuid.workspace = true
 url.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

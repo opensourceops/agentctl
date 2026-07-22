@@ -30,6 +30,7 @@ futures-util = "0.3.31"
 hex = "0.4.3"
 http = "1.4.0"
 jsonschema = { version = "0.37.1", default-features = false }
+nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 opentelemetry = "0.31.0"
 parking_lot = "0.12.5"
 proptest = "1.9.0"

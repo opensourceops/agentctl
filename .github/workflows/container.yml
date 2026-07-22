@@ -1,0 +1,92 @@
+name: container-security
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.88.0"
+
+jobs:
+  container:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Prepare optional build CA secret
+        env:
+          BUILD_CA_PEM: ${{ secrets.AGENTCTL_BUILD_CA_PEM }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BUILD_CA_PEM:-}" ]]; then
+            ca_file="$RUNNER_TEMP/agentctl-build-ca.pem"
+            umask 077
+            printf '%s' "$BUILD_CA_PEM" > "$ca_file"
+            echo "AGENTCTL_BUILD_CA_FILE=$ca_file" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and run hardened container acceptance
+        run: cargo xtask acceptance-container
+
+      - name: Remove optional build CA secret
+        if: always()
+        run: rm -f "${AGENTCTL_BUILD_CA_FILE:-$RUNNER_TEMP/agentctl-build-ca.pem}"
+
+      - name: Record local image digest
+        run: |
+          image_id="$(docker image inspect agentctl-acceptance:local --format '{{.Id}}')"
+          test -n "$image_id"
+          echo "agentctl-acceptance:local image digest $image_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reject fixed critical or high image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: agentctl-acceptance:local
+          version: v0.72.0
+          scanners: vuln
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Generate CycloneDX image SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: agentctl-acceptance:local
+          version: v0.72.0
+          format: cyclonedx
+          output: agentctl-image.cdx.json
+          exit-code: "1"
+
+      - name: Validate image SBOM
+        run: jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' agentctl-image.cdx.json >/dev/null
+
+      - name: Upload image SBOM
+        id: image_sbom
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-image-sbom-cyclonedx
+          path: agentctl-image.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record image SBOM artifact digest
+        run: echo "agentctl-image-sbom-cyclonedx artifact digest ${{ steps.image_sbom.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"

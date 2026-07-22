@@ -32,6 +32,10 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 
+mod process;
+
+use process::{ProcessOutputLimits, ProcessRunError, run_bounded_process};
+
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
 }
@@ -1252,6 +1256,9 @@ impl Runtime {
                         "args": action.args,
                         "cwd": action.cwd,
                         "environment": environment_digests,
+                        "stdoutLimitBytes": action.stdout_limit_bytes(),
+                        "stderrLimitBytes": action.stderr_limit_bytes(),
+                        "combinedOutputLimitBytes": action.combined_output_limit_bytes(),
                     }),
                     "execute an allowlisted subprocess",
                     trace_id,
@@ -1286,18 +1293,13 @@ impl Runtime {
                                 .timeout_seconds
                                 .unwrap_or(task_timeout(workflow, &task.task_id)),
                         );
-                        let result = tokio::select! {
-                            result = tokio::time::timeout(timeout, process.output()) => {
-                                match result {
-                                    Ok(result) => result.map_err(RuntimeError::Io),
-                                    Err(_) => Err(RuntimeError::Task {
-                                        task: task.task_id.clone(),
-                                        message: "subprocess timed out".to_owned(),
-                                    }),
-                                }
-                            }
-                            () = cancellation.cancelled() => Err(RuntimeError::Cancelled),
+                        let limits = ProcessOutputLimits {
+                            stdout_bytes: action.stdout_limit_bytes(),
+                            stderr_bytes: action.stderr_limit_bytes(),
+                            combined_bytes: action.combined_output_limit_bytes(),
                         };
+                        let result =
+                            run_bounded_process(process, limits, timeout, cancellation).await;
                         match result {
                             Ok(result) => {
                                 let secrets = resolved_environment
@@ -1341,7 +1343,56 @@ impl Runtime {
                                     })
                                 }
                             }
+                            Err(ProcessRunError::OutputLimitExceeded {
+                                stream,
+                                limit_bytes,
+                                stdout,
+                                stderr,
+                            }) => {
+                                let secrets = resolved_environment
+                                    .values()
+                                    .map(String::as_str)
+                                    .collect::<Vec<_>>();
+                                let diagnostic = serde_json::json!({
+                                    "code": "subprocess_output_limit_exceeded",
+                                    "stream": stream,
+                                    "limitBytes": limit_bytes,
+                                    "stdoutPrefix": redacted_process_diagnostic(&stdout, &secrets),
+                                    "stderrPrefix": redacted_process_diagnostic(&stderr, &secrets),
+                                    "remediation": "reduce subprocess output or raise the action output limit within the 16777216-byte maximum",
+                                })
+                                .to_string();
+                                self.store.complete_effect(
+                                    &request.id,
+                                    Err(&diagnostic),
+                                    self.clock.now(),
+                                )?;
+                                Err(RuntimeError::Task {
+                                    task: task.task_id.clone(),
+                                    message: diagnostic,
+                                })
+                            }
                             Err(error) => {
+                                let error = match error {
+                                    ProcessRunError::Timeout { seconds } => RuntimeError::Task {
+                                        task: task.task_id.clone(),
+                                        message: format!(
+                                            "subprocess timed out after {seconds} seconds and was terminated"
+                                        ),
+                                    },
+                                    ProcessRunError::Cancelled => RuntimeError::Cancelled,
+                                    ProcessRunError::Spawn(error)
+                                    | ProcessRunError::Wait(error) => RuntimeError::Io(error),
+                                    ProcessRunError::Read { stream, message } => {
+                                        RuntimeError::Task {
+                                            task: task.task_id.clone(),
+                                            message: format!(
+                                                "failed to capture subprocess {stream}: {message}"
+                                            ),
+                                        }
+                                    }
+                                    ProcessRunError::OutputLimitExceeded { .. } => unreachable!(),
+                                };
                                 self.store.mark_effect_uncertain(
                                     &request.id,
                                     &error.to_string(),
@@ -2256,6 +2307,16 @@ fn redact_text(value: &str, secrets: &[&str]) -> String {
         .fold(value.to_owned(), |text, secret| {
             text.replace(secret, "[REDACTED]")
         })
+}
+
+fn redacted_process_diagnostic(value: &[u8], secrets: &[&str]) -> String {
+    const DIAGNOSTIC_PREFIX_BYTES: usize = 4 * 1024;
+    if !secrets.is_empty() {
+        return "[REDACTED: subprocess output omitted because secret environment values were present]"
+            .to_owned();
+    }
+    let prefix = &value[..value.len().min(DIAGNOSTIC_PREFIX_BYTES)];
+    redact_text(&String::from_utf8_lossy(prefix), secrets)
 }
 
 fn unified_diff(before: Option<&str>, after: &str) -> String {
@@ -3540,6 +3601,248 @@ spec:
         assert!(matches!(
             runtime
                 .resume(&run_id, RunOptions::default(), &CancellationToken::new())
+                .await,
+            Err(RuntimeError::UncertainEffect { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subprocess_output_limit_is_structured_durable_and_secret_safe() {
+        let directory = tempdir().expect("tempdir");
+        let secret = std::env::var("PATH").expect("PATH");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: process-output-limit }
+spec:
+  policy:
+    workspaceRoot: .
+    processAllowlist: [sh]
+    environmentAllowlist: [SECRET, PATH]
+    approval: never
+  actions:
+    noisy:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, 'while :; do printf "%s" "$SECRET"; done']
+      env:
+        SECRET: { env: PATH }
+      stdoutLimitBytes: 64
+      stderrLimitBytes: 64
+      combinedOutputLimitBytes: 128
+  tasks: [{ id: noisy, uses: "action:noisy" }]
+"#,
+        );
+        let store = SqliteStore::open_memory().expect("store");
+        let run_id = match runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed run, got {other:?}"),
+        };
+        let effect = &store.list_effects(&run_id).expect("effects")[0];
+        assert_eq!(effect.status, EffectStatus::Failed);
+        let diagnostic: Value = serde_json::from_str(effect.error.as_deref().expect("error"))
+            .expect("structured diagnostic");
+        assert_eq!(diagnostic["code"], "subprocess_output_limit_exceeded");
+        assert_eq!(diagnostic["stream"], "stdout");
+        assert_eq!(diagnostic["limitBytes"], 64);
+        assert_eq!(
+            diagnostic["stdoutPrefix"],
+            "[REDACTED: subprocess output omitted because secret environment values were present]"
+        );
+        assert!(!effect.error.as_deref().expect("error").contains(&secret));
+        assert_eq!(
+            store.load_run(&run_id).expect("run").state,
+            RunState::Failed
+        );
+        assert!(
+            store.list_tasks(&run_id).expect("tasks")[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("subprocess_output_limit_exceeded"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normal_subprocess_success_redacts_secret_output() {
+        let directory = tempdir().expect("tempdir");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: process-secret-redaction }
+spec:
+  policy:
+    workspaceRoot: .
+    processAllowlist: [sh]
+    environmentAllowlist: [SECRET, PATH]
+    approval: never
+  actions:
+    print:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, 'printf "%s" "$SECRET"']
+      env:
+        SECRET: { env: PATH }
+  tasks: [{ id: print, uses: "action:print" }]
+"#,
+        );
+        let outcome = runtime(SqliteStore::open_memory().expect("store"), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("successful run");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(
+            outcome.output.as_ref().expect("output")["print"]["stdout"],
+            "[REDACTED]"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pack_process_uses_the_same_output_limit_contract() {
+        use agentctl_core::pack::PackManifest;
+
+        let directory = tempdir().expect("tempdir");
+        let mut workflow = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: packed-process-output-limit }
+spec:
+  policy:
+    workspaceRoot: .
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    placeholder: { kind: builtin.assign }
+  tasks: [{ id: noisy, uses: "action:example.utility.noisy" }]
+"#,
+            "fixture.yaml",
+        )
+        .expect("workflow")
+        .workflow;
+        let pack: PackManifest = serde_json::from_value(serde_json::json!({
+            "apiVersion": "agentctl.dev/pack/v1alpha1",
+            "name": "example.utility",
+            "version": "1.0.0",
+            "agentctl": ">=0.2.0, <1.0.0",
+            "actions": {
+                "noisy": {
+                    "kind": "builtin.shell.exec",
+                    "command": "/bin/sh",
+                    "args": ["-c", "while :; do printf packed; done"],
+                    "stdoutLimitBytes": 32,
+                    "stderrLimitBytes": 32,
+                    "combinedOutputLimitBytes": 64
+                }
+            }
+        }))
+        .expect("pack");
+        pack.validate().expect("valid pack");
+        workflow.spec.actions.insert(
+            "example.utility.noisy".to_owned(),
+            pack.actions["noisy"].clone(),
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("plan");
+        let store = SqliteStore::open_memory().expect("store");
+        let run_id = match runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed run, got {other:?}"),
+        };
+        let error = store.list_effects(&run_id).expect("effects")[0]
+            .error
+            .clone()
+            .expect("error");
+        let diagnostic: Value = serde_json::from_str(&error).expect("structured diagnostic");
+        assert_eq!(diagnostic["code"], "subprocess_output_limit_exceeded");
+        assert_eq!(diagnostic["limitBytes"], 32);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subprocess_cancellation_is_durable_uncertainty() {
+        let directory = tempdir().expect("tempdir");
+        let marker = directory.path().join("started");
+        let source = format!(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: process-cancellation }}
+spec:
+  policy:
+    workspaceRoot: .
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    wait:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, "echo started > '{}'; sleep 5"]
+      timeoutSeconds: 10
+  tasks: [{{ id: wait, uses: "action:wait" }}]
+"#,
+            marker.display()
+        );
+        let (workflow, plan) = compile_fixture(&source);
+        let store = SqliteStore::open_memory().expect("store");
+        let cancellation = CancellationToken::new();
+        let trigger = cancellation.clone();
+        let observed_marker = marker.clone();
+        tokio::spawn(async move {
+            while !observed_marker.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            trigger.cancel();
+        });
+        let cancelled = runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &cancellation,
+            )
+            .await
+            .expect("cancelled outcome");
+        assert_eq!(cancelled.state, RunState::Cancelled);
+        assert_eq!(
+            store.list_effects(&cancelled.run_id).expect("effects")[0].status,
+            EffectStatus::Uncertain
+        );
+        assert!(matches!(
+            runtime(store, directory.path())
+                .resume(
+                    &cancelled.run_id,
+                    RunOptions::default(),
+                    &CancellationToken::new()
+                )
                 .await,
             Err(RuntimeError::UncertainEffect { .. })
         ));

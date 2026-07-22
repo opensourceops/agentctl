@@ -59,6 +59,13 @@ impl PackManifest {
                 "agentctl {current} does not satisfy `{requirement}`"
             )));
         }
+        for (name, action) in &self.actions {
+            action.validate_process_bounds().map_err(|message| {
+                PackError::Invalid(format!(
+                    "action `{name}` has invalid process bounds: {message}"
+                ))
+            })?;
+        }
         Ok(())
     }
 }
@@ -133,5 +140,14 @@ mod tests {
         let mut invalid = manifest;
         invalid.name = "local".to_owned();
         assert!(matches!(invalid.validate(), Err(PackError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_unreasonable_pack_process_output_limit() {
+        let manifest: PackManifest = serde_yaml_ng::from_str(
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.utility\nversion: 1.0.0\nagentctl: '>=0.2.0, <1.0.0'\nactions:\n  noisy:\n    kind: builtin.shell.exec\n    command: sh\n    stdoutLimitBytes: 16777217\n",
+        )
+        .expect("manifest");
+        assert!(matches!(manifest.validate(), Err(PackError::Invalid(_))));
     }
 }

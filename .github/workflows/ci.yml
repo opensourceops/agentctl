@@ -1,83 +1,121 @@
-name: ci
+name: credential-free-ci
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: credential-free-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.88.0"
+  CARGO_DENY_VERSION: "0.20.2"
+
 jobs:
-  verify:
-    env:
-      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+  gates:
+    name: gates (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, "1.88.0"]
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-deny
-      - run: cargo xtask verify
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-  acceptance:
-    env:
-      RUSTUP_TOOLCHAIN: "1.88.0"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.88.0"
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask acceptance
+      - name: Install pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+          host="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+          test "$host" = "${{ matrix.target }}"
 
-  container:
-    env:
-      RUSTUP_TOOLCHAIN: "1.88.0"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+
+      - name: Run deterministic verification gate
+        run: cargo xtask verify
+
+      - name: Run credential-free acceptance gate
+        run: cargo xtask acceptance
+
+      - name: Build production package
+        run: cargo xtask package
+
+      - name: Upload production package
+        id: package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          toolchain: "1.88.0"
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask acceptance-container
-      - name: Reject fixed critical/high image vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: agentctl-acceptance:local
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
-      - name: Generate CycloneDX image SBOM
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: agentctl-acceptance:local
-          format: cyclonedx
-          output: agentctl-image.cdx.json
-          exit-code: "0"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agentctl-image-sbom
-          path: agentctl-image.cdx.json
+          name: agentctl-${{ matrix.target }}
+          path: dist/
           if-no-files-found: error
+          retention-days: 14
 
-  supply-chain:
-    env:
-      RUSTUP_TOOLCHAIN: stable
-    runs-on: ubuntu-latest
+      - name: Record package artifact digest
+        run: echo "agentctl-${{ matrix.target }} artifact digest ${{ steps.package.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  production-sbom:
+    name: production SBOM
+    needs: gates
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-deny
-      - run: cargo deny check
-      - run: cargo xtask verify
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Build production package for SBOM input
+        run: cargo xtask package
+
+      - name: Generate CycloneDX production SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: dist/
+          format: cyclonedx-json
+          output-file: agentctl-production.cdx.json
+          syft-version: v1.49.0
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Validate and digest production SBOM
+        id: sbom_file
+        run: |
+          set -euo pipefail
+          jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' agentctl-production.cdx.json >/dev/null
+          digest="$(sha256sum agentctl-production.cdx.json | cut -d ' ' -f 1)"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          echo "agentctl-production.cdx.json SHA-256 $digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload production SBOM
+        id: sbom
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-production-sbom-cyclonedx
+          path: agentctl-production.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record SBOM artifact digest
+        run: echo "agentctl-production-sbom-cyclonedx artifact digest ${{ steps.sbom.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"

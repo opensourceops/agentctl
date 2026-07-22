@@ -2,12 +2,14 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
+
+use crate::process::{bounded_output, bounded_wait, configure_piped_command, output_diagnostics};
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
@@ -609,13 +611,27 @@ pub fn run(root: &Path) -> Result<()> {
     )?;
     let arguments = run_args(&hello, &concurrent_db, root, &[]);
     let mut first_command = command_for(&binary, root, &arguments);
-    first_command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_piped_command(&mut first_command);
     let mut second_command = command_for(&binary, root, &arguments);
-    second_command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_piped_command(&mut second_command);
     let first = first_command.spawn()?;
     let second = second_command.spawn()?;
-    ensure!(first.wait_with_output()?.status.success());
-    ensure!(second.wait_with_output()?.status.success());
+    let first_wait = thread::spawn(move || bounded_wait(first, "first concurrent agentctl run"));
+    let second_wait = thread::spawn(move || bounded_wait(second, "second concurrent agentctl run"));
+    ensure!(
+        first_wait
+            .join()
+            .map_err(|_| anyhow::anyhow!("first concurrent wait panicked"))??
+            .status
+            .success()
+    );
+    ensure!(
+        second_wait
+            .join()
+            .map_err(|_| anyhow::anyhow!("second concurrent wait panicked"))??
+            .status
+            .success()
+    );
 
     scenario(22, "SIGTERM produces a durable cancelled run");
     signal_acceptance(&binary, &workspace, directory.path())?;
@@ -840,7 +856,7 @@ fn signal_acceptance(binary: &Path, workspace: &Path, directory: &Path) -> Resul
         let db = directory.join("signal.db");
         let args = run_args(&workflow, &db, workspace, &[]);
         let mut command = command_for(binary, workspace, &args);
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        configure_piped_command(&mut command);
         let child = command.spawn()?;
         for _ in 0..50 {
             if db.exists() {
@@ -853,7 +869,7 @@ fn signal_acceptance(binary: &Path, workspace: &Path, directory: &Path) -> Resul
             .args(["-TERM", &child.id().to_string()])
             .status()?;
         ensure!(status.success(), "failed to deliver SIGTERM");
-        let output = child.wait_with_output()?;
+        let output = bounded_wait(child, "SIGTERM agentctl run")?;
         ensure!(
             output.status.code() == Some(130),
             "SIGTERM exit was not 130"
@@ -1082,16 +1098,15 @@ fn command_for(binary: &Path, cwd: &Path, args: &[String]) -> Command {
     command
 }
 
-fn output_with_code(mut command: Command, code: i32, label: &str) -> Result<Output> {
-    let output = command.output().with_context(|| format!("run {label}"))?;
+fn output_with_code(command: Command, code: i32, label: &str) -> Result<Output> {
+    let output = bounded_output(command, label).with_context(|| format!("run {label}"))?;
     if output.status.code() == Some(code) {
         Ok(output)
     } else {
         bail!(
-            "{label} returned {:?}, expected {code}\nstdout: {}\nstderr: {}",
+            "{label} returned {:?}, expected {code}\n{}",
             output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            output_diagnostics(&output)
         )
     }
 }
@@ -1147,7 +1162,9 @@ fn debug_binary(root: &Path) -> PathBuf {
 }
 
 fn packaged_binary(root: &Path) -> Result<PathBuf> {
-    let output = Command::new("rustc").arg("-vV").output()?;
+    let mut command = Command::new("rustc");
+    command.arg("-vV");
+    let output = bounded_output(command, "rustc -vV")?;
     ensure!(output.status.success(), "rustc -vV failed");
     let version = String::from_utf8(output.stdout)?;
     let host = version
@@ -1403,37 +1420,43 @@ fn executable_on_path(name: &str) -> bool {
 }
 
 fn ensure_engine_ready(engine: &Path) -> Result<()> {
-    let output = Command::new(engine).arg("info").output()?;
+    let mut command = Command::new(engine);
+    command.arg("info");
+    let output = bounded_output(command, "container engine info")?;
     if output.status.success() {
         Ok(())
     } else {
         bail!(
-            "container engine is installed but unavailable: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "container engine is installed but unavailable:\n{}",
+            output_diagnostics(&output)
         )
     }
 }
 
 fn build_image(root: &Path, engine: &Path) -> Result<()> {
-    let output = Command::new(engine)
-        .current_dir(root)
-        .args([
-            OsStr::new("build"),
-            OsStr::new("--file"),
-            OsStr::new("Containerfile"),
-            OsStr::new("--tag"),
-            OsStr::new("agentctl-acceptance:local"),
-            OsStr::new("."),
-        ])
-        .output()?;
+    let mut command = Command::new(engine);
+    command.current_dir(root).arg("build");
+    if let Some(ca_file) = env::var_os("AGENTCTL_BUILD_CA_FILE") {
+        let ca_file = PathBuf::from(ca_file);
+        ensure!(
+            ca_file.is_file(),
+            "AGENTCTL_BUILD_CA_FILE must refer to a readable certificate file"
+        );
+        let secret = format!("id=agentctl_ca,src={}", ca_file.display());
+        command.args([OsStr::new("--secret"), OsStr::new(&secret)]);
+    }
+    command.args([
+        OsStr::new("--file"),
+        OsStr::new("Containerfile"),
+        OsStr::new("--tag"),
+        OsStr::new("agentctl-acceptance:local"),
+        OsStr::new("."),
+    ]);
+    let output = bounded_output(command, "OCI image build")?;
     if output.status.success() {
         Ok(())
     } else {
-        bail!(
-            "OCI image build failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
+        bail!("OCI image build failed:\n{}", output_diagnostics(&output))
     }
 }
 
@@ -1567,7 +1590,7 @@ fn container_signal_acceptance(engine: &Path, root: &Path) -> Result<()> {
         "--color",
         "never",
     ]);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_piped_command(&mut command);
     let child = command.spawn()?;
     for _ in 0..100 {
         if layout.state.join("runtime.db").exists() {
@@ -1580,20 +1603,20 @@ fn container_signal_acceptance(engine: &Path, root: &Path) -> Result<()> {
         "OCI run did not create durable state"
     );
     thread::sleep(Duration::from_millis(100));
-    let stopped = Command::new(engine)
-        .args(["stop", "--time", "10", &name])
-        .output()?;
+    let mut stop = Command::new(engine);
+    stop.args(["stop", "--time", "10", &name]);
+    let stopped = bounded_output(stop, "stop OCI run")?;
     ensure!(
         stopped.status.success(),
         "failed to stop OCI run: {}",
-        String::from_utf8_lossy(&stopped.stderr)
+        output_diagnostics(&stopped)
     );
-    let output = child.wait_with_output()?;
+    let output = bounded_wait(child, "SIGTERM OCI run")?;
     ensure!(
         output.status.code() == Some(130),
-        "OCI SIGTERM exit was {:?}, expected 130; stderr: {}",
+        "OCI SIGTERM exit was {:?}, expected 130; {}",
         output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
+        output_diagnostics(&output)
     );
     let value = parse_output(&output)?;
     ensure_eq(&value, "/data/state", "cancelled")?;
