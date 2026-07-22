@@ -29,7 +29,7 @@ The ledger was changed to `release audit in progress` before verification. No re
 
 ## Clean-room environment
 
-The final clean source copy was `/private/tmp/agentctl-release-audit.2pCaK5/source`. It was created with `rsync` while excluding `.git`, `target`, `fuzz/target`, `.agentctl`, `.runtime`, `dist`, `node_modules`, databases/WAL files, and logs. It included every intended tracked and untracked source change.
+The final committed-tree source copy was `/private/tmp/agentctl-final-committed.ARlcZj/source`. It was created with `git archive HEAD`, so it contained only committed release source and no `.git`, Rust build output, runtime state, generated test artifacts, credentials, editor state, or existing container state. An earlier pre-commit clean copy used `rsync` with the same source exclusions so intended untracked migration files were audited before commit.
 
 `OPENAI_API_KEY` was removed from every clean-room command. A directory placed first on `PATH` contained `node`, `npm`, `npx`, and `tsc` symlinked to `/usr/bin/false`; all release commands still passed. This proves the production build, installation, tests, examples, package, image build, and workflow execution do not invoke Node or the archived TypeScript runtime.
 
@@ -42,7 +42,9 @@ Environment:
 - Trivy container image 0.70.0 with a local vulnerability database;
 - `cargo-llvm-cov`, `syft`, `actionlint`, `kubectl`, `kubeconform`, `hadolint`, and `shellcheck` unavailable; no new host tooling was installed.
 
-Two early clean-room attempts failed as intended: the first caught unformatted new tests, and the second caught a warnings-denied Clippy `needless_borrow`. The current-tree gate then exposed a real subprocess-timeout path that returned before marking uncertainty. All three findings were corrected before the successful clean-room run. The gates propagated nonzero exit status; they did not mask failure.
+Two early clean-room attempts failed as intended: the first caught unformatted new tests, and the second caught a warnings-denied Clippy `needless_borrow`. The current-tree gate then exposed a real subprocess-timeout path that returned before marking uncertainty. A later `git archive HEAD` gate caught an incorrect reusable-pack digest that local pre-commit state had masked. All findings were corrected before the successful committed-tree run. The gates propagated nonzero exit status; they did not mask failure.
+
+The local Podman VM sits behind an enterprise TLS-interception root trusted by macOS but not by the stock Rust builder image. For a no-cache container rebuild, the already-trusted public root certificate was mounted read-only over the builder's CA bundle. It was never added to source, copied into an image layer, or retained after the build. The unmodified `cargo xtask acceptance-container` command then rebuilt the content-addressed image and executed the complete OCI suite.
 
 ## Exact release commands and results
 
@@ -91,6 +93,15 @@ No P0 finding was identified.
 - Change: pre-detect JSON mode, use fallible parsing, preserve help/version behavior, and emit a versioned exit-2 JSON error.
 - Regression: CLI unit tests and three public-binary acceptance cases.
 - Result: each tested parse failure is valid `agentctl.dev/cli/v1` JSON on stderr.
+
+### P1 — committed reusable-pack example failed integrity verification
+
+- Symptom: `cargo xtask verify` from `git archive HEAD` rejected `examples/v1/reusable-pack.yaml` because its pinned digest did not match the committed pack manifest.
+- Root cause: the reference retained a digest from earlier local content, and the pre-commit verification environment did not expose the committed-tree mismatch.
+- Affected journey: source checkout verification and the documented reusable-pack example.
+- Change: recomputed and pinned the SHA-256 digest of the committed `example.pack.yaml` content.
+- Regression: the canonical example/negative-contract gate checks the reference by running the public `agentctl check` command.
+- Result: the committed-tree 12-gate verification and reusable-pack execution pass.
 
 ### P2 — replay could create partial state for a nonterminal source
 
@@ -172,6 +183,7 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 ## Container and security evidence
 
 - Final image: Linux arm64, version label `0.2.0`, user `nonroot:nonroot`, entrypoint `/usr/local/bin/agentctl`.
+- A no-cache builder run used a temporary read-only enterprise CA mount solely for dependency download in this network; the certificate is absent from source, build layers, runtime filesystem, image history, labels, and environment defaults.
 - Environment defaults contain only PATH and CA-certificate location; no provider credential defaults.
 - Image history contains the runtime base, labels, and copied Rust binary; no credential-bearing command.
 - Exported root filesystem contains no Node/npm/npx, Rust compiler/Cargo, TypeScript source, workflow, fixture, or build tree. CA certificates are present through the distroless base.
