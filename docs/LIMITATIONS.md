@@ -4,7 +4,7 @@ This classification is part of the product contract. A deferred feature is not a
 
 ## Release blockers
 
-No known implementation or evidence blocker remains for the stated local, scheduled, and OCI journeys. The exact final live OpenAI database passed credential-free OCI replay under `--network none` with identical output, unchanged artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect provenance. This supports a `v1alpha1` release-candidate recommendation, not stable v1.0.
+No known P0/P1 implementation defect remains for the stated local, scheduled, and OCI journeys after the independent review. The exact final live OpenAI database passed another credential-free replay with identical output, zero fresh effects/tool calls/provider sessions, and explicit source-effect provenance. Hosted cross-platform CI has never run for the Rust branch, and the current default image build was blocked by this host's container CA before a current Trivy/SBOM run. These are release-candidate evidence blockers, so the current recommendation is internal review, not `v1alpha1` RC or stable v1.0.
 
 ## Required hardening completed for this release
 
@@ -44,5 +44,5 @@ These are useful extensions but are not required by the product thesis. They nee
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
 - Tool-using OpenAI/Azure agents require stored-response continuation. `store: false` is rejected until stateless response-item replay is implemented.
 - Anthropic, Google, Azure OpenAI, MCP, and A2A are native and mock-tested in this release, not live-tested. Only the OpenAI GPT-5.6 tool path has live end-to-end evidence.
-- The local OCI execution evidence is Linux arm64. Linux amd64 is built/tested by the configured Ubuntu CI job when that workflow runs; this local task did not execute the remote CI matrix.
-- The native arm64 image had no HIGH/CRITICAL findings in the final Trivy 0.70.0 scan, both with and without `--ignore-unfixed`, and produced a CycloneDX SBOM. The same checks are configured for the Linux amd64 CI image; the external CI job is not represented as executed until its own ledger exists.
+- The current local OCI runtime evidence is Linux arm64. Linux amd64 is configured in the unpushed Ubuntu CI workflow but has not executed.
+- The earlier native arm64 image scan reported no HIGH/CRITICAL findings and produced a CycloneDX SBOM. The current source changes have no fresh completed image-build/scan/SBOM record because this host's container CA blocked dependency retrieval.

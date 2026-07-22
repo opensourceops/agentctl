@@ -2,7 +2,7 @@
 
 Audit date: 2026-07-22 (Asia/Kolkata)
 
-Recommendation: **Ready as a `v1alpha1` release candidate**. This is not a stable-v1 recommendation.
+Historical recommendation: **Ready as a `v1alpha1` release candidate**. This conclusion is superseded by the later [independent RC review](INDEPENDENT_RC_REVIEW.md), which found additional P0/P1 defects and changed current status to **Ready for internal review** pending hosted CI and current image-build evidence. The retained live-run facts below remain historical evidence.
 
 ## Final live durable-replay gate
 

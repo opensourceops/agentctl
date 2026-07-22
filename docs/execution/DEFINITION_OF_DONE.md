@@ -13,10 +13,10 @@ Status values distinguish **deterministically tested**, **mock-provider tested**
 | Replay without credentials or network | deterministically and operationally tested on exact live state | panic-on-call provider/tool regression; OCI `--network none` replay with identical output/artifact digest, zero fresh effects/tool calls, and source-effect audit links |
 | Resume/reject/uncertainty/fork/retry/auth/rate-limit/malformed/cancellation semantics | deterministically tested | focused provider/runtime/store tests and acceptance scenarios |
 | Non-interactive approvals, cron, inputs, timeout, SIGTERM | operationally tested | empty-environment and signal acceptance; operations guide |
-| OCI non-root/read-only/mount/JSON/artifact/state contract | operationally tested | native arm64 mock/failure/signal cases and exact live-state offline replay as UID/GID 65532 |
-| Image high/critical scan and SBOM | operationally tested on arm64 | Trivy result and CycloneDX artifact recorded in verification ledger |
+| OCI non-root/read-only/mount/JSON/artifact/state contract | operationally tested | current-source Linux arm64 binary passed mock/failure/signal cases; earlier exact live-state replay ran as UID/GID 65532 |
+| Image high/critical scan and SBOM | historical arm64 evidence only | earlier Trivy result and CycloneDX artifact recorded in verification ledger; current rebuild/scan pending |
 | Linux amd64 image and external CI/vendor pipelines | syntax/configuration validated only | GitHub job and pipeline examples; not remotely dispatched here |
 | Anthropic/Google/Azure adapters; MCP/A2A | mock-provider/protocol tested | native mapping/protocol tests; not live-tested |
 | Advisories/licenses/sources/secrets | deterministically tested | cargo-deny, metadata, source, and secret gates |
 | Parallel/dynamic orchestration, pack ecosystem, vector/encrypted/distributed additions | deferred or non-goal | `docs/LIMITATIONS.md`, ADR 0005/0006/0007 |
-| No known P0/P1 correctness/security defect in implemented boundary | verified for `v1alpha1` release candidate | canonical gates, clean-room acceptance audit, image scan, exact live durable replay, conservative documented limits |
+| No known P0/P1 correctness/security defect in implemented boundary | verified for internal review | independent RC review and regressions; hosted CI and current image build/scan remain RC evidence blockers |

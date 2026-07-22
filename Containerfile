@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1.88.0-bookworm AS build
+ENV RUSTUP_TOOLCHAIN=1.88.0
 WORKDIR /source
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
@@ -13,7 +14,7 @@ LABEL org.opencontainers.image.title="agentctl" \
       org.opencontainers.image.description="Deterministic control plane for policy-constrained agentic automation" \
       org.opencontainers.image.version="${AGENTCTL_VERSION}" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/ompragash/agentctl"
+      org.opencontainers.image.source="https://github.com/opensourceops/agentctl"
 COPY --from=build --chown=nonroot:nonroot /source/target/release/agentctl /usr/local/bin/agentctl
 USER nonroot:nonroot
 WORKDIR /workspace

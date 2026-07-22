@@ -26,6 +26,6 @@ cargo install cargo-fuzz
 cargo fuzz run workflow_yaml -- -max_total_time=60
 ```
 
-CI runs the canonical suite on Linux, macOS, and Windows, stable and Rust 1.88, plus credential-free acceptance, a Linux amd64 container gate, and strict supply-chain checks. Provider/protocol conformance uses local mock HTTP servers. Normal examples are deterministic; MCP/A2A runtime behavior is covered by mocks rather than requiring a background service.
+The local CI configuration would run the canonical suite on Linux, macOS, and Windows, stable and Rust 1.88, plus credential-free acceptance, a Linux amd64 container gate, and strict supply-chain checks. It has not yet been pushed or dispatched, so it is configured evidence rather than validated platform support. Provider/protocol conformance uses local mock HTTP servers. Normal examples are deterministic; MCP/A2A runtime behavior is covered by mocks rather than requiring a background service.
 
 The only full live gate is the separately invoked OpenAI acceptance described in [Providers](PROVIDERS.md). It performs two bounded Responses API requests locally and two in the OCI image for one tool-call/continuation journey each, then performs keyless replays. Never run it for debugging loops, fuzzing, load, or normal CI.

@@ -7,10 +7,10 @@ The core defines provider-neutral messages, text/reasoning/tool content, strict 
 | `fake` | in-process scripted provider | deterministic echo/script, tool path, usage | none |
 | `openai` | Responses API | GPT-5.6; strict function tools and structured output; multiple call IDs; `previous_response_id`; reasoning effort/mode/context; response storage; prompt-cache mode/TTL; input/output/reasoning/cache metrics | `OPENAI_API_KEY` |
 | `azure_openai` | Azure `/openai/v1/responses?api-version=v1` | OpenAI mapping with Azure `api-key`; explicit endpoint required | `AZURE_OPENAI_API_KEY` |
-| `anthropic` | Messages API | native content/tool blocks, structured output instruction, usage and stop mapping | `ANTHROPIC_API_KEY` |
-| `google` | Gemini `generateContent` | native contents/function declarations/calls, response schema, token usage | `GEMINI_API_KEY` |
+| `anthropic` | Messages API | native content/tool/thinking blocks, structured output instruction, usage and stop mapping | `ANTHROPIC_API_KEY` |
+| `google` | Gemini `generateContent` | native contents/function declarations/calls/results, thought-signature continuation, response schema, token usage | `GEMINI_API_KEY` |
 
-Endpoints must pass the workflow network allowlist. Redirects are disabled. Credentials and configured headers are resolved from environment references only when building an adapter; standard authentication headers override custom headers. Errors are normalized without response bodies or secret values, and calls honor timeout and cancellation.
+Endpoints must pass the workflow network allowlist. Redirects are disabled. Credentials and configured headers are resolved from environment references only when building an adapter; standard authentication headers override custom headers. Successful/error response JSON keys and values plus provider request IDs are scrubbed of configured secrets before parsing or persistence. Calls honor timeout and cancellation.
 
 `agentctl providers inspect <workflow>` reports declared capabilities without calling a service. OpenAI has the broadest mock request/response/tool/usage/error coverage. Azure OpenAI, Anthropic, and Google have native mapping and focused mock-protocol coverage at the maturity shown below; normal tests have no credentials. Live provider workflow examples end in `-live.yaml` and are opt-in.
 
