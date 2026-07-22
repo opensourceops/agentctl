@@ -453,6 +453,8 @@ impl Runtime {
     pub async fn replay(&self, source_run_id: &str) -> Result<RunOutcome, RuntimeError> {
         let source = self.store.load_run(source_run_id)?;
         let source_tasks = self.store.list_tasks(source_run_id)?;
+        let source_effects = self.store.list_effects(source_run_id)?;
+        let source_tool_calls = self.store.tool_calls(source_run_id)?;
         if !source.state.is_terminal() {
             return Err(RuntimeError::InvalidState(format!(
                 "source run `{source_run_id}` is not terminal ({:?})",
@@ -489,6 +491,14 @@ impl Runtime {
             RunMode::Replay,
             Some(source_run_id),
             Path::new(source.base_path.as_deref().unwrap_or(".")),
+            self.clock.now(),
+            &trace_id,
+        )?;
+        self.store.record_replay_effects_reused(
+            &replay_id,
+            source_run_id,
+            &source_effects,
+            &source_tool_calls,
             self.clock.now(),
             &trace_id,
         )?;
@@ -2493,6 +2503,23 @@ mod tests {
         }
     }
 
+    struct PanicProvider;
+
+    #[async_trait]
+    impl ModelProvider for PanicProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            panic!("provider executor must not run during recorded replay")
+        }
+    }
+
     struct FixtureTool {
         contract: ToolContract,
         malformed: bool,
@@ -2571,6 +2598,25 @@ mod tests {
                 },
                 predictability: PlanPredictability::RequiresExecution,
             })
+        }
+    }
+
+    struct PanicTool {
+        contract: ToolContract,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for PanicTool {
+        fn contract(&self) -> &ToolContract {
+            &self.contract
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _cancellation: &CancellationToken,
+        ) -> Result<ActionResult, ToolContractError> {
+            panic!("tool executor must not run during recorded replay")
         }
     }
 
@@ -2844,12 +2890,12 @@ spec:
         let (workflow, plan) = compile_fixture(source);
         let provider = Arc::new(ToolCallingProvider::default());
         let store = SqliteStore::open_memory().expect("store");
-        let runtime = runtime(store.clone(), directory.path()).with_registry(
+        let execution_runtime = runtime(store.clone(), directory.path()).with_registry(
             RuntimeRegistry::default()
                 .with_provider("fake", provider.clone())
                 .with_tool("echo", Arc::new(FixtureTool::new(false))),
         );
-        let first = runtime
+        let first = execution_runtime
             .start(
                 &workflow,
                 &plan,
@@ -2859,7 +2905,17 @@ spec:
             )
             .await
             .expect("first run");
-        let replay = runtime.replay(&first.run_id).await.expect("replay");
+        let replay_runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default()
+                .with_provider("fake", Arc::new(PanicProvider))
+                .with_tool(
+                    "echo",
+                    Arc::new(PanicTool {
+                        contract: FixtureTool::new(false).contract,
+                    }),
+                ),
+        );
+        let replay = replay_runtime.replay(&first.run_id).await.expect("replay");
         assert_eq!(provider.0.load(Ordering::SeqCst), 2);
         assert_eq!(replay.output, first.output);
         assert!(
@@ -2869,6 +2925,42 @@ spec:
                 .is_empty()
         );
         assert!(store.tool_calls(&replay.run_id).expect("calls").is_empty());
+        let source_effect_ids = store
+            .list_effects(&first.run_id)
+            .expect("source effects")
+            .into_iter()
+            .map(|effect| effect.request.id)
+            .collect::<Vec<_>>();
+        let source_tool_call_ids = store
+            .tool_calls(&first.run_id)
+            .expect("source tool calls")
+            .into_iter()
+            .map(|call| call.call_id)
+            .collect::<Vec<_>>();
+        let replay_audit = store.audit_events(&replay.run_id).expect("replay audit");
+        let reused = replay_audit
+            .iter()
+            .find(|event| event.event_type == "replay.effects_reused")
+            .expect("reused-effect audit event");
+        assert_eq!(reused.payload["sourceRunId"], first.run_id);
+        assert_eq!(
+            reused.payload["effects"]
+                .as_array()
+                .expect("effect references")
+                .iter()
+                .map(|effect| effect["effectId"].as_str().expect("effect id").to_owned())
+                .collect::<Vec<_>>(),
+            source_effect_ids
+        );
+        assert_eq!(
+            reused.payload["toolCalls"]
+                .as_array()
+                .expect("tool-call references")
+                .iter()
+                .map(|call| call["callId"].as_str().expect("call id").to_owned())
+                .collect::<Vec<_>>(),
+            source_tool_call_ids
+        );
     }
 
     #[tokio::test]

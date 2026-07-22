@@ -2,6 +2,7 @@
 /fuzz/target/
 /.agentctl/
 /.runtime/
+/.release-evidence/
 /dist/
 /node_modules/
 *.db

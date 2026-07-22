@@ -523,6 +523,58 @@ impl SqliteStore {
             })
     }
 
+    pub fn record_replay_effects_reused(
+        &self,
+        replay_run_id: &str,
+        source_run_id: &str,
+        effects: &[EffectRecord],
+        tool_calls: &[ToolCallRecord],
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let effects = effects
+            .iter()
+            .map(|effect| {
+                serde_json::json!({
+                    "effectId": effect.request.id,
+                    "taskId": effect.request.task_id,
+                    "effectClass": effect.request.effect_class,
+                    "status": effect.status,
+                    "confirmed": effect.confirmed,
+                })
+            })
+            .collect::<Vec<_>>();
+        let tool_calls = tool_calls
+            .iter()
+            .map(|call| {
+                serde_json::json!({
+                    "callId": call.call_id,
+                    "effectId": call.effect_id,
+                    "taskId": call.task_id,
+                    "toolId": call.tool_id,
+                    "status": call.status,
+                })
+            })
+            .collect::<Vec<_>>();
+        append_audit_tx(
+            &transaction,
+            replay_run_id,
+            "replay.effects_reused",
+            None,
+            trace_id,
+            &serde_json::json!({
+                "sourceRunId": source_run_id,
+                "effects": effects,
+                "toolCalls": tool_calls,
+            }),
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn list_tasks(&self, run_id: &str) -> Result<Vec<TaskRecord>, StoreError> {
         let connection = self.connection.lock();
         let mut statement = connection.prepare(

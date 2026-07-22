@@ -4,15 +4,16 @@ Last updated: 2026-07-22
 
 ## Current phase
 
-ready for internal review
+ready as a `v1alpha1` release candidate
 
-The adversarial audit passed the defined local, scheduled, and native-arm64 OCI implementation gates. Release-candidate status is deliberately withheld because the prior live OpenAI database was not retained for the required independent `--network none` replay.
+The adversarial audit and final live durable-replay gate passed the defined local, scheduled, and native-arm64 OCI implementation boundary. This is not a stable-v1 recommendation.
 
 ## Accepted evidence
 
 - The independently audited Rust implementation passes all 12 `cargo xtask verify` gates (66 tests) and the 25-scenario credential-free public-CLI acceptance suite from a clean copy with Node tools poisoned.
-- The preceding run recorded a packaged GPT-5.6 strict function-call workflow; this audit reviewed that evidence but made no additional OpenAI calls.
-- Deterministic host replay invokes neither provider nor tool executor. Native-arm64 OCI replay passes under `--network none` with identical output, a distinct replay ID, and zero effects/tool calls.
+- A packaged GPT-5.6 workflow made one real model-selected read-only tool call and continued through stored-response function output; the final run used two provider requests, 530 input tokens, and 33 output tokens.
+- The exact completed live database is retained locally and replays in the native-arm64 image with no credential and `--network none`. Replay has a distinct run/trace ID, identical output, unchanged artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect audit links.
+- The deterministic replay regression uses provider and tool executors that panic if called.
 - Confirmed effects survive resume; fork is distinct and fresh; timeout/transport uncertainty blocks unsafe repetition.
 - Clean copied/source-installed/package layouts, empty-environment cron invocation, concurrency, SIGTERM, approvals, machine output, and recovery paths passed.
 - The actual OCI image passed mock-tool, failure-exit, SIGTERM, and offline-replay cases as non-root with a read-only root and mounted durable state/artifacts. Trivy 0.70.0 found no HIGH/CRITICAL findings with or without `--ignore-unfixed`; a CycloneDX SBOM was generated.
@@ -27,7 +28,7 @@ The local environment executed macOS arm64 packaging and Linux arm64 OCI tests. 
 
 ## Hard blockers
 
-No known P0/P1 implementation blocker. The live-state evidence gap blocks only a release-candidate recommendation. See [BLOCKERS.md](BLOCKERS.md) and [RELEASE_AUDIT.md](RELEASE_AUDIT.md).
+No known P0/P1 implementation or evidence blocker remains for the stated boundary. See [BLOCKERS.md](BLOCKERS.md), [RELEASE_AUDIT.md](RELEASE_AUDIT.md), and [LIVE_OPENAI_REPLAY_EVIDENCE.md](LIVE_OPENAI_REPLAY_EVIDENCE.md).
 
 ## Exact commands
 
@@ -38,4 +39,4 @@ cargo xtask acceptance-container
 cargo xtask package
 ```
 
-`cargo xtask acceptance-live-openai` was not run during this audit. See [RELEASE_AUDIT.md](RELEASE_AUDIT.md) for the independent results and [VERIFICATION.md](VERIFICATION.md) for the preceding run's safe live usage metadata.
+The final live journey used the packaged CLI directly to stay within the four-request authorization; normal repository verification remains credential-free.

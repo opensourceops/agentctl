@@ -2,7 +2,15 @@
 
 Audit date: 2026-07-22 (Asia/Kolkata)
 
-Recommendation: **Ready for internal review**. This is not a stable-v1 recommendation and not yet a `v1alpha1` release-candidate recommendation.
+Recommendation: **Ready as a `v1alpha1` release candidate**. This is not a stable-v1 recommendation.
+
+## Final live durable-replay gate
+
+The previously missing proof is now complete. A packaged macOS arm64 CLI executed the canonical GPT-5.6 YAML workflow with a real model-selected read-only tool call and stored-response continuation. The exact completed SQLite database was retained locally, scanned, copied byte-for-byte into the updated production image's state volume, and replayed as non-root with no credential and `--network none`.
+
+The final source run used two provider requests and one tool call (530 input and 33 output tokens). Replay returned the same declared output and unchanged artifact digest while public inspection reported zero fresh effects, tool calls, or provider sessions. A new `replay.effects_reused` audit event links the replay trace to the original run's four effect IDs and tool-call record. The deterministic regression uses provider/tool executors that panic if replay invokes them. Full sanitized evidence is in [LIVE_OPENAI_REPLAY_EVIDENCE.md](LIVE_OPENAI_REPLAY_EVIDENCE.md); exact databases and machine output remain ignored locally.
+
+Two bounded live executions were required: the first revealed that the canonical example's redundant credential-environment reference was serialized into durable workflow state. No key value was present. The reference was removed in favor of the existing provider default, and the final retained database has zero credential-name, authorization, exact-key, or key-fragment matches. Task total was four OpenAI requests, within the authorized maximum.
 
 ## Scope and tree identity
 
@@ -20,7 +28,7 @@ The ledger was changed to `release audit in progress` before verification. No re
 | Credential-free public-CLI acceptance passes | Confirmed; 25 scenarios pass. |
 | Native arm64 OCI execution passes | Confirmed and strengthened with failure exits, SIGTERM, durable inspect, and network-disabled replay. |
 | OpenAI GPT-5.6 tool workflow passed live | Prior ledger and bounded usage metadata reviewed; not called again. The implementation path remains mock-tested. |
-| Live OpenAI durable state replayed without credentials | Corrected: prior databases were not retained, so the exact live state could not be independently replayed. Deterministic host replay and OCI `--network none` replay pass. |
+| Live OpenAI durable state replayed without credentials | Corrected during the original audit because its prior databases were unavailable. The final closure gate above now supplies the missing exact live-state proof. |
 | Ambiguous effects safely block resume | Partially false before fixes: several paths remained `started` or were marked `failed`; one subprocess timeout returned before uncertainty recording. Fixed and regression-tested. |
 | JSON mode is always parseable | False for Clap parse failures before fixes. Unknown command, missing argument, and invalid value now return the versioned JSON error envelope. |
 | Supply-chain verification cannot be silently skipped | False before fixes: `cargo-deny` could be absent while `verify` still succeeded. It is now a required gate and CI installs it. |
@@ -59,7 +67,7 @@ The following commands ran from the final clean copy with `OPENAI_API_KEY` absen
 | `shasum -a 256 -c SHA256SUMS` | 0 | `agentctl: OK`. |
 | `git diff --check` | 0 | No whitespace errors. |
 
-`cargo xtask acceptance-live-openai` was deliberately not run. No OpenAI request was made during this audit because the provider execution path was not changed; the `store: false` fix is compile-time validation and is covered by deterministic mapping/compiler tests.
+The final durable-replay closure used the packaged production CLI directly rather than the four-request host-plus-container live harness. It made four total OpenAI requests across two bounded executions and then performed the exact final replay without credentials or network. See [LIVE_OPENAI_REPLAY_EVIDENCE.md](LIVE_OPENAI_REPLAY_EVIDENCE.md).
 
 GitHub workflow YAML was parsed locally with Ruby's YAML parser. GitLab, Jenkins, Harness, Docker, Kubernetes Job, and Kubernetes CronJob examples were documentation-reviewed but not dispatched or vendor-validated.
 
@@ -141,7 +149,7 @@ Effect identity includes run, task, task attempt, ordinal, operation, and input 
 
 ## Offline replay proof
 
-The deterministic runtime regression starts a tool-calling provider workflow, replays it, asserts identical structured output, and proves the replay invokes neither provider nor tool executor and records zero replay effects/tool calls.
+The deterministic runtime regression starts a tool-calling provider workflow, replays it against provider/tool executors that panic if invoked, asserts identical structured output, proves zero replay effects/tool calls, and verifies the replay audit's exact source effect/tool-call references.
 
 The public OCI journey then:
 
@@ -151,7 +159,7 @@ The public OCI journey then:
 4. asserted a distinct replay run ID;
 5. inspected the replay and found zero effects and zero tool calls.
 
-The exact prior live OpenAI database was unavailable. That evidence gap is why this audit stops at **Ready for internal review**. A future release-candidate gate should retain a sanitized encrypted/protected state artifact long enough to perform the same `--network none` public replay, then destroy it under the release evidence retention policy.
+The same public OCI journey was then repeated with the exact final live OpenAI database. Credential-free auth inspection reported the OpenAI credential absent; the image received no credential or workspace mount and ran with `--network none`. Replay succeeded with a distinct run/trace ID, identical declared output, an unchanged artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect provenance in audit output.
 
 ## Provider and protocol support
 
@@ -160,7 +168,7 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 | Kind | Implementation | Audit validation | Release wording |
 | --- | --- | --- | --- |
 | Fake | in-process text/tool/usage/continuation | deterministic unit/runtime/public acceptance | Deterministically tested |
-| OpenAI Responses | native auth/request/response, strict tools, multiple call IDs, continuation, usage, reasoning/cache options | mock-protocol mapping plus prior bounded GPT-5.6 live tool evidence; no audit live call | Prior live-tested and mock-protocol tested |
+| OpenAI Responses | native auth/request/response, strict tools, multiple call IDs, continuation, usage, reasoning/cache options | mock-protocol mapping plus final bounded GPT-5.6 live tool run and exact offline durable replay | Live-tested and mock-protocol tested |
 | Azure OpenAI Responses | native Azure auth/path plus OpenAI mapping | focused mock request/auth/response test | Mock-mapping tested; not live-tested |
 | Anthropic Messages | native content/tool/usage mapping | focused mock native tool test | Mock-mapping tested; not live-tested |
 | Google Gemini | native content/function/usage mapping | focused mock native response test | Mock-mapping tested; not live-tested |
@@ -171,7 +179,7 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 
 | Platform | Validation |
 | --- | --- |
-| macOS arm64 host | Native build, 66 tests, public acceptance, installation, package, checksum: executed |
+| macOS arm64 host | Native build, 66 tests, public acceptance, installation, package, checksum, packaged GPT-5.6 tool workflow: executed |
 | Linux arm64 OCI | Native Podman build/run, non-root/read-only, signals, failures, offline replay, scan/SBOM: executed |
 | Linux amd64 OCI | CI-configured only. A local `--platform linux/amd64` build was attempted because Podman advertised emulation, but emulated `rustc` terminated with SIGSEGV; the emulator was not reliable, so no local build/run claim is made. |
 | macOS x86_64 | Not tested locally; CI-configured through hosted macOS only when dispatched. |
@@ -190,7 +198,7 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 - The image runs with `--read-only`, UID/GID 65532, and only `/state` and `/artifacts` writable.
 - Trivy 0.70.0 reported zero HIGH/CRITICAL findings both with and without `--ignore-unfixed`. A 20 KiB CycloneDX JSON SBOM was generated at ignored local evidence path `.runtime/scan/agentctl-final.cdx.json`.
 - `cargo deny check`: advisories, bans, licenses, and sources passed. Duplicate dependency versions are warnings, not denied findings.
-- Repository secret scan and manual credential-pattern scan found no committed token/private key. No intended source database or live response body remains. `OPENAI_API_KEY` was present in the host environment but its value was never printed, passed as an argument, persisted, or copied into clean-room/container state.
+- Repository and retained-evidence scans found no committed token/private key or exact/fragment key match. The ignored final database contains no provider credential name, authorization header, bearer marker, or environment dump. The configured key value was never printed, passed as an argument, persisted, or forwarded into replay/container state.
 - Production Rust contains no `unsafe`, production `panic!`, ignored test, `allow(dead_code)`, or `allow(unused)`. `expect`/`panic!` occurrences are test assertions. `allow(clippy::too_many_arguments)` is limited to explicit effect/transition/store data-flow signatures where named parameters preserve audit meaning. `serde_json::Value` serialization uses an infallible-in-practice fallback for digest construction; malformed external JSON is parsed before reaching that value type.
 - Filesystem/process/network controls are policy checks, not an OS sandbox. Untrusted workflows require a restricted OS/container identity and egress controls.
 
@@ -201,8 +209,8 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 | Parser/schema/compiler/templates | strict/unknown-field, source diagnostic, cycle, deterministic order, property, capability, stateless-tool negative tests |
 | State/persistence/migrations/corruption | state transition, transactional checkpoint, schema upgrade/future version, corruption, lock wait, GC tests |
 | Effects/approval/resume/fork | store/runtime tests plus public scenarios 9–16 |
-| Replay no dispatch | provider+tool executor regression and host/OCI public replay inspection |
-| Provider/tool continuation | native mapping mocks, call-ID test, schema failures, fake tool acceptance, prior live OpenAI evidence |
+| Replay no dispatch | panic-on-call provider+tool regression and exact live-state OCI public replay inspection |
+| Provider/tool continuation | native mapping mocks, call-ID test, schema failures, fake tool acceptance, final live OpenAI continuation |
 | Policy/path/redaction | traversal, symlink, host allowlist, secret redaction, invalid UTF-8/read-only artifact tests |
 | Cancellation/uncertainty | provider/tool/process/protocol tests and host/container SIGTERM acceptance |
 | CLI machine contract | parse errors, validation/auth/policy/run/cancel outputs, run/trace correlation |
@@ -212,7 +220,6 @@ Coverage percentage was not invented; `cargo-llvm-cov` was unavailable. Timing-s
 
 ## Deferred items and residual risks
 
-- Retain a completed live OpenAI durable-state artifact for one independent credential-free, network-disabled replay before release-candidate designation.
 - Dispatch the configured Linux amd64, macOS, Windows, scan/SBOM, and external pipeline gates; until then they remain CI-configured or documentation-reviewed only.
 - Expand Azure/Anthropic/Google adapter negative/error/cancellation/tool-continuation coverage before raising their maturity beyond focused mock mapping.
 - Single-host SQLite, sequential scheduling, manual uncertain-effect reconciliation, alpha schema evolution, and policy-not-sandbox limitations remain intentional.
@@ -224,4 +231,4 @@ Files requiring closest human review are `crates/agentctl-runtime/src/lib.rs` (e
 
 ## Final gate decision
 
-There is no known P0/P1 implementation defect in the defined local, externally scheduled, or generic OCI boundary after remediation. Clean-room deterministic and OCI evidence is green. The missing retained live state prevents completion of one specifically requested independent proof, so the honest recommendation is **Ready for internal review**, not yet **Ready as a `v1alpha1` release candidate**.
+There is no known P0/P1 implementation defect in the defined local, externally scheduled, or generic OCI boundary after remediation. Clean-room deterministic and OCI evidence is green, and the exact retained live OpenAI state now passes independent credential-free, network-disabled replay. The honest recommendation is **Ready as a `v1alpha1` release candidate**, not stable v1.0.

@@ -4,7 +4,7 @@ This classification is part of the product contract. A deferred feature is not a
 
 ## Release blockers
 
-No known implementation blocker remains for the stated local, scheduled, and OCI journeys. The final independent audit recommends internal review rather than release-candidate designation because the earlier live OpenAI source database was not retained, so its exact durable state could not be replayed again under network denial. Deterministic host replay and OCI `--network none` replay both pass with zero effects or tool calls.
+No known implementation or evidence blocker remains for the stated local, scheduled, and OCI journeys. The exact final live OpenAI database passed credential-free OCI replay under `--network none` with identical output, unchanged artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect provenance. This supports a `v1alpha1` release-candidate recommendation, not stable v1.0.
 
 ## Required hardening completed for this release
 
