@@ -1,0 +1,29 @@
+# Providers
+
+The core defines provider-neutral messages, text/reasoning/tool content, strict tool schemas, tool calls/results, finish reasons, usage, and opaque continuation. The compiler compares each agent’s requested structured output, tools, reasoning, cache, and continuation needs with typed provider capabilities.
+
+| Kind | Native API | Implemented behavior | Credential default |
+| --- | --- | --- | --- |
+| `fake` | in-process scripted provider | deterministic echo/script, tool path, usage | none |
+| `openai` | Responses API | GPT-5.6; strict function tools and structured output; multiple call IDs; `previous_response_id`; reasoning effort/mode/context; response storage; prompt-cache mode/TTL; input/output/reasoning/cache metrics | `OPENAI_API_KEY` |
+| `azure_openai` | Azure `/openai/v1/responses?api-version=v1` | OpenAI mapping with Azure `api-key`; explicit endpoint required | `AZURE_OPENAI_API_KEY` |
+| `anthropic` | Messages API | native content/tool blocks, structured output instruction, usage and stop mapping | `ANTHROPIC_API_KEY` |
+| `google` | Gemini `generateContent` | native contents/function declarations/calls, response schema, token usage | `GEMINI_API_KEY` |
+
+Endpoints must pass the workflow network allowlist. Redirects are disabled. Credentials and configured headers are resolved from environment references only when building an adapter; standard authentication headers override custom headers. Errors are normalized without response bodies or secret values, and calls honor timeout and cancellation.
+
+`agentctl providers inspect <workflow>` reports declared capabilities without calling a service. OpenAI has the broadest mock request/response/tool/usage/error coverage. Azure OpenAI, Anthropic, and Google have native mapping and focused mock-protocol coverage at the maturity shown below; normal tests have no credentials. Live provider workflow examples end in `-live.yaml` and are opt-in.
+
+| Provider | Validation level in this tree |
+| --- | --- |
+| Fake | deterministic in-process runtime and acceptance tested |
+| OpenAI | native adapter mock-protocol tested; prior bounded GPT-5.6 tool workflow live-tested |
+| Azure OpenAI | native adapter request/auth/response mapping mock-tested; not live-tested |
+| Anthropic | native text/tool/usage mapping mock-tested; not live-tested |
+| Google | native text/function/usage mapping mock-tested; not live-tested |
+
+`agentctl providers smoke-openai --live --model gpt-5.6` remains a provider-only diagnostic; it is not runtime acceptance. The repository-owned live gate is `cargo xtask acceptance-live-openai`. It runs a YAML workflow through compilation, SQLite, a real strict function call, built-in tool policy/schema validation, `previous_response_id` continuation, deterministic assertion/artifact creation, public inspection, and replay with the credential removed. It repeats the journey inside the production OCI image and never runs in normal CI. Anthropic, Google, and Azure are implemented and mock-tested but are not live-tested in this release.
+
+OpenAI provider options are an allowlisted map (`store`, `reasoningContext`, `promptCacheMode`, `promptCacheTtl`, `parallelToolCalls`, and `safetyIdentifier`). Unknown options or invalid values fail compilation. Tool-using OpenAI and Azure OpenAI agents may not set `store: false`: stateless continuation would require replaying returned response/reasoning/function items, which this release does not implement. One-turn agents without tools may disable storage. Programmatic tool calling and model streaming are explicitly unsupported in the workflow runtime and fail rather than being ignored. Parallel function calls are parsed and correlated, but executors run them serially in response order because v1 scheduling is sequential.
+
+Cost is not inferred when a provider returns no reliable cost metadata. A workflow requesting `maxCostUsd` therefore fails capability negotiation; input/output token limits are enforced from native usage. Retry is limited to explicit task bounds and definitive retryable HTTP responses. Timeout, cancellation, or a transport loss after dispatch is considered ambiguous and is not automatically reissued.
