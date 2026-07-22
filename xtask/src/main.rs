@@ -117,11 +117,18 @@ fn verify(root: &Path) -> Result<()> {
         ],
     )?;
 
-    println!("[3/12] workspace build");
+    println!("[3/12] production workspace build");
     run(
         root,
         "cargo",
-        &["build", "--workspace", "--all-features", "--locked"],
+        &[
+            "build",
+            "--workspace",
+            "--exclude",
+            "xtask",
+            "--all-features",
+            "--locked",
+        ],
     )?;
 
     println!(
