@@ -1,0 +1,3 @@
+service=agentctl-acceptance
+status=ready
+marker=READ_TOOL_CONFIRMED

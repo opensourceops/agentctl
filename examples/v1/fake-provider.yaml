@@ -1,0 +1,21 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: fake-provider
+spec:
+  providers:
+    fake:
+      kind: fake
+  agents:
+    answer:
+      provider: fake
+      model: scripted
+      instructions: Reply deterministically.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+  tasks:
+    - id: answer
+      uses: agent:answer
+      with: { prompt: hello }

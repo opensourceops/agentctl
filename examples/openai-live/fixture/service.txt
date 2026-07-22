@@ -1,0 +1,3 @@
+service=agentctl-live-acceptance
+status=ready
+marker=OPENAI_TOOL_PATH_CONFIRMED

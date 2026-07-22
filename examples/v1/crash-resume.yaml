@@ -1,0 +1,22 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: crash-resume
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: never
+  actions:
+    write:
+      kind: builtin.write
+    read:
+      kind: builtin.read
+  tasks:
+    - id: write
+      uses: action:write
+      with: { path: artifacts/resume.txt, content: written-once }
+    - id: read
+      uses: action:read
+      needs: [write]
+      with: { path: artifacts/resume.txt }

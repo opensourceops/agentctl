@@ -1,25 +1,12 @@
 {
-	"name": "agentctl",
+	"name": "agentctl-typescript-reference",
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"description": "Declarative autonomous agent runtime with playbooks, packs, durable checkpoints, and replay.",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"bin": {
-		"agentctl": "./dist/cli.js"
-	},
-	"files": [
-		"dist",
-		"README.md"
-	],
+	"description": "Archived TypeScript behavioral oracle; the production agentctl is Rust.",
 	"scripts": {
-		"build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
-		"clean": "rm -rf dist .runtime",
-		"docs:cli": "node ./node_modules/tsx/dist/cli.mjs scripts/generate-cli-docs.ts",
-		"test": "node ./node_modules/vitest/vitest.mjs --run",
-		"sample": "node ./node_modules/tsx/dist/cli.mjs src/cli.ts run examples/hello.playbook.yaml --db .runtime/sample.db",
-		"schema": "node ./node_modules/tsx/dist/cli.mjs src/cli.ts schema"
+		"legacy:build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
+		"legacy:test": "node ./node_modules/vitest/vitest.mjs --run"
 	},
 	"engines": {
 		"node": ">=22.0.0"

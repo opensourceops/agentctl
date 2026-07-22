@@ -1,0 +1,57 @@
+name: rc-release-preparation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.88.0"
+  CARGO_DENY_VERSION: "0.20.2"
+
+jobs:
+  release-candidate:
+    name: RC (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned release toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+          cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+
+      - name: Run full credential-free RC gate
+        run: |
+          cargo xtask verify
+          cargo xtask acceptance
+          cargo xtask package
+
+      - name: Upload RC package
+        id: package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-rc-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record RC artifact digest
+        run: echo "agentctl-rc-${{ matrix.target }} artifact digest ${{ steps.package.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"

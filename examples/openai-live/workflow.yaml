@@ -1,0 +1,89 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: openai-live-tool-acceptance
+spec:
+  inputs:
+    reportPath: artifacts/openai-live-report.txt
+  outputs:
+    verdict: "${{ tasks.inspect.output.text }}"
+    artifact: "${{ inputs.reportPath }}"
+  providers:
+    openai:
+      kind: openai
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    networkAllowlist: [api.openai.com]
+    approval: never
+  tools:
+    read_fixture:
+      kind: builtin.workspace.read
+      description: Read one UTF-8 fixture file inside the authorized workspace.
+      inputSchema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Workspace-relative fixture path.
+        required: [path]
+        additionalProperties: false
+      outputSchema:
+        type: object
+        properties:
+          path: { type: string }
+          content: { type: string }
+          bytes: { type: integer }
+          sha256: { type: string }
+        required: [path, content, bytes, sha256]
+        additionalProperties: false
+      capability: filesystem.read
+      risk: low
+      effectClass: observe
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    inspector:
+      provider: openai
+      model: gpt-5.6
+      instructions: |
+        You are validating an automation runtime. You must call read_fixture exactly once
+        with path fixture/service.txt. Inspect the returned content. If and only if it contains
+        marker=OPENAI_TOOL_PATH_CONFIRMED, reply with exactly AGENTCTL_LIVE_FIXTURE_VERIFIED.
+        Do not include punctuation, markdown, explanation, or workspace content.
+      tools: [read_fixture]
+      maxTurns: 3
+      maxToolCalls: 1
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      providerOptions:
+        store: true
+        reasoningContext: current_turn
+        promptCacheMode: implicit
+        promptCacheTtl: 30m
+        parallelToolCalls: false
+  actions:
+    assert:
+      kind: builtin.assert
+    write:
+      kind: builtin.write
+  tasks:
+    - id: inspect
+      uses: agent:inspector
+      with:
+        prompt: Perform the required fixture inspection now.
+    - id: verify
+      uses: action:assert
+      needs: [inspect]
+      with:
+        that: "${{ tasks.inspect.output.text == 'AGENTCTL_LIVE_FIXTURE_VERIFIED' }}"
+        message: live OpenAI output did not match the deterministic acceptance token
+    - id: report
+      uses: action:write
+      needs: [inspect, verify]
+      with:
+        path: "${{ inputs.reportPath }}"
+        content: "${{ tasks.inspect.output.text }}"

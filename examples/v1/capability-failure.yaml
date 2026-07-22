@@ -1,0 +1,18 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: capability-failure
+spec:
+  providers:
+    fake:
+      kind: fake
+  agents:
+    unsupported:
+      provider: fake
+      model: scripted
+      instructions: This never executes.
+      reasoning:
+        effort: high
+  tasks:
+    - id: rejected
+      uses: agent:unsupported

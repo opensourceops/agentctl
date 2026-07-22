@@ -1,0 +1,36 @@
+[package]
+name = "agentctl"
+description = "Deterministic declarative control plane for safe agentic automation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agentctl"
+path = "src/main.rs"
+
+[dependencies]
+agentctl-core = { version = "0.2.0", path = "../agentctl-core" }
+agentctl-observability = { version = "0.2.0", path = "../agentctl-observability" }
+agentctl-protocols = { version = "0.2.0", path = "../agentctl-protocols" }
+agentctl-providers = { version = "0.2.0", path = "../agentctl-providers" }
+agentctl-runtime = { version = "0.2.0", path = "../agentctl-runtime" }
+agentctl-store = { version = "0.2.0", path = "../agentctl-store" }
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

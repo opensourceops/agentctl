@@ -1,0 +1,145 @@
+name: credential-free-ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: credential-free-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.88.0"
+  CARGO_DENY_VERSION: "0.20.2"
+  CARGO_CYCLONEDX_VERSION: "0.5.9"
+  CARGO_CYCLONEDX_LINUX_X64_SHA256: "fb8dbee9f182173e062a64a387b21a0badc6fab8b2abf9294973f012972bf6d8"
+
+jobs:
+  gates:
+    name: gates (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+          host="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+          test "$host" = "${{ matrix.target }}"
+
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+
+      - name: Run deterministic verification gate
+        run: cargo xtask verify
+
+      - name: Run credential-free acceptance gate
+        run: cargo xtask acceptance
+
+      - name: Build production package
+        run: cargo xtask package
+
+      - name: Upload production package
+        id: package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record package artifact digest
+        run: echo "agentctl-${{ matrix.target }} artifact digest ${{ steps.package.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  production-sbom:
+    name: production SBOM
+    needs: gates
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Install pinned cargo-cyclonedx
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/cargo-cyclonedx.tar.xz"
+          tool_dir="$RUNNER_TEMP/cargo-cyclonedx"
+          curl --proto '=https' --tlsv1.2 --retry 3 --fail --location \
+            "https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-${CARGO_CYCLONEDX_VERSION}/cargo-cyclonedx-x86_64-unknown-linux-gnu.tar.xz" \
+            --output "$archive"
+          echo "$CARGO_CYCLONEDX_LINUX_X64_SHA256  $archive" | sha256sum --check -
+          mkdir -p "$tool_dir"
+          tar -xJf "$archive" -C "$tool_dir" --strip-components=1
+          "$tool_dir/cargo-cyclonedx" cyclonedx --version
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+      - name: Generate CycloneDX production SBOM
+        run: |
+          set -euo pipefail
+          cargo cyclonedx \
+            --manifest-path crates/agentctl-cli/Cargo.toml \
+            --format json \
+            --describe binaries \
+            --target x86_64-unknown-linux-gnu \
+            --spec-version 1.5 \
+            --no-build-deps
+          mv crates/agentctl-cli/agentctl_bin.cdx.json agentctl-production.cdx.json
+
+      - name: Validate and digest production SBOM
+        id: sbom_file
+        run: |
+          set -euo pipefail
+          jq -e '
+            .bomFormat == "CycloneDX"
+            and .specVersion == "1.5"
+            and .metadata.component.name == "agentctl"
+            and ((.components | type) == "array")
+            and ((.components | length) > 0)
+            and any(.components[]; ((.purl // "") | startswith("pkg:cargo/")))
+          ' agentctl-production.cdx.json >/dev/null
+          digest="$(sha256sum agentctl-production.cdx.json | cut -d ' ' -f 1)"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          echo "agentctl-production.cdx.json SHA-256 $digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload production SBOM
+        id: sbom
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-production-sbom-cyclonedx
+          path: agentctl-production.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record SBOM artifact digest
+        run: echo "agentctl-production-sbom-cyclonedx artifact digest ${{ steps.sbom.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"

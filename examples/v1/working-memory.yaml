@@ -1,0 +1,21 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: working-memory
+spec:
+  memory:
+    working:
+      counter: 0
+  actions:
+    remember:
+      kind: builtin.memory.write
+    recall:
+      kind: builtin.memory.read
+  tasks:
+    - id: remember
+      uses: action:remember
+      with: { key: counter, value: 1 }
+    - id: recall
+      uses: action:recall
+      needs: [remember]
+      with: { key: counter }

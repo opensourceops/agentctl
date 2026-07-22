@@ -1,0 +1,18 @@
+[package]
+name = "agentctl-observability"
+description = "Redacted audit and OpenTelemetry-compatible events for agentctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentctl-core = { version = "0.2.0", path = "../agentctl-core" }
+chrono.workspace = true
+opentelemetry.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

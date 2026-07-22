@@ -1,0 +1,18 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: hello
+  description: Deterministic hello world with typed inputs and outputs.
+spec:
+  inputs:
+    name: world
+  outputs:
+    greeting: "${{ tasks.greet.output.output.message }}"
+  actions:
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: greet
+      uses: action:assign
+      with:
+        message: "hello, ${{ inputs.name }}"

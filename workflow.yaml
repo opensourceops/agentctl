@@ -1,0 +1,78 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: acceptance-mock-tool
+spec:
+  inputs:
+    reportPath: artifacts/mock-report.txt
+  outputs:
+    verdict: "${{ tasks.inspect.output.text }}"
+    artifact: "${{ inputs.reportPath }}"
+  providers:
+    fake:
+      kind: fake
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: never
+  tools:
+    read_fixture:
+      kind: builtin.workspace.read
+      description: Read a UTF-8 file inside the authorized workspace.
+      inputSchema:
+        type: object
+        properties:
+          path: { type: string }
+        required: [path]
+        additionalProperties: false
+      outputSchema:
+        type: object
+        properties:
+          path: { type: string }
+          content: { type: string }
+          bytes: { type: integer }
+          sha256: { type: string }
+        required: [path, content, bytes, sha256]
+        additionalProperties: false
+      capability: filesystem.read
+      risk: low
+      effectClass: observe
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    inspector:
+      provider: fake
+      model: scripted
+      instructions: Read the fixture and report its marker.
+      tools: [read_fixture]
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 32
+      timeoutSeconds: 5
+      providerOptions:
+        toolInput: { path: fixture/service.txt }
+        finalText: AGENTCTL_MOCK_FIXTURE_VERIFIED
+  actions:
+    assert:
+      kind: builtin.assert
+    write:
+      kind: builtin.write
+  tasks:
+    - id: inspect
+      uses: agent:inspector
+      with:
+        prompt: Use read_fixture before answering.
+    - id: verify
+      uses: action:assert
+      needs: [inspect]
+      with:
+        that: "${{ tasks.inspect.output.text == 'AGENTCTL_MOCK_FIXTURE_VERIFIED' }}"
+        message: the mock provider did not complete its tool continuation
+    - id: report
+      uses: action:write
+      needs: [inspect, verify]
+      with:
+        path: "${{ inputs.reportPath }}"
+        content: "${{ tasks.inspect.output.text }}"

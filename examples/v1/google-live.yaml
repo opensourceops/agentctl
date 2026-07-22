@@ -1,0 +1,19 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: google-live }
+spec:
+  providers:
+    google:
+      kind: google
+      credential: { env: GEMINI_API_KEY }
+  policy:
+    networkAllowlist: [generativelanguage.googleapis.com]
+  agents:
+    answer:
+      provider: google
+      model: gemini-3.5-flash
+      instructions: Reply with one short sentence.
+      maxTurns: 1
+      maxOutputTokens: 64
+  tasks:
+    - { id: answer, uses: "agent:answer", with: { prompt: Say hello. } }

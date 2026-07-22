@@ -1,0 +1,58 @@
+[package]
+name = "agentctl-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.88"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+agentctl-core = { version = "0.2.0", path = "../crates/agentctl-core" }
+agentctl-protocols = { version = "0.2.0", path = "../crates/agentctl-protocols" }
+agentctl-store = { version = "0.2.0", path = "../crates/agentctl-store" }
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[[bin]]
+name = "workflow_yaml"
+path = "fuzz_targets/workflow_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provider_response"
+path = "fuzz_targets/provider_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "template"
+path = "fuzz_targets/template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_response"
+path = "fuzz_targets/protocol_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "persisted_state"
+path = "fuzz_targets/persisted_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_schema_input"
+path = "fuzz_targets/tool_schema_input.rs"
+test = false
+doc = false
+bench = false

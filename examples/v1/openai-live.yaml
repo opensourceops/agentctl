@@ -1,0 +1,25 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: openai-live
+spec:
+  providers:
+    openai:
+      kind: openai
+      credential: { env: OPENAI_API_KEY }
+  policy:
+    networkAllowlist: [api.openai.com]
+  agents:
+    answer:
+      provider: openai
+      model: gpt-5.6
+      instructions: Reply with exactly one short sentence.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 30
+      reasoning: { effort: low }
+  tasks:
+    - id: answer
+      uses: agent:answer
+      with: { prompt: Say hello. }

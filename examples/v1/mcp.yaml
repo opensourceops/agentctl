@@ -1,0 +1,23 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: mcp-tool
+spec:
+  policy:
+    networkAllowlist: [127.0.0.1]
+    approval: never
+  mcpServers:
+    local:
+      url: http://127.0.0.1:8765/mcp
+      protocolVersion: 2025-11-25
+      timeoutSeconds: 5
+  actions:
+    call:
+      kind: mcp.call
+  tasks:
+    - id: call
+      uses: action:call
+      with:
+        server: local
+        tool: echo
+        arguments: { text: hello }

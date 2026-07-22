@@ -1,0 +1,17 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: policy-denial
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    toolsDeny: [filesystem.write]
+    approval: never
+  actions:
+    denied:
+      kind: builtin.write
+  tasks:
+    - id: denied
+      uses: action:denied
+      with: { path: artifacts/denied.txt, content: must-not-exist }
