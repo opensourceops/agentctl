@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -8,11 +9,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::process::{bounded_output, bounded_wait, configure_piped_command, output_diagnostics};
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
+const ACCEPTANCE_SCENARIOS: usize = 28;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -708,7 +711,116 @@ pub fn run(root: &Path) -> Result<()> {
     )?;
     ensure_eq(&quickstart_run, "/data/output/verdict", VERIFY_TOKEN)?;
 
-    println!("agentctl credential-free acceptance passed (25 scenarios)");
+    scenario(
+        26,
+        "selective repair plans reuse, executes the suffix, and exposes lineage",
+    );
+    let repair_source = workspace.join("repair-source.yaml");
+    let repair_target = workspace.join("repair-target.yaml");
+    write(&repair_source, SELECTIVE_REPAIR_SOURCE_WORKFLOW)?;
+    write(&repair_target, SELECTIVE_REPAIR_TARGET_WORKFLOW)?;
+    let repair_db = directory.path().join("repair.db");
+    let source_failure = json_with_code(
+        &binary,
+        &workspace,
+        &run_args(&repair_source, &repair_db, &workspace, &[]),
+        4,
+    )?;
+    let source_run_id = string_at(&source_failure, "/error/runId")?;
+    let repair_plan = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "repair",
+            path(&repair_target)?,
+            source_run_id,
+            "--from",
+            "second",
+            "--plan",
+            "--db",
+            path(&repair_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&repair_plan, "/data/compatible", true)?;
+    ensure_eq(&repair_plan, "/data/reusedTasks/0", "first")?;
+    ensure_eq(&repair_plan, "/data/rerunTasks/0", "second")?;
+    ensure_eq(&repair_plan, "/data/rerunTasks/1", "third")?;
+    let repair = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "repair",
+            path(&repair_target)?,
+            source_run_id,
+            "--from",
+            "second",
+            "--reason",
+            "acceptance fixture",
+            "--db",
+            path(&repair_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&repair, "/data/state", "succeeded")?;
+    ensure_eq(&repair, "/data/sourceRunId", source_run_id)?;
+    ensure_eq(&repair, "/data/reusedTasks/0", "first")?;
+    let repair_run_id = string_at(&repair, "/data/runId")?;
+    let repair_inspect = inspect(&binary, &workspace, &repair_db, repair_run_id)?;
+    ensure_eq(&repair_inspect, "/data/run/mode", "repair")?;
+    ensure_eq(&repair_inspect, "/data/run/sourceRunId", source_run_id)?;
+    ensure_eq(&repair_inspect, "/data/tasks/0/disposition", "reused")?;
+    ensure_eq(&repair_inspect, "/data/tasks/1/disposition", "executed")?;
+    ensure!(array_len(&repair_inspect, "/data/effects")? == 0);
+
+    scenario(
+        27,
+        "blocked repair plans are parseable and create no partial run",
+    );
+    let incompatible = workspace.join("repair-incompatible.yaml");
+    write(
+        &incompatible,
+        &SELECTIVE_REPAIR_TARGET_WORKFLOW.replace("value: durable", "value: changed"),
+    )?;
+    let blocked = json_with_code(
+        &binary,
+        &workspace,
+        &strings([
+            "repair",
+            path(&incompatible)?,
+            source_run_id,
+            "--from",
+            "second",
+            "--plan",
+            "--db",
+            path(&repair_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        3,
+    )?;
+    ensure_eq(&blocked, "/data/compatible", false)?;
+    ensure_eq(
+        &blocked,
+        "/data/blockedReuse/0/rule",
+        "definition_fingerprint_mismatch",
+    )?;
+
+    scenario(
+        28,
+        "effect inspection and not-applied reconciliation unblock repair",
+    );
+    uncertain_repair_acceptance(&binary, &workspace, directory.path())?;
+
+    println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
 
@@ -736,6 +848,82 @@ pub fn container(root: &Path) -> Result<()> {
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
     ensure!(array_len(&replay_inspect, "/data/toolCalls")? == 0);
 
+    let repair_directory = tempfile::tempdir()?;
+    let repair_layout = container_layout(repair_directory.path(), false)?;
+    write(
+        &repair_layout.config.join("repair-source.yaml"),
+        SELECTIVE_REPAIR_SOURCE_WORKFLOW,
+    )?;
+    write(
+        &repair_layout.config.join("repair-target.yaml"),
+        SELECTIVE_REPAIR_TARGET_WORKFLOW,
+    )?;
+    let source_failure = container_agentctl(
+        &engine,
+        &repair_layout,
+        &[
+            "run",
+            "/config/repair-source.yaml",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/repair.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        4,
+        "OCI repair source",
+    )?;
+    let source_run_id = string_at(&source_failure, "/error/runId")?;
+    let repair_plan = container_agentctl(
+        &engine,
+        &repair_layout,
+        &[
+            "repair",
+            "/config/repair-target.yaml",
+            source_run_id,
+            "--from",
+            "second",
+            "--plan",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/repair.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI repair plan",
+    )?;
+    ensure_eq(&repair_plan, "/data/reusedTasks/0", "first")?;
+    let repaired = container_agentctl(
+        &engine,
+        &repair_layout,
+        &[
+            "repair",
+            "/config/repair-target.yaml",
+            source_run_id,
+            "--from",
+            "second",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/repair.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI selective repair",
+    )?;
+    ensure_eq(&repaired, "/data/state", "succeeded")?;
+    ensure_eq(&repaired, "/data/reusedTasks/0", "first")?;
+
     let missing_directory = tempfile::tempdir()?;
     let missing = container_layout(missing_directory.path(), false)?;
     write(&missing.config.join("workflow.yaml"), OPENAI_AUTH_WORKFLOW)?;
@@ -752,7 +940,7 @@ pub fn container(root: &Path) -> Result<()> {
 
     container_signal_acceptance(&engine, directory.path())?;
     println!(
-        "agentctl OCI acceptance passed: success, artifact, inspect, network-disabled replay, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
+        "agentctl OCI acceptance passed: success, artifact, inspect, network-disabled replay, selective repair, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
     );
     Ok(())
 }
@@ -830,6 +1018,454 @@ pub fn live_openai(root: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn examples_live_openai(root: &Path) -> Result<()> {
+    ensure!(
+        env::var_os("OPENAI_API_KEY").is_some(),
+        "OPENAI_API_KEY is required for the explicit live example command"
+    );
+    super::verify_example_matrix(root)?;
+    let expected_live = BTreeSet::from([
+        "examples/docs/provider-portability/openai.yaml".to_owned(),
+        "examples/openai-live/workflow.yaml".to_owned(),
+        "examples/selective-repair-openai/repaired.workflow.yaml".to_owned(),
+        "examples/selective-repair-openai/source.workflow.yaml".to_owned(),
+        "examples/v1/openai-live.yaml".to_owned(),
+        "examples/v1/secret-reference.yaml".to_owned(),
+    ]);
+    let mut discovered_live = BTreeSet::new();
+    collect_openai_workflows(&root.join("examples"), root, &mut discovered_live)?;
+    ensure!(
+        discovered_live == expected_live,
+        "live OpenAI inventory mismatch; discovered={discovered_live:?}, expected={expected_live:?}"
+    );
+    super::package(root)?;
+    let binary = packaged_binary(root)?;
+    let mut requests = 0_usize;
+    let mut usage = UsageTotals::default();
+    let mut tool_calls = 0_usize;
+    let mut example_runs = Vec::new();
+
+    for (example, expected_code) in [
+        ("examples/openai-live/workflow.yaml", 0),
+        ("examples/v1/openai-live.yaml", 0),
+        ("examples/v1/secret-reference.yaml", 0),
+        ("examples/docs/provider-portability/openai.yaml", 0),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let source = root.join(example);
+        let source_parent = source.parent().context("live example parent")?;
+        copy_directory(source_parent, directory.path())?;
+        let workflow = directory
+            .path()
+            .join(source.file_name().context("live example file name")?);
+        let db = directory.path().join("runtime.db");
+        successful_json(
+            &binary,
+            directory.path(),
+            &strings([
+                "auth",
+                "check",
+                path(&workflow)?,
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+        )?;
+        successful_json(
+            &binary,
+            directory.path(),
+            &strings([
+                "plan",
+                path(&workflow)?,
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+        )?;
+        let result = json_with_code(
+            &binary,
+            directory.path(),
+            &run_args(&workflow, &db, directory.path(), &[]),
+            expected_code,
+        )?;
+        let run_id = if expected_code == 0 {
+            string_at(&result, "/data/runId")?
+        } else {
+            string_at(&result, "/error/runId")?
+        };
+        let evidence = inspect(&binary, directory.path(), &db, run_id)?;
+        assert_secret_absent(&evidence)?;
+        requests = requests.saturating_add(model_effects(&evidence));
+        usage = usage.plus(usage_totals(&evidence));
+        tool_calls = tool_calls.saturating_add(array_len(&evidence, "/data/toolCalls")?);
+        guard_live_budget(requests, &usage)?;
+        if example == "examples/openai-live/workflow.yaml" {
+            ensure_eq(&result, "/data/output/verdict", LIVE_VERIFY_TOKEN)?;
+            ensure!(
+                fs::read_to_string(directory.path().join("artifacts/openai-live-report.txt"))?
+                    == LIVE_VERIFY_TOKEN
+            );
+        }
+        example_runs.push(serde_json::json!({
+            "example": example,
+            "model": "gpt-5.6",
+            "runId": run_id,
+            "status": evidence.pointer("/data/run/state"),
+            "requestCount": model_effects(&evidence),
+            "toolCallCount": array_len(&evidence, "/data/toolCalls")?,
+        }));
+    }
+
+    let repair_directory = tempfile::tempdir()?;
+    let repair_workspace = repair_directory.path().join("selective-repair");
+    copy_directory(
+        &root.join("examples/selective-repair-openai"),
+        &repair_workspace,
+    )?;
+    let source_workflow = repair_workspace.join("source.workflow.yaml");
+    let target_workflow = repair_workspace.join("repaired.workflow.yaml");
+    let repair_db = repair_workspace.join("runtime.db");
+    successful_json(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "plan",
+            path(&source_workflow)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    successful_json(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "plan",
+            path(&target_workflow)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let source_result = json_with_code(
+        &binary,
+        &repair_workspace,
+        &run_args(&source_workflow, &repair_db, &repair_workspace, &[]),
+        4,
+    )?;
+    let source_run_id = string_at(&source_result, "/error/runId")?;
+    let source_before = inspect(&binary, &repair_workspace, &repair_db, source_run_id)?;
+    ensure_eq(&source_before, "/data/run/state", "failed")?;
+    ensure_eq(&source_before, "/data/tasks/0/state", "succeeded")?;
+    ensure_eq(&source_before, "/data/tasks/1/state", "failed")?;
+    ensure_eq(
+        &source_before,
+        "/data/tasks/0/output/marker",
+        "SELECTIVE_REPAIR_FIXTURE_CONFIRMED",
+    )?;
+    ensure!(model_effects(&source_before) >= 3);
+    ensure!(
+        source_before
+            .pointer("/data/providerSessions/1/continuation")
+            .is_some(),
+        "failed source task did not retain provider continuation evidence"
+    );
+
+    let repair_plan = successful_json(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "repair",
+            path(&target_workflow)?,
+            source_run_id,
+            "--from",
+            "publish",
+            "--plan",
+            "--db",
+            path(&repair_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&repair_plan, "/data/compatible", true)?;
+    ensure_eq(&repair_plan, "/data/reusedTasks/0", "analyze")?;
+    ensure_eq(&repair_plan, "/data/rerunTasks/0", "publish")?;
+    let repair_result = successful_json(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "repair",
+            path(&target_workflow)?,
+            source_run_id,
+            "--from",
+            "publish",
+            "--reason",
+            "live selective-repair acceptance",
+            "--db",
+            path(&repair_db)?,
+            "--workspace",
+            path(&repair_workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let repair_run_id = string_at(&repair_result, "/data/runId")?;
+    let repair_evidence = inspect(&binary, &repair_workspace, &repair_db, repair_run_id)?;
+    ensure_eq(&repair_evidence, "/data/run/mode", "repair")?;
+    ensure_eq(&repair_evidence, "/data/run/sourceRunId", source_run_id)?;
+    ensure_eq(&repair_evidence, "/data/tasks/0/disposition", "reused")?;
+    ensure_eq(&repair_evidence, "/data/tasks/1/disposition", "executed")?;
+    ensure_eq(
+        &repair_result,
+        "/data/output/upstream",
+        "SELECTIVE_REPAIR_FIXTURE_CONFIRMED",
+    )?;
+    ensure_eq(&repair_result, "/data/output/repaired", true)?;
+    ensure!(
+        count_task_items(&repair_evidence, "/data/effects", "analyze", true) == 0,
+        "reused analyze task emitted a fresh effect"
+    );
+    ensure!(
+        count_task_items(&repair_evidence, "/data/providerSessions", "analyze", false) == 0,
+        "reused analyze task created a provider session"
+    );
+    ensure!(
+        count_task_items(&repair_evidence, "/data/toolCalls", "analyze", false) == 0,
+        "reused analyze task called a tool"
+    );
+    ensure!(
+        count_task_items(&repair_evidence, "/data/providerSessions", "publish", false) == 1,
+        "repaired publish task did not use one fresh task-local provider session"
+    );
+    ensure!(
+        source_before.pointer("/data/providerSessions/1/continuation")
+            != repair_evidence.pointer("/data/providerSessions/0/continuation"),
+        "repair continued the failed source provider session"
+    );
+    ensure!(
+        count_task_items(&repair_evidence, "/data/toolCalls", "publish", false) == 1,
+        "repaired publish task did not execute the model-selected tool"
+    );
+    let artifact = repair_workspace.join("artifacts/selective-repair-result.txt");
+    ensure!(
+        fs::read_to_string(&artifact)? == "SELECTIVE_REPAIR_FIXTURE_CONFIRMED",
+        "selective repair artifact did not contain the reused upstream marker"
+    );
+    let artifact_digest_before = hex::encode(Sha256::digest(fs::read(&artifact)?));
+
+    let source_after = inspect(&binary, &repair_workspace, &repair_db, source_run_id)?;
+    ensure!(
+        source_before.pointer("/data/run") == source_after.pointer("/data/run")
+            && source_before.pointer("/data/tasks") == source_after.pointer("/data/tasks"),
+        "repair mutated the terminal source run"
+    );
+    let replay_result = json_with_removed_env(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "replay",
+            repair_run_id,
+            "--db",
+            path(&repair_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        "OPENAI_API_KEY",
+        0,
+    )?;
+    let replay_run_id = string_at(&replay_result, "/data/runId")?;
+    let replay_evidence = inspect(&binary, &repair_workspace, &repair_db, replay_run_id)?;
+    ensure!(array_len(&replay_evidence, "/data/effects")? == 0);
+    ensure!(array_len(&replay_evidence, "/data/toolCalls")? == 0);
+    ensure!(array_len(&replay_evidence, "/data/providerSessions")? == 0);
+    ensure!(replay_result.pointer("/data/output") == repair_result.pointer("/data/output"));
+    ensure!(
+        artifact_digest_before == hex::encode(Sha256::digest(fs::read(&artifact)?)),
+        "offline replay changed the repair artifact"
+    );
+
+    for evidence in [&source_before, &repair_evidence] {
+        assert_secret_absent(evidence)?;
+        requests = requests.saturating_add(model_effects(evidence));
+        usage = usage.plus(usage_totals(evidence));
+        tool_calls = tool_calls.saturating_add(array_len(evidence, "/data/toolCalls")?);
+    }
+    guard_live_budget(requests, &usage)?;
+    example_runs.push(serde_json::json!({
+        "example": "examples/selective-repair-openai/source.workflow.yaml",
+        "model": "gpt-5.6",
+        "runId": source_run_id,
+        "status": "failed",
+        "requestCount": model_effects(&source_before),
+        "toolCallCount": array_len(&source_before, "/data/toolCalls")?,
+    }));
+    example_runs.push(serde_json::json!({
+        "example": "examples/selective-repair-openai/repaired.workflow.yaml",
+        "model": "gpt-5.6",
+        "runId": repair_run_id,
+        "status": "succeeded",
+        "requestCount": model_effects(&repair_evidence),
+        "toolCallCount": array_len(&repair_evidence, "/data/toolCalls")?,
+        "reusedUpstream": true,
+        "replayRunId": replay_run_id,
+        "replayFreshEffects": 0,
+    }));
+
+    write_live_summary(
+        root,
+        &example_runs,
+        requests,
+        tool_calls,
+        &usage,
+        source_run_id,
+        repair_run_id,
+        replay_run_id,
+        "local-complete-container-pending",
+    )?;
+
+    let engine = container_engine()?;
+    ensure_engine_ready(&engine)?;
+    build_image(root, &engine)?;
+    let container_directory = tempfile::tempdir()?;
+    let layout = container_layout(container_directory.path(), true)?;
+    let source_container = SELECTIVE_REPAIR_SOURCE_WORKFLOW
+        .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
+        .replace(
+            "artifacts/selective-repair-result.txt",
+            "/artifacts/selective-repair-result.txt",
+        );
+    let target_container = SELECTIVE_REPAIR_TARGET_WORKFLOW
+        .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
+        .replace(
+            "artifacts/selective-repair-result.txt",
+            "/artifacts/selective-repair-result.txt",
+        );
+    write(
+        &layout.workspace.join("fixture/service.txt"),
+        "service=agentctl\nmarker=SELECTIVE_REPAIR_FIXTURE_CONFIRMED\n",
+    )?;
+    write(&layout.config.join("repair-source.yaml"), &source_container)?;
+    write(&layout.config.join("repair-target.yaml"), &target_container)?;
+    let container_source_result = container_agentctl_with_openai(
+        &engine,
+        &layout,
+        &[
+            "run",
+            "/config/repair-source.yaml",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/runtime.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        4,
+        "live OCI repair source",
+    )?;
+    let container_source_id = string_at(&container_source_result, "/error/runId")?;
+    let container_plan = container_agentctl(
+        &engine,
+        &layout,
+        &[
+            "repair",
+            "/config/repair-target.yaml",
+            container_source_id,
+            "--from",
+            "publish",
+            "--plan",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/runtime.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "live OCI repair plan",
+    )?;
+    ensure_eq(&container_plan, "/data/reusedTasks/0", "analyze")?;
+    let container_repair_result = container_agentctl_with_openai(
+        &engine,
+        &layout,
+        &[
+            "repair",
+            "/config/repair-target.yaml",
+            container_source_id,
+            "--from",
+            "publish",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/runtime.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "live OCI selective repair",
+    )?;
+    let container_repair_id = string_at(&container_repair_result, "/data/runId")?;
+    let container_source_evidence = inspect_container(&engine, &layout, container_source_id)?;
+    let container_repair_evidence = inspect_container(&engine, &layout, container_repair_id)?;
+    ensure!(count_task_items(&container_repair_evidence, "/data/effects", "analyze", true) == 0);
+    ensure!(
+        count_task_items(
+            &container_repair_evidence,
+            "/data/toolCalls",
+            "analyze",
+            false
+        ) == 0
+    );
+    ensure!(
+        fs::read_to_string(layout.artifacts.join("selective-repair-result.txt"))?
+            == "SELECTIVE_REPAIR_FIXTURE_CONFIRMED"
+    );
+    let container_replay = replay_container(&engine, &layout, container_repair_id)?;
+    let container_replay_id = string_at(&container_replay, "/data/runId")?;
+    let container_replay_evidence = inspect_container(&engine, &layout, container_replay_id)?;
+    ensure!(array_len(&container_replay_evidence, "/data/effects")? == 0);
+    ensure!(array_len(&container_replay_evidence, "/data/toolCalls")? == 0);
+    ensure!(array_len(&container_replay_evidence, "/data/providerSessions")? == 0);
+    for evidence in [&container_source_evidence, &container_repair_evidence] {
+        assert_secret_absent(evidence)?;
+        requests = requests.saturating_add(model_effects(evidence));
+        usage = usage.plus(usage_totals(evidence));
+        tool_calls = tool_calls.saturating_add(array_len(evidence, "/data/toolCalls")?);
+    }
+    guard_live_budget(requests, &usage)?;
+    write_live_summary(
+        root,
+        &example_runs,
+        requests,
+        tool_calls,
+        &usage,
+        source_run_id,
+        repair_run_id,
+        replay_run_id,
+        "local-and-container-complete",
+    )?;
+    println!(
+        "live OpenAI example verification passed: examples=6 model=gpt-5.6 requests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={container_source_id} containerRepairRunId={container_repair_id} containerReplayRunId={container_replay_id}",
+        usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write,
+    );
+    Ok(())
+}
+
 fn run_error(
     binary: &Path,
     cwd: &Path,
@@ -881,6 +1517,108 @@ fn signal_acceptance(binary: &Path, workspace: &Path, directory: &Path) -> Resul
     {
         let _ = (binary, workspace, directory);
         println!("SIGTERM acceptance is not applicable on this platform");
+    }
+    Ok(())
+}
+
+fn uncertain_repair_acceptance(binary: &Path, workspace: &Path, directory: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let source = workspace.join("repair-uncertain-source.yaml");
+        let target = workspace.join("repair-uncertain-target.yaml");
+        write(&source, UNCERTAIN_REPAIR_SOURCE_WORKFLOW)?;
+        write(&target, UNCERTAIN_REPAIR_TARGET_WORKFLOW)?;
+        let db = directory.join("repair-uncertain.db");
+        let failure = json_with_code(
+            binary,
+            workspace,
+            &run_args(&source, &db, workspace, &[]),
+            4,
+        )?;
+        let run_id = string_at(&failure, "/error/runId")?;
+        let effects = successful_json(
+            binary,
+            workspace,
+            &strings([
+                "effects",
+                "--db",
+                path(&db)?,
+                "inspect",
+                run_id,
+                "--task",
+                "work",
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+        )?;
+        ensure_eq(&effects, "/data/effects/0/status", "uncertain")?;
+        let effect_id = string_at(&effects, "/data/effects/0/request/id")?;
+        let blocked = json_with_code(
+            binary,
+            workspace,
+            &strings([
+                "repair",
+                path(&target)?,
+                run_id,
+                "--from",
+                "work",
+                "--plan",
+                "--db",
+                path(&db)?,
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+            3,
+        )?;
+        ensure_eq(&blocked, "/data/blockedReuse/0/rule", "unreconciled_effect")?;
+        successful_json(
+            binary,
+            workspace,
+            &strings([
+                "effects",
+                "--db",
+                path(&db)?,
+                "reconcile",
+                effect_id,
+                "--outcome",
+                "not-applied",
+                "--actor",
+                "acceptance",
+                "--reason",
+                "subprocess was terminated before external mutation",
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+        )?;
+        let repaired = successful_json(
+            binary,
+            workspace,
+            &strings([
+                "repair",
+                path(&target)?,
+                run_id,
+                "--from",
+                "work",
+                "--db",
+                path(&db)?,
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+        )?;
+        ensure_eq(&repaired, "/data/state", "succeeded")?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (binary, workspace, directory);
+        println!("uncertain subprocess repair acceptance is not applicable on this platform");
     }
     Ok(())
 }
@@ -995,6 +1733,7 @@ struct UsageTotals {
     reasoning: u64,
     cache_read: u64,
     cache_write: u64,
+    cost_microusd: u64,
 }
 
 impl UsageTotals {
@@ -1005,18 +1744,22 @@ impl UsageTotals {
             reasoning: self.reasoning.saturating_add(other.reasoning),
             cache_read: self.cache_read.saturating_add(other.cache_read),
             cache_write: self.cache_write.saturating_add(other.cache_write),
+            cost_microusd: self.cost_microusd.saturating_add(other.cost_microusd),
         }
     }
 }
 
 fn usage_totals(value: &Value) -> UsageTotals {
     let mut total = UsageTotals::default();
-    let Some(tasks) = value.pointer("/data/tasks").and_then(Value::as_array) else {
+    let Some(effects) = value.pointer("/data/effects").and_then(Value::as_array) else {
         return total;
     };
-    for usage in tasks
+    for usage in effects
         .iter()
-        .filter_map(|task| task.pointer("/output/usage"))
+        .filter(|effect| {
+            effect.pointer("/request/effectClass") == Some(&Value::String("model".to_owned()))
+        })
+        .filter_map(|effect| effect.pointer("/result/usage"))
     {
         total.input = total
             .input
@@ -1033,8 +1776,152 @@ fn usage_totals(value: &Value) -> UsageTotals {
         total.cache_write = total
             .cache_write
             .saturating_add(usage["cacheWriteTokens"].as_u64().unwrap_or(0));
+        total.cost_microusd = total
+            .cost_microusd
+            .saturating_add(usage["costMicrousd"].as_u64().unwrap_or(0));
     }
     total
+}
+
+fn guard_live_budget(requests: usize, usage: &UsageTotals) -> Result<()> {
+    const MAX_REQUESTS: usize = 40;
+    const MAX_COST_MICROUSD: u64 = 10_000_000;
+    const CONSERVATIVE_INPUT_MICROUSD_PER_MILLION: u64 = 10_000_000;
+    const CONSERVATIVE_OUTPUT_MICROUSD_PER_MILLION: u64 = 50_000_000;
+
+    ensure!(
+        requests <= MAX_REQUESTS,
+        "live request budget exceeded: {requests} > {MAX_REQUESTS}"
+    );
+    let conservative_cost = usage
+        .input
+        .saturating_mul(CONSERVATIVE_INPUT_MICROUSD_PER_MILLION)
+        .saturating_div(1_000_000)
+        .saturating_add(
+            usage
+                .output
+                .saturating_add(usage.reasoning)
+                .saturating_mul(CONSERVATIVE_OUTPUT_MICROUSD_PER_MILLION)
+                .saturating_div(1_000_000),
+        );
+    let guarded_cost = if usage.cost_microusd == 0 {
+        conservative_cost
+    } else {
+        usage.cost_microusd.max(conservative_cost)
+    };
+    ensure!(
+        guarded_cost < MAX_COST_MICROUSD,
+        "live cost guard reached USD 10"
+    );
+    Ok(())
+}
+
+fn count_task_items(value: &Value, pointer: &str, task_id: &str, nested_request: bool) -> usize {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_array)
+        .map_or(0, |items| {
+            items
+                .iter()
+                .filter(|item| {
+                    let pointer = if nested_request {
+                        "/request/taskId"
+                    } else {
+                        "/taskId"
+                    };
+                    item.pointer(pointer).and_then(Value::as_str) == Some(task_id)
+                })
+                .count()
+        })
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_openai_workflows(
+    directory: &Path,
+    root: &Path,
+    output: &mut BTreeSet<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_openai_workflows(&path, root, output)?;
+        } else if matches!(
+            path.extension().and_then(OsStr::to_str),
+            Some("yaml" | "yml")
+        ) {
+            let source = fs::read_to_string(&path)?;
+            if source.contains("apiVersion: agentctl.dev/v1alpha1")
+                && source.contains("kind: openai")
+            {
+                output.insert(
+                    path.strip_prefix(root)
+                        .context("OpenAI example outside repository")?
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_live_summary(
+    root: &Path,
+    examples: &[Value],
+    requests: usize,
+    tool_calls: usize,
+    usage: &UsageTotals,
+    source_run_id: &str,
+    repair_run_id: &str,
+    replay_run_id: &str,
+    status: &str,
+) -> Result<()> {
+    let directory = root.join(".release-evidence/selective-repair");
+    fs::create_dir_all(&directory)?;
+    let value = serde_json::json!({
+        "formatVersion": 1,
+        "status": status,
+        "model": "gpt-5.6",
+        "requestCount": requests,
+        "toolCallCount": tool_calls,
+        "usage": {
+            "inputTokens": usage.input,
+            "outputTokens": usage.output,
+            "reasoningTokens": usage.reasoning,
+            "cacheReadTokens": usage.cache_read,
+            "cacheWriteTokens": usage.cache_write,
+            "providerReportedCostMicrousd": usage.cost_microusd,
+        },
+        "selectiveRepair": {
+            "sourceRunId": source_run_id,
+            "repairRunId": repair_run_id,
+            "replayRunId": replay_run_id,
+            "upstreamReused": true,
+            "replayFreshEffects": 0,
+        },
+        "examples": examples,
+    });
+    fs::write(
+        directory.join("live-summary.json"),
+        format!("{}\n", serde_json::to_string_pretty(&value)?),
+    )?;
+    Ok(())
 }
 
 fn assert_error_metadata(value: &Value) -> Result<()> {
@@ -1204,7 +2091,7 @@ fn command(root: &Path, program: &str, args: &[&str]) -> Result<()> {
 }
 
 fn scenario(number: usize, label: &str) {
-    println!("[{number}/25] {label}");
+    println!("[{number}/{ACCEPTANCE_SCENARIOS}] {label}");
 }
 
 fn write(path: &Path, contents: &str) -> Result<()> {
@@ -1572,6 +2459,32 @@ fn replay_container(engine: &Path, layout: &ContainerLayout, run_id: &str) -> Re
     parse_output(&output_with_code(command, 0, "keyless OCI replay")?)
 }
 
+fn container_agentctl(
+    engine: &Path,
+    layout: &ContainerLayout,
+    args: &[&str],
+    code: i32,
+    label: &str,
+) -> Result<Value> {
+    let mut command = container_base(engine, layout)?;
+    command.args(["--network", "none", "agentctl-acceptance:local"]);
+    command.args(args);
+    parse_output(&output_with_code(command, code, label)?)
+}
+
+fn container_agentctl_with_openai(
+    engine: &Path,
+    layout: &ContainerLayout,
+    args: &[&str],
+    code: i32,
+    label: &str,
+) -> Result<Value> {
+    let mut command = container_base(engine, layout)?;
+    command.args(["--env", "OPENAI_API_KEY", "agentctl-acceptance:local"]);
+    command.args(args);
+    parse_output(&output_with_code(command, code, label)?)
+}
+
 fn container_signal_acceptance(engine: &Path, root: &Path) -> Result<()> {
     let layout = container_layout(&root.join("container-signal"), false)?;
     write(
@@ -1769,6 +2682,82 @@ spec:
     - id: write
       uses: action:write
       with: { path: ../escaped.txt, content: blocked }
+"#;
+
+const SELECTIVE_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: selective-repair-acceptance }
+spec:
+  outputs:
+    repaired: "${{ tasks.third.output.output.value }}"
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:assign
+      with: { value: durable }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false, message: deliberately broken }
+    - id: third
+      uses: action:assign
+      needs: [second]
+      with: { value: repaired }
+"#;
+
+const SELECTIVE_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: selective-repair-acceptance }
+spec:
+  outputs:
+    repaired: "${{ tasks.third.output.output.value }}"
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:assign
+      with: { value: durable }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: true, message: fixed }
+    - id: third
+      uses: action:assign
+      needs: [second]
+      with: { value: repaired }
+"#;
+
+const UNCERTAIN_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: uncertain-repair-acceptance }
+spec:
+  policy:
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    wait:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, "sleep 2"]
+      timeoutSeconds: 1
+  tasks:
+    - { id: work, uses: "action:wait" }
+"#;
+
+const UNCERTAIN_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: uncertain-repair-acceptance }
+spec:
+  policy:
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: work, uses: "action:assign", with: { recovered: true } }
 "#;
 
 const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

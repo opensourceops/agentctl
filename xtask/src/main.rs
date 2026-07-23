@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -26,6 +27,8 @@ fn main() -> Result<()> {
         "acceptance" => acceptance::run(&root),
         "acceptance-container" => acceptance::container(&root),
         "acceptance-live-openai" => acceptance::live_openai(&root),
+        "examples-verify" => examples_verify(&root),
+        "examples-verify-live-openai" => acceptance::examples_live_openai(&root),
         "generate" => generate(&root),
         "package" => package(&root),
         "secret-scan" => {
@@ -34,7 +37,7 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
@@ -198,8 +201,9 @@ fn verify(root: &Path) -> Result<()> {
     println!("[6/12] generated schema and CLI reference consistency");
     verify_generated(root)?;
 
-    println!("[7/12] examples and negative contracts");
+    println!("[7/12] examples, inventory, and negative contracts");
     verify_examples(root)?;
+    verify_example_matrix(root)?;
 
     println!("[8/12] dependency sources and license metadata");
     verify_metadata(root)?;
@@ -218,6 +222,16 @@ fn verify(root: &Path) -> Result<()> {
     verify_production_boundary(root)?;
 
     println!("agentctl verification passed");
+    Ok(())
+}
+
+fn examples_verify(root: &Path) -> Result<()> {
+    run(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
+    verify_example_matrix(root)?;
+    verify_examples(root)?;
+    verify_docs_examples(root)?;
+    verify_markdown_links(root)?;
+    println!("agentctl credential-free example verification passed");
     Ok(())
 }
 
@@ -275,8 +289,12 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["resume"],
         &["replay"],
         &["fork"],
+        &["repair"],
         &["cancel"],
         &["inspect"],
+        &["effects"],
+        &["effects", "inspect"],
+        &["effects", "reconcile"],
         &["approvals"],
         &["approvals", "list"],
         &["approvals", "approve"],
@@ -418,6 +436,119 @@ fn verify_examples(root: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct ExampleMatrixRow {
+    path: String,
+    check_code: i32,
+    plan_code: i32,
+}
+
+fn verify_example_matrix(root: &Path) -> Result<()> {
+    let matrix_path = root.join("docs/execution/EXAMPLE_VERIFICATION_MATRIX.md");
+    let matrix = fs::read_to_string(&matrix_path)
+        .with_context(|| format!("read {}", matrix_path.display()))?;
+    let mut rows = BTreeMap::new();
+    for line in matrix.lines().filter(|line| line.starts_with("| `")) {
+        let columns = line.split('|').skip(1).map(str::trim).collect::<Vec<_>>();
+        if columns.len() < 13 {
+            bail!(
+                "{} has an incomplete example row: {line}",
+                matrix_path.display()
+            );
+        }
+        let path = columns[0]
+            .strip_prefix('`')
+            .and_then(|value| value.strip_suffix('`'))
+            .context("matrix path must be wrapped in backticks")?
+            .to_owned();
+        let check_code = columns[4]
+            .parse::<i32>()
+            .with_context(|| format!("matrix check code for {path}"))?;
+        let plan_code = columns[5]
+            .parse::<i32>()
+            .with_context(|| format!("matrix plan code for {path}"))?;
+        if rows
+            .insert(
+                path.clone(),
+                ExampleMatrixRow {
+                    path,
+                    check_code,
+                    plan_code,
+                },
+            )
+            .is_some()
+        {
+            bail!("duplicate example matrix row");
+        }
+    }
+
+    let mut discovered = Vec::new();
+    collect_yaml_files(&root.join("examples"), root, &mut discovered)?;
+    collect_yaml_files(&root.join("fixtures/compat"), root, &mut discovered)?;
+    let discovered = discovered.into_iter().collect::<BTreeSet<_>>();
+    let documented = rows.keys().cloned().collect::<BTreeSet<_>>();
+    if discovered != documented {
+        let missing = discovered.difference(&documented).collect::<Vec<_>>();
+        let stale = documented.difference(&discovered).collect::<Vec<_>>();
+        bail!("example matrix inventory mismatch; missing={missing:?}, stale={stale:?}");
+    }
+
+    let binary = binary_path(root);
+    for row in rows.values() {
+        if row.path.ends_with(".pack.yaml") {
+            continue;
+        }
+        let workflow = root.join(&row.path);
+        for (command_name, expected_code) in [("check", row.check_code), ("plan", row.plan_code)] {
+            let mut command = Command::new(&binary);
+            command
+                .current_dir(workflow.parent().context("workflow parent")?)
+                .arg(command_name)
+                .arg(&workflow)
+                .args(["--output", "json", "--color", "never"]);
+            let output = bounded_output(command, "example matrix validation")
+                .with_context(|| format!("{command_name} {}", row.path))?;
+            if output.status.code() != Some(expected_code) {
+                bail!(
+                    "{command_name} {} returned {:?}, expected {expected_code}\n{}",
+                    row.path,
+                    output.status.code(),
+                    output_diagnostics(&output)
+                );
+            }
+            let machine = if output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                &output.stdout
+            } else {
+                &output.stderr
+            };
+            serde_json::from_slice::<Value>(machine)
+                .with_context(|| format!("{command_name} {} did not emit JSON", row.path))?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_yaml_files(directory: &Path, root: &Path, output: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files(&path, root, output)?;
+        } else if matches!(
+            path.extension().and_then(OsStr::to_str),
+            Some("yaml" | "yml")
+        ) {
+            output.push(
+                path.strip_prefix(root)
+                    .context("example path outside repository")?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn verify_docs_examples(root: &Path) -> Result<()> {
     let binary = binary_path(root);
     let examples = root.join("examples/docs");
@@ -529,6 +660,7 @@ fn verify_public_documentation(root: &Path) -> Result<()> {
         "docs/guides/FIRST_AGENT_WORKFLOW.md",
         "docs/guides/WORKFLOW_AUTHORING.md",
         "docs/guides/LOCAL_OPERATION.md",
+        "docs/guides/repair-a-failed-workflow.md",
         "docs/guides/CI_CD.md",
         "docs/guides/TROUBLESHOOTING.md",
         "docs/reference/YAML.md",
@@ -543,6 +675,8 @@ fn verify_public_documentation(root: &Path) -> Result<()> {
         "docs/development/ADD_PROVIDER.md",
         "docs/development/ADD_MIGRATION.md",
         "docs/development/DOCUMENTATION.md",
+        "docs/execution/EXAMPLE_VERIFICATION_MATRIX.md",
+        "docs/research/selective-repair.md",
     ];
     for relative in required {
         if !root.join(relative).is_file() {
