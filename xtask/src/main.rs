@@ -22,6 +22,7 @@ fn main() -> Result<()> {
         .to_path_buf();
     match command.as_str() {
         "verify" => verify(&root),
+        "docs-verify" => docs_verify(&root),
         "acceptance" => acceptance::run(&root),
         "acceptance-container" => acceptance::container(&root),
         "acceptance-live-openai" => acceptance::live_openai(&root),
@@ -33,12 +34,35 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
         other => bail!("unknown xtask command `{other}`"),
     }
+}
+
+fn docs_verify(root: &Path) -> Result<()> {
+    println!("[1/6] build documentation test binary");
+    run(root, "cargo", &["build", "-p", "agentctl", "--locked"])?;
+
+    println!("[2/6] generated CLI and schema freshness");
+    verify_generated(root)?;
+
+    println!("[3/6] canonical v1 examples");
+    verify_examples(root)?;
+
+    println!("[4/6] documentation journey examples");
+    verify_docs_examples(root)?;
+
+    println!("[5/6] public writing and source inclusion");
+    verify_public_documentation(root)?;
+
+    println!("[6/6] local Markdown links");
+    verify_markdown_links(root)?;
+
+    println!("agentctl documentation verification passed");
+    Ok(())
 }
 
 pub(crate) fn package(root: &Path) -> Result<()> {
@@ -390,6 +414,230 @@ fn verify_examples(root: &Path) -> Result<()> {
     }
     if examples.join("artifacts/denied.txt").exists() {
         bail!("policy-denial example mutated the workspace");
+    }
+    Ok(())
+}
+
+fn verify_docs_examples(root: &Path) -> Result<()> {
+    let binary = binary_path(root);
+    let examples = root.join("examples/docs");
+    let mut files = Vec::new();
+    collect_files(&examples, &mut files)?;
+    files.sort();
+
+    for path in files
+        .iter()
+        .filter(|path| path.extension() == Some(OsStr::new("yaml")))
+    {
+        let mut command = Command::new(&binary);
+        command.arg("check").arg(path).args(["--output", "json"]);
+        let output = bounded_output(command, "agentctl documentation example check")
+            .with_context(|| format!("check documentation example {}", path.display()))?;
+        ensure_success(&output, &format!("check {}", path.display()))?;
+    }
+
+    for (directory, expected) in [
+        ("release-readiness", "RELEASE_EVIDENCE_REVIEWED"),
+        ("scheduled-review", "operational-review.txt"),
+        ("ci-quality-gate", "\"verdict\":\"pass\""),
+        ("provider-portability", "PORTABLE_SUMMARY_VERIFIED"),
+    ] {
+        let source_name = if directory == "provider-portability" {
+            "fake.yaml"
+        } else {
+            "workflow.yaml"
+        };
+        let temporary = tempfile::tempdir()?;
+        fs::create_dir_all(temporary.path().join("artifacts"))?;
+        fs::copy(
+            examples.join(directory).join(source_name),
+            temporary.path().join("workflow.yaml"),
+        )?;
+        let mut command = Command::new(&binary);
+        command.current_dir(temporary.path()).args([
+            "run",
+            "workflow.yaml",
+            "--db",
+            "runtime.db",
+            "--output",
+            "json",
+        ]);
+        let output = bounded_output(command, "agentctl documentation example run")
+            .with_context(|| format!("run documentation example {directory}"))?;
+        ensure_success(&output, &format!("run documentation example {directory}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains(expected) && !temporary.path().join("artifacts").join(expected).exists()
+        {
+            bail!("documentation example `{directory}` did not produce `{expected}`");
+        }
+    }
+
+    let temporary = tempfile::tempdir()?;
+    fs::copy(
+        examples.join("ci-quality-gate/workflow.yaml"),
+        temporary.path().join("workflow.yaml"),
+    )?;
+    let mut failed_gate = Command::new(&binary);
+    failed_gate.current_dir(temporary.path()).args([
+        "run",
+        "workflow.yaml",
+        "--db",
+        "runtime.db",
+        "--input",
+        "checksPassed=false",
+        "--output",
+        "json",
+    ]);
+    let output = bounded_output(failed_gate, "agentctl failed documentation quality gate")?;
+    if output.status.code() != Some(4) {
+        bail!(
+            "failed documentation quality gate returned {:?}: {}",
+            output.status.code(),
+            output_diagnostics(&output)
+        );
+    }
+    Ok(())
+}
+
+fn public_documentation_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = vec![
+        root.join("README.md"),
+        root.join("CODE_OF_CONDUCT.md"),
+        root.join("SECURITY.md"),
+        root.join("examples/docs/README.md"),
+    ];
+    let mut docs = Vec::new();
+    collect_files(&root.join("docs"), &mut docs)?;
+    files.extend(docs.into_iter().filter(|path| {
+        path.extension() == Some(OsStr::new("md"))
+            && !path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("execution" | "research")
+                )
+            })
+    }));
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn verify_public_documentation(root: &Path) -> Result<()> {
+    let required = [
+        "docs/guides/INSTALLATION.md",
+        "docs/guides/GETTING_STARTED.md",
+        "docs/guides/FIRST_AGENT_WORKFLOW.md",
+        "docs/guides/WORKFLOW_AUTHORING.md",
+        "docs/guides/LOCAL_OPERATION.md",
+        "docs/guides/CI_CD.md",
+        "docs/guides/TROUBLESHOOTING.md",
+        "docs/reference/YAML.md",
+        "docs/reference/CLI_OUTPUT.md",
+        "docs/reference/ENVIRONMENT_AND_PATHS.md",
+        "docs/reference/MATRICES.md",
+        "docs/reference/DATABASE.md",
+        "docs/reference/TERMINOLOGY.md",
+        "docs/architecture/DIAGRAMS.md",
+        "docs/development/REPOSITORY.md",
+        "docs/development/ADD_ACTION.md",
+        "docs/development/ADD_PROVIDER.md",
+        "docs/development/ADD_MIGRATION.md",
+        "docs/development/DOCUMENTATION.md",
+    ];
+    for relative in required {
+        if !root.join(relative).is_file() {
+            bail!("required canonical documentation is missing: {relative}");
+        }
+    }
+
+    let discouraged = [
+        "unlock",
+        "unleash",
+        "revolutionize",
+        "supercharge",
+        "seamlessly",
+        "effortlessly",
+        "cutting-edge",
+        "game-changing",
+        "next-generation",
+        "robust and scalable",
+        "powerful solution",
+        "in today's fast-paced world",
+    ];
+    for path in public_documentation_files(root)? {
+        let source = fs::read_to_string(&path)?;
+        if source.contains('—') {
+            bail!("em dash in public documentation: {}", path.display());
+        }
+        if source.contains("/Users/") {
+            bail!(
+                "absolute local path in public documentation: {}",
+                path.display()
+            );
+        }
+        let lower = source.to_lowercase();
+        if let Some(phrase) = discouraged.iter().find(|phrase| lower.contains(**phrase)) {
+            bail!(
+                "discouraged marketing phrase `{phrase}` in {}",
+                path.display()
+            );
+        }
+        for line in source.lines() {
+            let Some(include) = line
+                .trim()
+                .strip_prefix("<!-- agentctl-include: ")
+                .and_then(|line| line.strip_suffix(" -->"))
+            else {
+                continue;
+            };
+            let relative = include
+                .split_whitespace()
+                .next()
+                .context("documentation include requires a source path")?;
+            if !root.join(relative).is_file() {
+                bail!(
+                    "documentation include in {} references missing `{relative}`",
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_markdown_links(root: &Path) -> Result<()> {
+    for path in public_documentation_files(root)? {
+        let source = fs::read_to_string(&path)?;
+        let mut remaining = source.as_str();
+        while let Some(start) = remaining.find("](") {
+            remaining = &remaining[start + 2..];
+            let Some(end) = remaining.find(')') else {
+                bail!("unterminated Markdown link in {}", path.display());
+            };
+            let destination = &remaining[..end];
+            remaining = &remaining[end + 1..];
+            if destination.is_empty()
+                || destination.starts_with('#')
+                || destination.starts_with('/')
+                || destination.starts_with("http://")
+                || destination.starts_with("https://")
+                || destination.starts_with("mailto:")
+            {
+                continue;
+            }
+            let local = destination
+                .split('#')
+                .next()
+                .context("Markdown destination")?;
+            let resolved = path.parent().context("Markdown source parent")?.join(local);
+            if !resolved.exists() {
+                bail!(
+                    "broken local link in {}: `{destination}` resolves to {}",
+                    path.display(),
+                    resolved.display()
+                );
+            }
+        }
     }
     Ok(())
 }

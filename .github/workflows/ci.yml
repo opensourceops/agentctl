@@ -55,6 +55,9 @@ jobs:
       - name: Run deterministic verification gate
         run: cargo xtask verify
 
+      - name: Verify canonical documentation and examples
+        run: cargo xtask docs-verify
+
       - name: Run credential-free acceptance gate
         run: cargo xtask acceptance
 

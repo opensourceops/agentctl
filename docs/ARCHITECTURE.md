@@ -33,4 +33,4 @@ The workspace uses Rust edition 2024, pins Rust 1.88 as the MSRV, forbids unsafe
 
 The OCI build is multi-stage: only the optimized Rust binary enters a maintained distroless runtime with CA roots and a non-root identity. `/config` is workflow configuration, `/workspace` is the read-only working tree, `/state` holds SQLite, and `/artifacts` receives declared outputs. State must be mounted again for inspect/resume/replay. The root filesystem may be read-only. See [Container contract](CONTAINER.md) and ADR 0007.
 
-See the [ADRs](adr/) for the decisions and [Durable execution](DURABLE_EXECUTION.md) for failure semantics.
+See the [architecture diagrams](architecture/DIAGRAMS.md), [ADRs](adr/), and [Durable execution](DURABLE_EXECUTION.md) for failure semantics.

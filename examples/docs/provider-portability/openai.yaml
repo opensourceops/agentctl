@@ -1,0 +1,31 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: portable-summary-openai
+  description: Opt-in OpenAI variant of the portable summary fixture.
+spec:
+  outputs:
+    summary: "${{ tasks.summarize.output.text }}"
+  providers:
+    selected:
+      kind: openai
+      credential:
+        env: OPENAI_API_KEY
+  policy:
+    networkAllowlist: [api.openai.com]
+  agents:
+    summarizer:
+      provider: selected
+      model: gpt-5.6
+      instructions: Return one short evidence summary.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 30
+      reasoning:
+        effort: low
+  tasks:
+    - id: summarize
+      uses: agent:summarizer
+      with:
+        prompt: Summarize the supplied evidence.

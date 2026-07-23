@@ -68,7 +68,7 @@ CI uses the scripted fake provider. Native, mock-tested adapters cover OpenAI Re
 - `crates/agentctl-cli`: production CLI
 - `xtask`: generated artifacts and canonical verification
 
-Start with [Product](docs/PRODUCT.md), [Architecture](docs/ARCHITECTURE.md), [DSL](docs/DSL.md), [Operations](docs/OPERATIONS.md), [Container contract](docs/CONTAINER.md), [Release process](docs/RELEASE_PROCESS.md), [Limitations](docs/LIMITATIONS.md), [Security](docs/SECURITY.md), and the [generated CLI reference](docs/generated/CLI.md). Run the release-readiness layers with:
+Start with [Getting started](docs/guides/GETTING_STARTED.md), [Product](docs/PRODUCT.md), [Architecture](docs/ARCHITECTURE.md), [DSL](docs/DSL.md), [Operations](docs/OPERATIONS.md), [Container contract](docs/CONTAINER.md), [Troubleshooting](docs/guides/TROUBLESHOOTING.md), [Contributing](docs/CONTRIBUTING.md), [Limitations](docs/LIMITATIONS.md), [Security](docs/SECURITY.md), and the [generated CLI reference](docs/generated/CLI.md). Run the release-readiness layers with:
 
 ```console
 cargo xtask verify

@@ -1,40 +1,5 @@
-# Remote MCP Autonomy Example
+# Remote MCP Autonomy Example (legacy)
 
-This example proves that `agentctl` can run autonomously across a real remote MCP boundary, not just local built-in tools.
+This directory is a migration fixture for the retired TypeScript playbook and MCP server contract. The current Rust CLI does not accept `mission.playbook.yaml`, and the JavaScript mock is not part of current acceptance coverage.
 
-The flow is:
-
-- a standalone MCP HTTP server listens on `http://127.0.0.1:43127/mcp`
-- the agent calls `mcp:auditor/audit_service`
-- the remote server reads the fixture and returns a report through MCP
-- a deterministic task persists the report to `./artifacts/remote-mcp-report.md`
-- a deterministic verification task checks the required findings
-
-## Run
-
-Start the MCP server in one terminal:
-
-```bash
-cd /Users/ompragash/Git/agentctl
-npm link
-node examples/remote-mcp-autonomy/mock-mcp-server.mjs
-```
-
-Run the playbook in another terminal:
-
-```bash
-cd /Users/ompragash/Git/agentctl
-npm link
-agentctl run examples/remote-mcp-autonomy/mission.playbook.yaml --db .runtime/remote-mcp-autonomy.db
-```
-
-## Expected outcome
-
-The run should:
-
-- complete with `status: "succeeded"`
-- create `examples/remote-mcp-autonomy/artifacts/remote-mcp-report.md`
-- mention the missing rollback validation drill
-- mention the missing incident communication owner
-
-The verification task uses `set -eu`, so the run fails immediately if the artifact is missing or the report omits either finding.
+Use [`../v1/mcp.yaml`](../v1/mcp.yaml) for the supported protocol workflow and [MCP integration](../../docs/MCP.md) for authentication, transport, capability, and failure semantics.

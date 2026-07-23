@@ -1,0 +1,32 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: scheduled-operational-review
+  description: Produce a deterministic artifact for an external scheduler.
+spec:
+  inputs:
+    reportPath: artifacts/operational-review.txt
+    status: healthy
+  outputs:
+    artifact: "${{ inputs.reportPath }}"
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: never
+  actions:
+    assert:
+      kind: builtin.assert
+    write:
+      kind: builtin.write
+  tasks:
+    - id: verify-status
+      uses: action:assert
+      with:
+        that: "${{ inputs.status == 'healthy' }}"
+        message: operational status is not healthy
+    - id: report
+      uses: action:write
+      needs: [verify-status]
+      with:
+        path: "${{ inputs.reportPath }}"
+        content: scheduled operational review passed
