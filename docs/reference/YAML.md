@@ -105,4 +105,4 @@ agentctl plan examples/v1/dataflow.yaml
 agentctl run examples/v1/dataflow.yaml --db /tmp/dataflow.db --output json --color never
 ```
 
-Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Policies](../POLICIES.md), [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).
+Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Policies](../policies.md), [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).
