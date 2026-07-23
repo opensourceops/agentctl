@@ -32,6 +32,7 @@ pub struct CompiledTask {
     pub retry: RetryDefinition,
     pub timeout_seconds: u64,
     pub failure: crate::dsl::FailureBehavior,
+    pub output_schema: Option<Value>,
     pub predictability: PlanPredictability,
 }
 
@@ -211,6 +212,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                     .timeout_seconds
                     .unwrap_or(workflow.spec.runtime.default_timeout_seconds),
                 failure: task.failure,
+                output_schema: task.output_schema.clone(),
                 predictability: PlanPredictability::FullyPredictable,
             },
         );
@@ -233,6 +235,18 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             }
         }
         validate_task_templates(task, &tasks, file, position, &mut diagnostics);
+        if let Some(schema) = &task.output_schema
+            && let Err(error) = jsonschema::validator_for(schema)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("task `{id}` outputSchema is not a valid JSON Schema: {error}"),
+                )
+                .with_path(format!("spec.tasks[{position}].outputSchema")),
+            );
+        }
     }
 
     validate_tools(workflow, file, &mut diagnostics);
@@ -537,6 +551,18 @@ fn validate_agents(workflow: &Workflow, file: &str, diagnostics: &mut Vec<Diagno
         }
         if agent.structured_output.is_some() {
             required.insert(ProviderCapability::StructuredOutput);
+        }
+        if let Some(schema) = &agent.structured_output
+            && let Err(error) = jsonschema::validator_for(schema)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("agent `{name}` structuredOutput is not a valid JSON Schema: {error}"),
+                )
+                .with_path(format!("spec.agents.{name}.structuredOutput")),
+            );
         }
         if let Some(reasoning) = &agent.reasoning {
             required.insert(ProviderCapability::ReasoningEffort);
@@ -1062,6 +1088,42 @@ spec:
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::UnsupportedCapability
                 && diagnostic.message.contains("stateless continuation replay")
+        }));
+    }
+
+    #[test]
+    fn rejects_invalid_task_and_agent_output_contracts() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-output-contracts }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: scripted
+      instructions: reply
+      structuredOutput: { type: definitely-not-a-json-schema-type }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: assign
+      uses: action:assign
+      outputSchema: { required: not-an-array }
+    - id: work
+      uses: agent:worker
+"#,
+        );
+        let diagnostics = compile(&workflow, "fixture.yaml").expect_err("schemas must fail");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref() == Some("spec.tasks[0].outputSchema")
+                && diagnostic.code == DiagnosticCode::SchemaViolation
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref() == Some("spec.agents.worker.structuredOutput")
+                && diagnostic.code == DiagnosticCode::SchemaViolation
         }));
     }
 

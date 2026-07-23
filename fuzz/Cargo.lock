@@ -71,6 +71,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hex",
+ "jsonschema",
  "nix",
  "serde",
  "serde_json",

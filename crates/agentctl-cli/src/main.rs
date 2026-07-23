@@ -83,10 +83,14 @@ enum Command {
     Replay(RunIdArgs),
     /// Create a new run from a prior workflow with fresh effects.
     Fork(ForkArgs),
+    /// Create a new run that reuses compatible upstream results and executes a repaired suffix.
+    Repair(RepairArgs),
     /// Durably request cancellation.
     Cancel(RunIdArgs),
     /// Inspect durable run, task, and audit state.
     Inspect(RunIdArgs),
+    /// Inspect or narrowly reconcile uncertain effects.
+    Effects(EffectArgs),
     /// List or resolve durable approval requests.
     Approvals(ApprovalArgs),
     /// Inspect provider capabilities or run the opt-in OpenAI smoke.
@@ -179,11 +183,66 @@ struct ForkArgs {
 }
 
 #[derive(Debug, Args)]
+struct RepairArgs {
+    file: PathBuf,
+    source_run_id: String,
+    #[arg(long = "from", required = true)]
+    from: Vec<String>,
+    #[arg(long)]
+    plan: bool,
+    #[arg(long)]
+    restart_successful: bool,
+    #[arg(long)]
+    reason: Option<String>,
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
 struct ApprovalArgs {
     #[arg(long, default_value = ".agentctl/runtime.db")]
     db: PathBuf,
     #[command(subcommand)]
     command: ApprovalCommand,
+}
+
+#[derive(Debug, Args)]
+struct EffectArgs {
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[command(subcommand)]
+    command: EffectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum EffectCommand {
+    Inspect {
+        run_id: String,
+        #[arg(long)]
+        task: Option<String>,
+    },
+    Reconcile {
+        effect_id: String,
+        #[arg(long, value_enum)]
+        outcome: ReconciledOutcome,
+        #[arg(long, default_value = "cli-user")]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReconciledOutcome {
+    NotApplied,
 }
 
 #[derive(Debug, Subcommand)]
@@ -515,6 +574,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 .map_err(map_runtime_error)?;
             print_outcome(output, &outcome)
         }
+        Command::Repair(args) => repair_workflow(output, args).await,
         Command::Cancel(args) => {
             let store = open_store(&args.db)?;
             store
@@ -582,6 +642,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             print_value(output, "RunInspection", &value, Vec::new(), human)?;
             Ok(EXIT_OK)
         }
+        Command::Effects(args) => effect_command(output, args),
         Command::Approvals(args) => approval_command(output, args),
         Command::Providers(args) => provider_command(output, args).await,
         Command::Auth(args) => auth_command(output, args),
@@ -713,6 +774,93 @@ async fn resume_run(output: OutputFormat, args: ResumeArgs) -> Result<u8, CliErr
     print_outcome(output, &outcome)
 }
 
+async fn repair_workflow(output: OutputFormat, args: RepairArgs) -> Result<u8, CliError> {
+    if !args.plan {
+        validate_interactive(args.interactive)?;
+    }
+    let (workflow, compiled, diagnostics) = load_and_compile(&args.file)?;
+    let default_base = args
+        .file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    let base = resolve_base_path(args.workspace.as_deref().or(default_base))?;
+    let store = open_store(&args.db)?;
+    let planner = Runtime::new(store.clone(), &base);
+    let plan = planner
+        .plan_repair(
+            &args.source_run_id,
+            &workflow,
+            &compiled,
+            &args.from,
+            args.restart_successful,
+        )
+        .map_err(map_runtime_error)?;
+    if args.plan || !plan.compatible {
+        let human = format!(
+            "repair plan: {}\nsource: {}\nreuse: {}\nexecute: {}\nblocked: {}",
+            if plan.compatible {
+                "compatible"
+            } else {
+                "blocked"
+            },
+            plan.source_run_id,
+            plan.reused_tasks.join(", "),
+            plan.rerun_tasks.join(", "),
+            plan.blocked_reuse
+                .iter()
+                .map(|block| format!("{}: {}", block.task_id, block.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        print_value(output, "RepairPlan", &plan, diagnostics, human)?;
+        return Ok(if plan.compatible {
+            EXIT_OK
+        } else {
+            EXIT_POLICY
+        });
+    }
+    let registry = build_registry(&workflow, &base)?;
+    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let outcome = runtime
+        .repair(
+            &workflow,
+            &compiled,
+            plan,
+            args.reason.as_deref(),
+            RunOptions {
+                check: false,
+                diff: args.diff,
+                interactive: args.interactive,
+            },
+            &cancellation,
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    print_value(
+        output,
+        "RepairOutcome",
+        &outcome,
+        diagnostics,
+        format!(
+            "{} {:?} source={} reused={} executed={} artifacts={} trace={}",
+            outcome.run_id,
+            outcome.state,
+            outcome.source_run_id,
+            outcome.reused_tasks.join(","),
+            outcome.executed_tasks.join(","),
+            outcome
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.path.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            outcome.trace_id,
+        ),
+    )?;
+    Ok(outcome_exit_code(outcome.state))
+}
+
 fn print_outcome(
     output: OutputFormat,
     outcome: &agentctl_runtime::RunOutcome,
@@ -790,6 +938,57 @@ fn approval_command(output: OutputFormat, args: ApprovalArgs) -> Result<u8, CliE
                 &serde_json::json!({"approvalId": resolution.approval_id, "status": "rejected"}),
                 Vec::new(),
                 "rejection recorded".to_owned(),
+            )?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError> {
+    let store = open_store(&args.db)?;
+    match args.command {
+        EffectCommand::Inspect { run_id, task } => {
+            let effects = store
+                .list_effects(&run_id)
+                .map_err(CliError::persistence)?
+                .into_iter()
+                .filter(|effect| {
+                    task.as_ref()
+                        .is_none_or(|task| effect.request.task_id == *task)
+                })
+                .collect::<Vec<_>>();
+            print_value(
+                output,
+                "EffectInspection",
+                &serde_json::json!({
+                    "runId": run_id,
+                    "taskId": task,
+                    "effects": effects,
+                }),
+                Vec::new(),
+                format!("{} effect(s)", effects.len()),
+            )?;
+        }
+        EffectCommand::Reconcile {
+            effect_id,
+            outcome: ReconciledOutcome::NotApplied,
+            actor,
+            reason,
+        } => {
+            store
+                .reconcile_effect_not_applied(&effect_id, &actor, &reason, Utc::now())
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "EffectReconciliation",
+                &serde_json::json!({
+                    "effectId": effect_id,
+                    "outcome": "not_applied",
+                    "actor": actor,
+                    "reason": reason,
+                }),
+                Vec::new(),
+                "effect reconciled as not applied; a compatible repair may now retry it".to_owned(),
             )?;
         }
     }
@@ -1609,6 +1808,7 @@ fn map_runtime_error(error: agentctl_runtime::RuntimeError) -> CliError {
         agentctl_runtime::RuntimeError::Provider(_) => EXIT_REMOTE,
         agentctl_runtime::RuntimeError::Cancelled => EXIT_CANCELLED,
         agentctl_runtime::RuntimeError::UncertainEffect { .. } => EXIT_POLICY,
+        agentctl_runtime::RuntimeError::RepairBlocked { .. } => EXIT_POLICY,
         _ => EXIT_RUN_FAILED,
     };
     CliError {
@@ -1640,8 +1840,10 @@ mod tests {
             "resume",
             "replay",
             "fork",
+            "repair",
             "cancel",
             "inspect",
+            "effects",
             "approvals",
             "providers",
             "auth",

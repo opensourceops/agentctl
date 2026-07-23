@@ -1,5 +1,6 @@
 //! Versioned SQLite persistence for agentctl.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 4;
+pub const DATABASE_SCHEMA_VERSION: u32 = 5;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -189,6 +190,31 @@ DROP TABLE tool_calls;
 ALTER TABLE tool_calls_v4 RENAME TO tool_calls;
 "#;
 
+const MIGRATION_5: &str = r#"
+ALTER TABLE runs ADD COLUMN source_run_id TEXT;
+ALTER TABLE runs ADD COLUMN source_workflow_digest TEXT;
+ALTER TABLE runs ADD COLUMN repair_roots_json TEXT;
+ALTER TABLE runs ADD COLUMN repair_reason TEXT;
+ALTER TABLE runs ADD COLUMN repair_format_version INTEGER;
+
+ALTER TABLE task_states ADD COLUMN disposition TEXT NOT NULL DEFAULT 'executed';
+ALTER TABLE task_states ADD COLUMN metadata_version INTEGER;
+ALTER TABLE task_states ADD COLUMN source_run_id TEXT;
+ALTER TABLE task_states ADD COLUMN source_task_id TEXT;
+ALTER TABLE task_states ADD COLUMN source_attempt INTEGER;
+ALTER TABLE task_states ADD COLUMN definition_fingerprint TEXT;
+ALTER TABLE task_states ADD COLUMN input_digest TEXT;
+ALTER TABLE task_states ADD COLUMN output_contract_fingerprint TEXT;
+ALTER TABLE task_states ADD COLUMN output_digest TEXT;
+ALTER TABLE task_states ADD COLUMN state_delta_json TEXT;
+ALTER TABLE task_states ADD COLUMN state_delta_digest TEXT;
+ALTER TABLE task_states ADD COLUMN artifact_manifest_json TEXT;
+ALTER TABLE task_states ADD COLUMN reuse_decision_json TEXT;
+
+CREATE INDEX idx_runs_source_run ON runs(source_run_id);
+CREATE INDEX idx_tasks_disposition ON task_states(run_id, disposition);
+"#;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
@@ -235,6 +261,11 @@ pub struct RunRecord {
     pub state: RunState,
     pub mode: RunMode,
     pub parent_run_id: Option<String>,
+    pub source_run_id: Option<String>,
+    pub source_workflow_digest: Option<String>,
+    pub repair_roots: Vec<String>,
+    pub repair_reason: Option<String>,
+    pub repair_format_version: Option<u32>,
     pub base_path: Option<String>,
     pub cancellation_requested: bool,
     pub created_at: DateTime<Utc>,
@@ -248,6 +279,23 @@ pub enum RunMode {
     Check,
     Replay,
     Fork,
+    Repair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskDisposition {
+    Executed,
+    Reused,
+    Recorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRecord {
+    pub path: String,
+    pub digest: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,7 +308,51 @@ pub struct TaskRecord {
     pub attempt: u16,
     pub output: Option<Value>,
     pub error: Option<String>,
+    pub disposition: TaskDisposition,
+    pub metadata_version: Option<u32>,
+    pub source_run_id: Option<String>,
+    pub source_task_id: Option<String>,
+    pub source_attempt: Option<u16>,
+    pub definition_fingerprint: Option<String>,
+    pub input_digest: Option<String>,
+    pub output_contract_fingerprint: Option<String>,
+    pub output_digest: Option<String>,
+    pub state_delta: Option<Value>,
+    pub state_delta_digest: Option<String>,
+    pub artifact_manifest: Vec<ArtifactRecord>,
+    pub reuse_decision: Option<Value>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskExecutionMetadata {
+    pub metadata_version: u32,
+    pub definition_fingerprint: String,
+    pub input_digest: String,
+    pub output_contract_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCompletionMetadata {
+    pub execution: TaskExecutionMetadata,
+    pub output_digest: String,
+    pub state_delta: Value,
+    pub state_delta_digest: String,
+    pub artifact_manifest: Vec<ArtifactRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReusedTaskMaterialization {
+    pub task_id: String,
+    pub source_run_id: String,
+    pub source_task_id: String,
+    pub source_attempt: u16,
+    pub output: Value,
+    pub metadata: TaskCompletionMetadata,
+    pub reuse_decision: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -457,11 +549,139 @@ impl SqliteStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_repair_run(
+        &self,
+        run_id: &str,
+        source_run_id: &str,
+        source_workflow_digest: &str,
+        workflow_schema_version: &str,
+        workflow: &Value,
+        plan: &CompiledPlan,
+        inputs: &Value,
+        working_memory: &Value,
+        repair_roots: &[String],
+        reason: Option<&str>,
+        reused_tasks: &[ReusedTaskMaterialization],
+        task_decisions: &Value,
+        base_path: &Path,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
+        let reused = reused_tasks
+            .iter()
+            .map(|task| (task.task_id.as_str(), task))
+            .collect::<BTreeMap<_, _>>();
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO runs (run_id, runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, state, mode, source_run_id, source_workflow_digest, repair_roots_json, repair_reason, repair_format_version, base_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?18, ?18)",
+            params![
+                run_id,
+                RUNTIME_STATE_VERSION,
+                plan.workflow_digest,
+                workflow_schema_version,
+                plan.plan_digest,
+                plan.format_version,
+                encode(workflow)?,
+                encode(plan)?,
+                encode(inputs)?,
+                encode(working_memory)?,
+                encode_enum(RunState::Running)?,
+                encode_enum(RunMode::Repair)?,
+                source_run_id,
+                source_workflow_digest,
+                encode(repair_roots)?,
+                reason,
+                base_path.display().to_string(),
+                now.to_rfc3339(),
+            ],
+        )?;
+        for (position, task_id) in plan.order.iter().enumerate() {
+            let position = i64::try_from(position).map_err(|_| {
+                StoreError::Incompatible("task position exceeds SQLite integer range".to_owned())
+            })?;
+            if let Some(task) = reused.get(task_id.as_str()) {
+                transaction.execute(
+                    "INSERT INTO task_states (run_id, task_id, position, state, attempt, output_json, disposition, metadata_version, source_run_id, source_task_id, source_attempt, definition_fingerprint, input_digest, output_contract_fingerprint, output_digest, state_delta_json, state_delta_digest, artifact_manifest_json, reuse_decision_json, updated_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                    params![
+                        run_id,
+                        task_id,
+                        position,
+                        encode_enum(TaskState::Succeeded)?,
+                        encode(&task.output)?,
+                        encode_enum(TaskDisposition::Reused)?,
+                        task.metadata.execution.metadata_version,
+                        task.source_run_id,
+                        task.source_task_id,
+                        task.source_attempt,
+                        task.metadata.execution.definition_fingerprint,
+                        task.metadata.execution.input_digest,
+                        task.metadata.execution.output_contract_fingerprint,
+                        task.metadata.output_digest,
+                        encode(&task.metadata.state_delta)?,
+                        task.metadata.state_delta_digest,
+                        encode(&task.metadata.artifact_manifest)?,
+                        encode(&task.reuse_decision)?,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+                append_audit_tx(
+                    &transaction,
+                    run_id,
+                    "repair.task_reused",
+                    Some(task_id),
+                    trace_id,
+                    &serde_json::json!({
+                        "sourceRunId": task.source_run_id,
+                        "sourceTaskId": task.source_task_id,
+                        "sourceAttempt": task.source_attempt,
+                        "outputDigest": task.metadata.output_digest,
+                        "decision": task.reuse_decision,
+                    }),
+                    now,
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO task_states (run_id, task_id, position, state, disposition, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        run_id,
+                        task_id,
+                        position,
+                        encode_enum(TaskState::Pending)?,
+                        encode_enum(TaskDisposition::Executed)?,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+            }
+        }
+        append_audit_tx(
+            &transaction,
+            run_id,
+            "repair.created",
+            None,
+            trace_id,
+            &serde_json::json!({
+                "sourceRunId": source_run_id,
+                "sourceWorkflowDigest": source_workflow_digest,
+                "targetWorkflowDigest": plan.workflow_digest,
+                "repairRoots": repair_roots,
+                "reason": reason,
+                "reusedTasks": reused_tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
+                "taskDecisions": task_decisions,
+            }),
+            now,
+        )?;
+        checkpoint_tx(&transaction, run_id, now)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn load_run(&self, run_id: &str) -> Result<RunRecord, StoreError> {
         let connection = self.connection.lock();
         connection
             .query_row(
-                "SELECT runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, output_json, state, mode, parent_run_id, cancellation_requested, created_at, updated_at, base_path FROM runs WHERE run_id = ?1",
+                "SELECT runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, output_json, state, mode, parent_run_id, cancellation_requested, created_at, updated_at, base_path, source_run_id, source_workflow_digest, repair_roots_json, repair_reason, repair_format_version FROM runs WHERE run_id = ?1",
                 [run_id],
                 |row| {
                     let state_version: u32 = row.get(0)?;
@@ -484,6 +704,11 @@ impl SqliteStore {
                         row.get::<_, String>(14)?,
                         row.get::<_, String>(15)?,
                         row.get::<_, Option<String>>(16)?,
+                        row.get::<_, Option<String>>(17)?,
+                        row.get::<_, Option<String>>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                        row.get::<_, Option<String>>(20)?,
+                        row.get::<_, Option<u32>>(21)?,
                     ))
                 },
             )
@@ -515,6 +740,15 @@ impl SqliteStore {
                     state: decode_enum(&row.10, "run.state")?,
                     mode: decode_enum(&row.11, "run.mode")?,
                     parent_run_id: row.12,
+                    source_run_id: row.17,
+                    source_workflow_digest: row.18,
+                    repair_roots: row
+                        .19
+                        .map(|value| decode(&value, "run.repair_roots"))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    repair_reason: row.20,
+                    repair_format_version: row.21,
                     base_path: row.16,
                     cancellation_requested: row.13,
                     created_at: parse_time(&row.14, "created_at")?,
@@ -578,7 +812,7 @@ impl SqliteStore {
     pub fn list_tasks(&self, run_id: &str) -> Result<Vec<TaskRecord>, StoreError> {
         let connection = self.connection.lock();
         let mut statement = connection.prepare(
-            "SELECT task_id, position, state, attempt, output_json, error, updated_at FROM task_states WHERE run_id = ?1 ORDER BY position",
+            "SELECT task_id, position, state, attempt, output_json, error, updated_at, disposition, metadata_version, source_run_id, source_task_id, source_attempt, definition_fingerprint, input_digest, output_contract_fingerprint, output_digest, state_delta_json, state_delta_digest, artifact_manifest_json, reuse_decision_json FROM task_states WHERE run_id = ?1 ORDER BY position",
         )?;
         let rows = statement.query_map([run_id], |row| {
             Ok((
@@ -589,6 +823,19 @@ impl SqliteStore {
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<u32>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<u16>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
+                row.get::<_, Option<String>>(17)?,
+                row.get::<_, Option<String>>(18)?,
+                row.get::<_, Option<String>>(19)?,
             ))
         })?;
         rows.map(|row| {
@@ -604,6 +851,29 @@ impl SqliteStore {
                     .map(|value| decode(&value, "task.output"))
                     .transpose()?,
                 error: row.5,
+                disposition: decode_enum(&row.7, "task.disposition")?,
+                metadata_version: row.8,
+                source_run_id: row.9,
+                source_task_id: row.10,
+                source_attempt: row.11,
+                definition_fingerprint: row.12,
+                input_digest: row.13,
+                output_contract_fingerprint: row.14,
+                output_digest: row.15,
+                state_delta: row
+                    .16
+                    .map(|value| decode(&value, "task.state_delta"))
+                    .transpose()?,
+                state_delta_digest: row.17,
+                artifact_manifest: row
+                    .18
+                    .map(|value| decode(&value, "task.artifact_manifest"))
+                    .transpose()?
+                    .unwrap_or_default(),
+                reuse_decision: row
+                    .19
+                    .map(|value| decode(&value, "task.reuse_decision"))
+                    .transpose()?,
                 updated_at: parse_time(&row.6, "task.updated_at")?,
             })
         })
@@ -664,6 +934,170 @@ impl SqliteStore {
             now,
         )?;
         checkpoint_tx(&transaction, run_id, now)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn record_task_execution_metadata(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        metadata: &TaskExecutionMetadata,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let changed = self.connection.lock().execute(
+            "UPDATE task_states SET metadata_version = ?3, definition_fingerprint = ?4, input_digest = ?5, output_contract_fingerprint = ?6, updated_at = ?7 WHERE run_id = ?1 AND task_id = ?2 AND state = ?8",
+            params![
+                run_id,
+                task_id,
+                metadata.metadata_version,
+                metadata.definition_fingerprint,
+                metadata.input_digest,
+                metadata.output_contract_fingerprint,
+                now.to_rfc3339(),
+                encode_enum(TaskState::Running)?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidTransition(format!(
+                "task `{task_id}` in run `{run_id}` is not running"
+            )));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_task(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        output: &Value,
+        working_memory: Option<&Value>,
+        metadata: &TaskCompletionMetadata,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: String = transaction
+            .query_row(
+                "SELECT state FROM task_states WHERE run_id = ?1 AND task_id = ?2",
+                params![run_id, task_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::TaskNotFound {
+                run_id: run_id.to_owned(),
+                task_id: task_id.to_owned(),
+            })?;
+        let current: TaskState = decode_enum(&current, "task.state")?;
+        current
+            .transition(TaskState::Succeeded)
+            .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
+        transaction.execute(
+            "UPDATE task_states SET state = ?3, output_json = ?4, error = NULL, disposition = ?5, metadata_version = ?6, definition_fingerprint = ?7, input_digest = ?8, output_contract_fingerprint = ?9, output_digest = ?10, state_delta_json = ?11, state_delta_digest = ?12, artifact_manifest_json = ?13, updated_at = ?14 WHERE run_id = ?1 AND task_id = ?2",
+            params![
+                run_id,
+                task_id,
+                encode_enum(TaskState::Succeeded)?,
+                encode(output)?,
+                encode_enum(TaskDisposition::Executed)?,
+                metadata.execution.metadata_version,
+                metadata.execution.definition_fingerprint,
+                metadata.execution.input_digest,
+                metadata.execution.output_contract_fingerprint,
+                metadata.output_digest,
+                encode(&metadata.state_delta)?,
+                metadata.state_delta_digest,
+                encode(&metadata.artifact_manifest)?,
+                now.to_rfc3339(),
+            ],
+        )?;
+        if let Some(memory) = working_memory {
+            transaction.execute(
+                "UPDATE runs SET working_memory_json = ?2, updated_at = ?3 WHERE run_id = ?1",
+                params![run_id, encode(memory)?, now.to_rfc3339()],
+            )?;
+        } else {
+            transaction.execute(
+                "UPDATE runs SET updated_at = ?2 WHERE run_id = ?1",
+                params![run_id, now.to_rfc3339()],
+            )?;
+        }
+        append_audit_tx(
+            &transaction,
+            run_id,
+            "task.transition",
+            Some(task_id),
+            trace_id,
+            &serde_json::json!({
+                "from": current,
+                "to": TaskState::Succeeded,
+                "disposition": TaskDisposition::Executed,
+                "outputDigest": metadata.output_digest,
+                "stateDeltaDigest": metadata.state_delta_digest,
+            }),
+            now,
+        )?;
+        checkpoint_tx(&transaction, run_id, now)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn record_replayed_task_metadata(
+        &self,
+        replay_run_id: &str,
+        source: &TaskRecord,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE task_states SET disposition = ?3, metadata_version = ?4, source_run_id = ?5, source_task_id = ?6, source_attempt = ?7, definition_fingerprint = ?8, input_digest = ?9, output_contract_fingerprint = ?10, output_digest = ?11, state_delta_json = ?12, state_delta_digest = ?13, artifact_manifest_json = ?14, reuse_decision_json = ?15, updated_at = ?16 WHERE run_id = ?1 AND task_id = ?2",
+            params![
+                replay_run_id,
+                source.task_id,
+                encode_enum(TaskDisposition::Recorded)?,
+                source.metadata_version,
+                source.run_id,
+                source.task_id,
+                source.attempt,
+                source.definition_fingerprint,
+                source.input_digest,
+                source.output_contract_fingerprint,
+                source.output_digest,
+                source.state_delta.as_ref().map(encode).transpose()?,
+                source.state_delta_digest,
+                encode(&source.artifact_manifest)?,
+                encode(&serde_json::json!({
+                    "recordedFromRunId": source.run_id,
+                    "sourceDisposition": source.disposition,
+                    "sourceProvenance": source.reuse_decision,
+                }))?,
+                now.to_rfc3339(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::TaskNotFound {
+                run_id: replay_run_id.to_owned(),
+                task_id: source.task_id.clone(),
+            });
+        }
+        append_audit_tx(
+            &transaction,
+            replay_run_id,
+            "replay.task_recorded",
+            Some(&source.task_id),
+            trace_id,
+            &serde_json::json!({
+                "sourceRunId": source.run_id,
+                "sourceTaskId": source.task_id,
+                "sourceDisposition": source.disposition,
+                "outputDigest": source.output_digest,
+            }),
+            now,
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -896,6 +1330,62 @@ impl SqliteStore {
             .query_map([run_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    pub fn reconcile_effect_not_applied(
+        &self,
+        effect_id: &str,
+        actor: &str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let run_id: Option<String> = transaction
+            .query_row(
+                "SELECT run_id FROM effects WHERE effect_id = ?1 AND status IN (?2, ?3)",
+                params![
+                    effect_id,
+                    encode_enum(EffectStatus::Started)?,
+                    encode_enum(EffectStatus::Uncertain)?,
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(run_id) = run_id else {
+            return Err(StoreError::Incompatible(format!(
+                "effect `{effect_id}` is missing or is not uncertain"
+            )));
+        };
+        transaction.execute(
+            "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE effect_id = ?1",
+            params![
+                effect_id,
+                encode_enum(EffectStatus::Failed)?,
+                format!("operator reconciled as not applied: {reason}"),
+                now.to_rfc3339(),
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE tool_calls SET status = 'failed', completed_at = COALESCE(completed_at, ?2) WHERE run_id = ?1 AND effect_id = ?3 AND status IN ('started', 'uncertain')",
+            params![run_id, now.to_rfc3339(), effect_id],
+        )?;
+        append_audit_tx(
+            &transaction,
+            &run_id,
+            "effect.reconciled_not_applied",
+            None,
+            "operator-reconciliation",
+            &serde_json::json!({
+                "effectId": effect_id,
+                "actor": actor,
+                "reason": reason,
+                "outcome": "not_applied",
+            }),
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn latest_effect_for_task(
@@ -1485,6 +1975,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (2_u32, MIGRATION_2),
         (3_u32, MIGRATION_3),
         (4_u32, MIGRATION_4),
+        (5_u32, MIGRATION_5),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -1634,6 +2125,17 @@ spec:
                 "trace",
             )
             .expect("create run");
+    }
+
+    fn create_version_four_database(path: &Path) {
+        let connection = Connection::open(path).expect("raw connection");
+        connection.execute_batch(MIGRATION_1).expect("v1 schema");
+        connection.execute_batch(MIGRATION_2).expect("v2 schema");
+        connection.execute_batch(MIGRATION_3).expect("v3 schema");
+        connection.execute_batch(MIGRATION_4).expect("v4 schema");
+        connection
+            .pragma_update(None, "user_version", 4)
+            .expect("v4 marker");
     }
 
     #[test]
@@ -1875,6 +2377,96 @@ spec:
         let store = SqliteStore::open(&path).expect("upgrade");
         assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
         assert_eq!(store.stats().expect("stats").long_term_memory, 0);
+    }
+
+    #[test]
+    fn upgrades_the_pre_repair_schema_and_creates_repair_records() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("runtime.db");
+        create_version_four_database(&path);
+
+        let store = SqliteStore::open(&path).expect("upgrade");
+        assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
+        create(&store, "source");
+        let (workflow, plan) = fixture();
+        store
+            .create_repair_run(
+                "repair",
+                "source",
+                &plan.workflow_digest,
+                API_VERSION,
+                &workflow,
+                &plan,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                &["one".to_owned()],
+                Some("migration test"),
+                &[],
+                &serde_json::json!([]),
+                Path::new("."),
+                Utc::now(),
+                "trace-repair",
+            )
+            .expect("create repair");
+
+        let repair = store.load_run("repair").expect("repair run");
+        assert_eq!(repair.mode, RunMode::Repair);
+        assert_eq!(repair.source_run_id.as_deref(), Some("source"));
+        assert_eq!(repair.repair_roots, ["one"]);
+        assert_eq!(
+            store.list_tasks("repair").expect("repair tasks")[0].disposition,
+            TaskDisposition::Executed
+        );
+    }
+
+    #[test]
+    fn interrupted_repair_migration_can_restart_cleanly() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("runtime.db");
+        create_version_four_database(&path);
+        let mut connection = Connection::open(&path).expect("raw connection");
+        let transaction = connection.transaction().expect("migration transaction");
+        transaction
+            .execute_batch("ALTER TABLE runs ADD COLUMN source_run_id TEXT;")
+            .expect("partial migration");
+        transaction.rollback().expect("simulate interruption");
+        drop(connection);
+
+        let store = SqliteStore::open(&path).expect("restart migration");
+        assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
+        create(&store, "run");
+        assert_eq!(store.list_tasks("run").expect("tasks").len(), 1);
+    }
+
+    #[test]
+    fn repair_creation_rolls_back_every_row_on_materialization_failure() {
+        let store = SqliteStore::open_memory().expect("store");
+        let (workflow, mut plan) = fixture();
+        plan.order.push("one".to_owned());
+        let result = store.create_repair_run(
+            "repair",
+            "source",
+            &plan.workflow_digest,
+            API_VERSION,
+            &workflow,
+            &plan,
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            &["one".to_owned()],
+            None,
+            &[],
+            &serde_json::json!([]),
+            Path::new("."),
+            Utc::now(),
+            "trace",
+        );
+
+        assert!(matches!(result, Err(StoreError::Sqlite(_))));
+        assert!(matches!(
+            store.load_run("repair"),
+            Err(StoreError::RunNotFound(_))
+        ));
+        assert_eq!(store.stats().expect("stats").runs, 0);
     }
 
     #[test]

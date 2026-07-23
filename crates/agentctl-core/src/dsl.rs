@@ -385,6 +385,8 @@ pub struct TaskDefinition {
     pub timeout_seconds: Option<u64>,
     #[serde(default)]
     pub failure: FailureBehavior,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

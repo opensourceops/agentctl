@@ -677,7 +677,8 @@
         "failure": {
           "$ref": "#/$defs/FailureBehavior",
           "default": "stop"
-        }
+        },
+        "outputSchema": true
       },
       "additionalProperties": false,
       "required": [

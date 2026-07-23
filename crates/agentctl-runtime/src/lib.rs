@@ -1,6 +1,6 @@
 //! Durable deterministic workflow runtime for agentctl.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +10,9 @@ use agentctl_core::dsl::{
     API_VERSION, ActionDefinition, ActionKind, ApprovalRequirement, EffectClass, FailureBehavior,
     Idempotency, Risk, ToolDefinition, ToolKind, Workflow,
 };
-use agentctl_core::effect::{ActionResult, ChangeStatus, EffectRequest, EffectStatus};
+use agentctl_core::effect::{
+    ActionResult, ChangeStatus, EffectRecord, EffectRequest, EffectStatus,
+};
 use agentctl_core::policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyError, redact};
 use agentctl_core::provider::{
     ContentBlock, FinishReason, Message, ModelProvider, ProviderError, ProviderRequest,
@@ -20,7 +22,10 @@ use agentctl_core::state::{RunState, TaskState};
 use agentctl_core::template::{EvalContext, TemplateError, evaluate_when, render};
 use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
 use agentctl_observability::{NoopTraceSink, SpanKind, TraceEvent, TracePhase, TraceSink};
-use agentctl_store::{ApprovalRequest, RunMode, SqliteStore, StoreError, TaskRecord};
+use agentctl_store::{
+    ApprovalRequest, ArtifactRecord, ReusedTaskMaterialization, RunMode, SqliteStore, StoreError,
+    TaskCompletionMetadata, TaskDisposition, TaskExecutionMetadata, TaskRecord,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -220,6 +225,90 @@ pub struct RunOutcome {
     pub output: Option<Value>,
 }
 
+pub const REPAIR_PLAN_VERSION: &str = "agentctl.dev/repair-plan/v1";
+pub const TASK_METADATA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedDisposition {
+    Reuse,
+    Execute,
+    Removed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairTaskPlan {
+    pub task_id: String,
+    pub disposition: PlannedDisposition,
+    pub reason: String,
+    pub source_state: Option<TaskState>,
+    pub source_fingerprint: Option<String>,
+    pub target_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairBlock {
+    pub task_id: String,
+    pub rule: String,
+    pub message: String,
+    pub source_fingerprint: Option<String>,
+    pub target_fingerprint: Option<String>,
+    pub suggested_repair_roots: Vec<String>,
+    pub full_fork_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreshEffectSummary {
+    pub provider_tasks: usize,
+    pub action_tasks: usize,
+    pub declared_effects: usize,
+    pub uncertain_source_effects: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairPlan {
+    pub api_version: String,
+    pub compatible: bool,
+    pub source_run_id: String,
+    pub source_workflow_digest: String,
+    pub target_workflow_digest: String,
+    pub repair_roots: Vec<String>,
+    pub restart_successful: bool,
+    pub reused_tasks: Vec<String>,
+    pub rerun_tasks: Vec<String>,
+    pub new_tasks: Vec<String>,
+    pub removed_tasks: Vec<String>,
+    pub changed_tasks: Vec<String>,
+    pub blocked_reuse: Vec<RepairBlock>,
+    pub fresh_effect_summary: FreshEffectSummary,
+    pub approval_summary: Vec<String>,
+    pub estimated_provider_tasks: usize,
+    pub warnings: Vec<String>,
+    pub tasks: Vec<RepairTaskPlan>,
+    #[serde(skip)]
+    materialized_tasks: Vec<ReusedTaskMaterialization>,
+    #[serde(skip)]
+    reconstructed_memory: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairOutcome {
+    pub run_id: String,
+    pub source_run_id: String,
+    pub trace_id: String,
+    pub state: RunState,
+    pub reused_tasks: Vec<String>,
+    pub executed_tasks: Vec<String>,
+    pub artifacts: Vec<ArtifactRecord>,
+    pub output: Option<Value>,
+}
+
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error(transparent)]
@@ -259,6 +348,8 @@ pub enum RuntimeError {
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("repair from run `{source_run_id}` is blocked by {count} compatibility rule(s)")]
+    RepairBlocked { source_run_id: String, count: usize },
 }
 
 pub struct Runtime {
@@ -529,6 +620,12 @@ impl Runtime {
                 self.clock.now(),
                 &trace_id,
             )?;
+            self.store.record_replayed_task_metadata(
+                &replay_id,
+                &task,
+                self.clock.now(),
+                &trace_id,
+            )?;
         }
         self.store.update_run_state(
             &replay_id,
@@ -569,6 +666,811 @@ impl Runtime {
             &trace_id,
         )?;
         self.drive(&run_id, &trace_id, options, cancellation).await
+    }
+
+    pub fn plan_repair(
+        &self,
+        source_run_id: &str,
+        target_workflow: &Workflow,
+        target_plan: &CompiledPlan,
+        repair_roots: &[String],
+        restart_successful: bool,
+    ) -> Result<RepairPlan, RuntimeError> {
+        let source = self.store.load_run(source_run_id)?;
+        if !source.state.is_terminal() {
+            return Err(RuntimeError::InvalidState(format!(
+                "repair source run `{source_run_id}` is not terminal ({:?})",
+                source.state
+            )));
+        }
+        if repair_roots.is_empty() {
+            return Err(RuntimeError::InvalidState(
+                "repair requires at least one --from task".to_owned(),
+            ));
+        }
+        let source_workflow: Workflow = serde_json::from_value(source.workflow.clone())?;
+
+        let roots = repair_roots.iter().cloned().collect::<BTreeSet<_>>();
+        let source_tasks = self
+            .store
+            .list_tasks(source_run_id)?
+            .into_iter()
+            .map(|task| (task.task_id.clone(), task))
+            .collect::<BTreeMap<_, _>>();
+        let source_effects = self.store.list_effects(source_run_id)?;
+        let source_ids = source.plan.order.iter().cloned().collect::<BTreeSet<_>>();
+        let target_ids = target_plan.order.iter().cloned().collect::<BTreeSet<_>>();
+        let new_tasks = target_ids
+            .difference(&source_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed_tasks = source_ids
+            .difference(&target_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rerun = roots
+            .iter()
+            .filter(|root| target_plan.tasks.contains_key(*root))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        loop {
+            let mut changed = false;
+            for task in target_plan.tasks.values() {
+                if task
+                    .needs
+                    .iter()
+                    .any(|dependency| rerun.contains(dependency))
+                    && rerun.insert(task.id.clone())
+                {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        let mut blocks = Vec::new();
+        if source.mode == RunMode::Replay {
+            blocks.push(repair_block(
+                "$workflow",
+                "recorded_replay_has_no_direct_effect_history",
+                "a recorded replay cannot be a repair source because its task effects were not dispatched in that run; select the original terminal run".to_owned(),
+                None,
+                None,
+                vec![],
+                true,
+            ));
+        }
+        if source_workflow.metadata.name != target_workflow.metadata.name {
+            blocks.push(repair_block(
+                "$workflow",
+                "workflow_identity_mismatch",
+                format!(
+                    "source workflow `{}` and target workflow `{}` have different identities; use a full fork for unrelated workflows",
+                    source_workflow.metadata.name, target_workflow.metadata.name
+                ),
+                None,
+                None,
+                vec![],
+                true,
+            ));
+        }
+        for root in &roots {
+            let Some(_) = target_plan.tasks.get(root) else {
+                blocks.push(repair_block(
+                    root,
+                    "repair_root_missing",
+                    format!("repair root `{root}` does not exist in the target workflow"),
+                    None,
+                    None,
+                    vec![],
+                    false,
+                ));
+                continue;
+            };
+            if source_tasks
+                .get(root)
+                .is_some_and(|task| task.state == TaskState::Succeeded)
+                && !restart_successful
+            {
+                blocks.push(repair_block(
+                    root,
+                    "successful_root_requires_acknowledgement",
+                    format!(
+                        "task `{root}` succeeded in the source run; use --restart-successful to execute it again"
+                    ),
+                    source_tasks
+                        .get(root)
+                        .and_then(|task| task.definition_fingerprint.clone()),
+                    None,
+                    vec![root.clone()],
+                    false,
+                ));
+            }
+            if source_tasks.get(root).is_some_and(|task| {
+                task.state == TaskState::Succeeded
+                    && matches!(
+                        task.disposition,
+                        TaskDisposition::Reused | TaskDisposition::Recorded
+                    )
+            }) {
+                blocks.push(repair_block(
+                    root,
+                    "indirect_effect_history",
+                    format!(
+                        "task `{root}` was materialized from another run and cannot be restarted without its direct effect history; select the originating run or perform a full fork"
+                    ),
+                    source_tasks
+                        .get(root)
+                        .and_then(|task| task.definition_fingerprint.clone()),
+                    None,
+                    vec![],
+                    true,
+                ));
+            }
+        }
+
+        for effect in source_effects
+            .iter()
+            .filter(|effect| rerun.contains(&effect.request.task_id))
+        {
+            if repair_effect_is_unsafe(effect) {
+                let task_id = effect.request.task_id.clone();
+                blocks.push(repair_block(
+                    &task_id,
+                    "unreconciled_effect",
+                    format!(
+                        "effect `{}` ({:?}, {:?}, {:?}) may be duplicated by repair; reconcile it before retrying",
+                        effect.request.id,
+                        effect.request.effect_class,
+                        effect.request.idempotency,
+                        effect.status
+                    ),
+                    None,
+                    None,
+                    vec![task_id.clone()],
+                    false,
+                ));
+            }
+        }
+
+        let target_policy =
+            PolicyEngine::new(target_workflow.spec.policy.clone(), &self.base_path)?;
+        let mut memory = Value::Object(
+            target_workflow
+                .spec
+                .memory
+                .working
+                .clone()
+                .into_iter()
+                .collect(),
+        );
+        let inputs = source
+            .inputs
+            .as_object()
+            .ok_or_else(|| RuntimeError::InvalidState("run inputs must be an object".to_owned()))?;
+        let mut outputs = BTreeMap::new();
+        let mut reused = Vec::new();
+        let mut task_plans = Vec::new();
+        let mut changed_tasks = BTreeSet::new();
+        let mut blocked_task_ids = BTreeSet::new();
+
+        for task_id in &target_plan.order {
+            let target_task = target_plan.tasks.get(task_id).ok_or_else(|| {
+                RuntimeError::InvalidState(format!("target task `{task_id}` is missing"))
+            })?;
+            let target_fingerprint =
+                task_definition_fingerprint(target_workflow, target_task, &target_policy, None)?;
+            let source_task = source_tasks.get(task_id);
+            if source_task
+                .and_then(|task| task.definition_fingerprint.as_deref())
+                .is_some_and(|fingerprint| fingerprint != target_fingerprint)
+            {
+                changed_tasks.insert(task_id.clone());
+            }
+
+            if rerun.contains(task_id) {
+                task_plans.push(RepairTaskPlan {
+                    task_id: task_id.clone(),
+                    disposition: PlannedDisposition::Execute,
+                    reason: if roots.contains(task_id) {
+                        "selected repair root".to_owned()
+                    } else {
+                        "transitive descendant of a repair root".to_owned()
+                    },
+                    source_state: source_task.map(|task| task.state),
+                    source_fingerprint: source_task
+                        .and_then(|task| task.definition_fingerprint.clone()),
+                    target_fingerprint: Some(target_fingerprint),
+                });
+                continue;
+            }
+
+            let Some(source_task) = source_task else {
+                let block = repair_block(
+                    task_id,
+                    "new_task_outside_repair_closure",
+                    format!(
+                        "new target task `{task_id}` is outside the repair closure and cannot be reused"
+                    ),
+                    None,
+                    Some(target_fingerprint.clone()),
+                    vec![task_id.clone()],
+                    false,
+                );
+                blocks.push(block);
+                blocked_task_ids.insert(task_id.clone());
+                task_plans.push(blocked_task_plan(task_id, None, None, target_fingerprint));
+                continue;
+            };
+            let source_fingerprint = source_task.definition_fingerprint.clone();
+            let blocked = |rule: &str,
+                           message: String,
+                           full_fork_required: bool,
+                           blocks: &mut Vec<RepairBlock>,
+                           blocked_task_ids: &mut BTreeSet<String>| {
+                blocks.push(repair_block(
+                    task_id,
+                    rule,
+                    message,
+                    source_fingerprint.clone(),
+                    Some(target_fingerprint.clone()),
+                    vec![task_id.clone()],
+                    full_fork_required,
+                ));
+                blocked_task_ids.insert(task_id.clone());
+            };
+
+            if source_task.state != TaskState::Succeeded {
+                blocked(
+                    "source_task_not_successful",
+                    format!(
+                        "task `{task_id}` is {:?} in the source run and has no reusable successful result",
+                        source_task.state
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            if source_task.metadata_version != Some(TASK_METADATA_VERSION) {
+                blocked(
+                    "legacy_task_metadata",
+                    format!(
+                        "task `{task_id}` predates repair metadata version {TASK_METADATA_VERSION}; choose it as an earlier repair root or perform a full fork"
+                    ),
+                    true,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            let contract = task_output_schema(target_workflow, target_task)
+                .unwrap_or_else(|| serde_json::json!({}));
+            let contract_fingerprint = versioned_json_digest(&contract)?;
+            if source_task.output_contract_fingerprint.as_deref() != Some(&contract_fingerprint) {
+                blocked(
+                    "output_contract_mismatch",
+                    format!("output contract for task `{task_id}` changed"),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            if source_task.definition_fingerprint.as_deref() != Some(&target_fingerprint) {
+                blocked(
+                    "definition_fingerprint_mismatch",
+                    format!(
+                        "task `{task_id}` changed outside the repair closure; choose it as an earlier repair root"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            let source_needs = source
+                .plan
+                .tasks
+                .get(task_id)
+                .map(|task| task.needs.as_slice())
+                .unwrap_or_default();
+            if source_needs != target_task.needs {
+                blocked(
+                    "dependency_set_mismatch",
+                    format!(
+                        "task `{task_id}` has a different dependency set in the target workflow"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            if matches!(target_task.uses, TaskUse::Agent(_))
+                && task_output_schema(target_workflow, target_task).is_none()
+                && target_plan
+                    .tasks
+                    .values()
+                    .any(|candidate| candidate.needs.contains(task_id))
+            {
+                blocked(
+                    "missing_output_contract",
+                    format!(
+                        "reused agent task `{task_id}` feeds another task but has no outputSchema or structuredOutput contract"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            let output = source_task.output.as_ref().ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "successful source task `{task_id}` has no output"
+                ))
+            })?;
+            let output_digest = versioned_json_digest(output)?;
+            if source_task.output_digest.as_deref() != Some(&output_digest) {
+                blocked(
+                    "output_digest_mismatch",
+                    format!("stored output for task `{task_id}` is corrupt or was modified"),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            if let Err(message) = validate_output_contract(&contract, output) {
+                blocked(
+                    "output_contract_validation",
+                    format!("stored output for task `{task_id}` is invalid: {message}"),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            if let Err(message) = verify_artifacts(&target_policy, &source_task.artifact_manifest) {
+                blocked(
+                    "artifact_integrity",
+                    format!("artifact verification failed for task `{task_id}`: {message}"),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            let input_digest = resolved_input_digest(inputs, &memory, &outputs, target_task)?;
+            if source_task.input_digest.as_deref() != Some(&input_digest) {
+                blocked(
+                    "resolved_input_digest_mismatch",
+                    format!(
+                        "resolved inputs or boundary memory for task `{task_id}` differ from the source run"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            let state_delta = source_task.state_delta.as_ref().ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "successful source task `{task_id}` has no state delta"
+                ))
+            })?;
+            let state_delta_digest = versioned_json_digest(state_delta)?;
+            if source_task.state_delta_digest.as_deref() != Some(&state_delta_digest) {
+                blocked(
+                    "state_delta_digest_mismatch",
+                    format!("state delta for task `{task_id}` is corrupt or unsupported"),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            apply_state_delta(&mut memory, state_delta)?;
+            outputs.insert(task_id.clone(), output.clone());
+            let source_effect_summary = if source_task.disposition == TaskDisposition::Reused {
+                source_task
+                    .reuse_decision
+                    .as_ref()
+                    .and_then(|decision| decision.get("sourceEffects"))
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]))
+            } else {
+                Value::Array(
+                    source_effects
+                        .iter()
+                        .filter(|effect| effect.request.task_id == *task_id)
+                        .map(|effect| {
+                            serde_json::json!({
+                                "effectId": effect.request.id,
+                                "effectClass": effect.request.effect_class,
+                                "idempotency": effect.request.idempotency,
+                                "status": effect.status,
+                                "confirmed": effect.confirmed,
+                            })
+                        })
+                        .collect(),
+                )
+            };
+            let reuse_decision = serde_json::json!({
+                "formatVersion": 1,
+                "reason": "all compatibility checks passed",
+                "checks": [
+                    "source_succeeded",
+                    "outside_rerun_closure",
+                    "definition_fingerprint",
+                    "resolved_input_digest",
+                    "dependency_set",
+                    "output_contract",
+                    "output_digest",
+                    "artifact_integrity",
+                    "state_delta_digest",
+                    "effect_certainty"
+                ],
+                "sourceWorkflowDigest": source.workflow_digest,
+                "targetWorkflowDigest": target_plan.workflow_digest,
+                "sourceEffects": source_effect_summary,
+            });
+            reused.push(ReusedTaskMaterialization {
+                task_id: task_id.clone(),
+                source_run_id: source_run_id.to_owned(),
+                source_task_id: task_id.clone(),
+                source_attempt: source_task.attempt,
+                output: output.clone(),
+                metadata: TaskCompletionMetadata {
+                    execution: TaskExecutionMetadata {
+                        metadata_version: TASK_METADATA_VERSION,
+                        definition_fingerprint: target_fingerprint.clone(),
+                        input_digest,
+                        output_contract_fingerprint: contract_fingerprint,
+                    },
+                    output_digest,
+                    state_delta: state_delta.clone(),
+                    state_delta_digest,
+                    artifact_manifest: source_task.artifact_manifest.clone(),
+                },
+                reuse_decision,
+            });
+            task_plans.push(RepairTaskPlan {
+                task_id: task_id.clone(),
+                disposition: PlannedDisposition::Reuse,
+                reason: "successful compatible source result".to_owned(),
+                source_state: Some(source_task.state),
+                source_fingerprint,
+                target_fingerprint: Some(target_fingerprint),
+            });
+        }
+
+        for task_id in target_plan
+            .order
+            .iter()
+            .filter(|task_id| rerun.contains(*task_id))
+        {
+            let target_task = target_plan.tasks.get(task_id).ok_or_else(|| {
+                RuntimeError::InvalidState(format!("target task `{task_id}` is missing"))
+            })?;
+            if !target_task
+                .needs
+                .iter()
+                .all(|dependency| outputs.contains_key(dependency))
+            {
+                continue;
+            }
+            if let Err(error) = resolved_input_digest(inputs, &memory, &outputs, target_task) {
+                let source_fingerprint = source_tasks
+                    .get(task_id)
+                    .and_then(|task| task.definition_fingerprint.clone());
+                let target_fingerprint = task_plans
+                    .iter()
+                    .find(|task| &task.task_id == task_id)
+                    .and_then(|task| task.target_fingerprint.clone());
+                blocks.push(repair_block(
+                    task_id,
+                    "target_input_resolution",
+                    format!(
+                        "target task `{task_id}` cannot consume the reconstructed boundary state: {error}"
+                    ),
+                    source_fingerprint,
+                    target_fingerprint,
+                    vec![task_id.clone()],
+                    false,
+                ));
+                blocked_task_ids.insert(task_id.clone());
+            }
+        }
+
+        for task_id in &removed_tasks {
+            task_plans.push(RepairTaskPlan {
+                task_id: task_id.clone(),
+                disposition: PlannedDisposition::Removed,
+                reason: "task is absent from the target workflow".to_owned(),
+                source_state: source_tasks.get(task_id).map(|task| task.state),
+                source_fingerprint: source_tasks
+                    .get(task_id)
+                    .and_then(|task| task.definition_fingerprint.clone()),
+                target_fingerprint: None,
+            });
+        }
+        for task_plan in &mut task_plans {
+            if blocked_task_ids.contains(&task_plan.task_id) {
+                task_plan.disposition = PlannedDisposition::Blocked;
+            }
+        }
+
+        let rerun_tasks = target_plan
+            .order
+            .iter()
+            .filter(|task| rerun.contains(*task))
+            .cloned()
+            .collect::<Vec<_>>();
+        let reused_tasks = target_plan
+            .order
+            .iter()
+            .filter(|task| {
+                reused
+                    .iter()
+                    .any(|materialized| materialized.task_id.as_str() == task.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let provider_tasks = rerun_tasks
+            .iter()
+            .filter(|task| {
+                target_plan
+                    .tasks
+                    .get(*task)
+                    .is_some_and(|task| matches!(task.uses, TaskUse::Agent(_)))
+            })
+            .count();
+        let action_tasks = rerun_tasks.len().saturating_sub(provider_tasks);
+        let declared_effects = target_plan
+            .requirements
+            .effects
+            .iter()
+            .filter(|effect| rerun.contains(&effect.task))
+            .count();
+        let approval_summary = target_plan
+            .requirements
+            .effects
+            .iter()
+            .filter(|effect| rerun.contains(&effect.task) && effect.approval_possible)
+            .map(|effect| format!("{}:{}", effect.task, effect.operation))
+            .collect::<Vec<_>>();
+        let uncertain_source_effects = source_effects
+            .iter()
+            .filter(|effect| {
+                rerun.contains(&effect.request.task_id)
+                    && matches!(
+                        effect.status,
+                        EffectStatus::Started | EffectStatus::Uncertain
+                    )
+            })
+            .count();
+        let compatible = blocks.is_empty();
+        Ok(RepairPlan {
+            api_version: REPAIR_PLAN_VERSION.to_owned(),
+            compatible,
+            source_run_id: source_run_id.to_owned(),
+            source_workflow_digest: source.workflow_digest,
+            target_workflow_digest: target_plan.workflow_digest.clone(),
+            repair_roots: roots.into_iter().collect(),
+            restart_successful,
+            reused_tasks,
+            rerun_tasks,
+            new_tasks,
+            removed_tasks,
+            changed_tasks: changed_tasks.into_iter().collect(),
+            blocked_reuse: blocks,
+            fresh_effect_summary: FreshEffectSummary {
+                provider_tasks,
+                action_tasks,
+                declared_effects,
+                uncertain_source_effects,
+            },
+            approval_summary,
+            estimated_provider_tasks: provider_tasks,
+            warnings: vec![
+                "repair roots and descendants execute with fresh effects".to_owned(),
+                "reused tasks dispatch no providers, tools, processes, or network calls".to_owned(),
+            ],
+            tasks: task_plans,
+            materialized_tasks: reused,
+            reconstructed_memory: memory,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn repair(
+        &self,
+        target_workflow: &Workflow,
+        target_plan: &CompiledPlan,
+        plan: RepairPlan,
+        reason: Option<&str>,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOutcome, RuntimeError> {
+        if !plan.compatible {
+            return Err(RuntimeError::RepairBlocked {
+                source_run_id: plan.source_run_id,
+                count: plan.blocked_reuse.len(),
+            });
+        }
+        if target_plan.workflow_digest != plan.target_workflow_digest {
+            return Err(RuntimeError::InvalidState(
+                "target workflow changed after repair planning; create a new repair plan"
+                    .to_owned(),
+            ));
+        }
+        let plan = self.plan_repair(
+            &plan.source_run_id,
+            target_workflow,
+            target_plan,
+            &plan.repair_roots,
+            plan.restart_successful,
+        )?;
+        if !plan.compatible {
+            return Err(RuntimeError::RepairBlocked {
+                source_run_id: plan.source_run_id,
+                count: plan.blocked_reuse.len(),
+            });
+        }
+        let source = self.store.load_run(&plan.source_run_id)?;
+        let run_id = self.ids.next_id("repair");
+        let trace_id = self.ids.next_id("trace");
+        self.store.create_repair_run(
+            &run_id,
+            &plan.source_run_id,
+            &plan.source_workflow_digest,
+            API_VERSION,
+            &serde_json::to_value(target_workflow)?,
+            target_plan,
+            &source.inputs,
+            &plan.reconstructed_memory,
+            &plan.repair_roots,
+            reason,
+            &plan.materialized_tasks,
+            &serde_json::to_value(&plan.tasks)?,
+            &self.base_path,
+            self.clock.now(),
+            &trace_id,
+        )?;
+        self.trace(
+            TraceEvent::new(
+                SpanKind::Run,
+                TracePhase::Started,
+                "run.repair",
+                &trace_id,
+                &run_id,
+                self.clock.now(),
+            )
+            .attributes(
+                serde_json::json!({
+                    "sourceRunId": plan.source_run_id,
+                    "repairRoots": plan.repair_roots,
+                    "reusedTasks": plan.reused_tasks,
+                    "executedTasks": plan.rerun_tasks,
+                }),
+                &[],
+            ),
+        )?;
+        for task in &plan.materialized_tasks {
+            self.trace(
+                TraceEvent::new(
+                    SpanKind::Task,
+                    TracePhase::Completed,
+                    "task.reused",
+                    &trace_id,
+                    &run_id,
+                    self.clock.now(),
+                )
+                .task(&task.task_id)
+                .attributes(
+                    serde_json::json!({
+                        "disposition": "reused",
+                        "sourceRunId": task.source_run_id,
+                        "sourceTaskId": task.source_task_id,
+                        "sourceAttempt": task.source_attempt,
+                        "outputDigest": task.metadata.output_digest,
+                    }),
+                    &[],
+                ),
+            )?;
+        }
+        let outcome = self
+            .drive(&run_id, &trace_id, options, cancellation)
+            .await?;
+        let artifacts = self
+            .store
+            .list_tasks(&outcome.run_id)?
+            .into_iter()
+            .flat_map(|task| task.artifact_manifest)
+            .map(|artifact| (artifact.path.clone(), artifact))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+        Ok(RepairOutcome {
+            run_id: outcome.run_id,
+            source_run_id: source.run_id,
+            trace_id: outcome.trace_id,
+            state: outcome.state,
+            reused_tasks: plan.reused_tasks,
+            executed_tasks: plan.rerun_tasks,
+            artifacts,
+            output: outcome.output,
+        })
     }
 
     async fn drive(
@@ -728,6 +1630,41 @@ impl Runtime {
                 .into_iter()
                 .find(|record| record.task_id == task.id)
                 .ok_or_else(|| RuntimeError::InvalidState(format!("task `{}` missing", task.id)))?;
+            let task_outputs = tasks
+                .iter()
+                .filter_map(|record| {
+                    record
+                        .output
+                        .clone()
+                        .map(|output| (record.task_id.clone(), output))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let execution_contract = if options.check {
+                serde_json::json!({})
+            } else {
+                task_output_schema(&workflow, task).unwrap_or_else(|| serde_json::json!({}))
+            };
+            let execution_metadata = TaskExecutionMetadata {
+                metadata_version: TASK_METADATA_VERSION,
+                definition_fingerprint: task_definition_fingerprint(
+                    &workflow, task, &policy, None,
+                )?,
+                input_digest: resolved_input_digest(
+                    run.inputs.as_object().ok_or_else(|| {
+                        RuntimeError::InvalidState("run inputs must be an object".to_owned())
+                    })?,
+                    &run.working_memory,
+                    &task_outputs,
+                    task,
+                )?,
+                output_contract_fingerprint: versioned_json_digest(&execution_contract)?,
+            };
+            self.store.record_task_execution_metadata(
+                run_id,
+                &task.id,
+                &execution_metadata,
+                self.clock.now(),
+            )?;
             let execution = self
                 .execute_task(
                     &workflow,
@@ -740,15 +1677,42 @@ impl Runtime {
                     cancellation,
                 )
                 .await;
+            let execution = execution.and_then(|execution| {
+                if let TaskExecution::Complete { output, .. } = &execution {
+                    validate_output_contract(&execution_contract, output).map_err(|message| {
+                        RuntimeError::Task {
+                            task: task.id.clone(),
+                            message: format!("task output contract failed: {message}"),
+                        }
+                    })?;
+                }
+                Ok(execution)
+            });
             match execution {
                 Ok(TaskExecution::Complete { output, memory }) => {
-                    self.store.transition_task(
+                    let effects = self.store.list_effects(run_id)?;
+                    let delta = state_delta(&run.working_memory, memory.as_ref())?;
+                    let completion = TaskCompletionMetadata {
+                        execution: TaskExecutionMetadata {
+                            definition_fingerprint: task_definition_fingerprint(
+                                &workflow,
+                                task,
+                                &policy,
+                                Some(&effects),
+                            )?,
+                            ..execution_metadata
+                        },
+                        output_digest: versioned_json_digest(&output)?,
+                        state_delta_digest: versioned_json_digest(&delta)?,
+                        artifact_manifest: collect_artifacts(&policy, &effects, &task.id)?,
+                        state_delta: delta,
+                    };
+                    self.store.complete_task(
                         run_id,
                         &task.id,
-                        TaskState::Succeeded,
-                        Some(&output),
-                        None,
+                        &output,
                         memory.as_ref(),
+                        &completion,
                         self.clock.now(),
                         trace_id,
                     )?;
@@ -1971,8 +2935,30 @@ impl Runtime {
             }
             match response.finish_reason {
                 FinishReason::Complete => {
+                    let output = if let Some(schema) = &agent.structured_output {
+                        let structured: Value =
+                            serde_json::from_str(&response.text).map_err(|error| {
+                                RuntimeError::Task {
+                                    task: task.task_id.clone(),
+                                    message: format!(
+                                        "provider structured output was not valid JSON: {error}"
+                                    ),
+                                }
+                            })?;
+                        validate_output_contract(schema, &structured).map_err(|message| {
+                            RuntimeError::Task {
+                                task: task.task_id.clone(),
+                                message: format!(
+                                    "provider structured output failed its contract: {message}"
+                                ),
+                            }
+                        })?;
+                        structured
+                    } else {
+                        serde_json::json!({"text": response.text, "usage": usage})
+                    };
                     return Ok(TaskExecution::Complete {
-                        output: serde_json::json!({"text": response.text, "usage": usage}),
+                        output,
                         memory: None,
                     });
                 }
@@ -2212,6 +3198,376 @@ enum TaskExecution {
     Paused,
 }
 
+fn repair_block(
+    task_id: &str,
+    rule: &str,
+    message: String,
+    source_fingerprint: Option<String>,
+    target_fingerprint: Option<String>,
+    suggested_repair_roots: Vec<String>,
+    full_fork_required: bool,
+) -> RepairBlock {
+    RepairBlock {
+        task_id: task_id.to_owned(),
+        rule: rule.to_owned(),
+        message,
+        source_fingerprint,
+        target_fingerprint,
+        suggested_repair_roots,
+        full_fork_required,
+    }
+}
+
+fn blocked_task_plan(
+    task_id: &str,
+    source_state: Option<TaskState>,
+    source_fingerprint: Option<String>,
+    target_fingerprint: String,
+) -> RepairTaskPlan {
+    RepairTaskPlan {
+        task_id: task_id.to_owned(),
+        disposition: PlannedDisposition::Blocked,
+        reason: "reuse compatibility check failed".to_owned(),
+        source_state,
+        source_fingerprint,
+        target_fingerprint: Some(target_fingerprint),
+    }
+}
+
+fn repair_effect_is_unsafe(effect: &EffectRecord) -> bool {
+    let potentially_mutating = matches!(
+        effect.request.effect_class,
+        EffectClass::WorkspaceMutate
+            | EffectClass::ExternalMutate
+            | EffectClass::ProcessExecution
+            | EffectClass::Network
+            | EffectClass::RemoteAgent
+    );
+    potentially_mutating
+        && (matches!(
+            effect.status,
+            EffectStatus::Started | EffectStatus::Uncertain
+        ) || (effect.status == EffectStatus::Succeeded
+            && matches!(
+                effect.request.idempotency,
+                Idempotency::AtMostOnce | Idempotency::Unknown
+            )))
+}
+
+fn task_output_schema(workflow: &Workflow, task: &agentctl_core::CompiledTask) -> Option<Value> {
+    task.output_schema.clone().or_else(|| match &task.uses {
+        TaskUse::Agent(name) => workflow
+            .spec
+            .agents
+            .get(name)
+            .and_then(|agent| agent.structured_output.clone()),
+        TaskUse::Action(_) => Some(serde_json::json!({"type": "object"})),
+    })
+}
+
+fn validate_output_contract(schema: &Value, output: &Value) -> Result<(), String> {
+    let validator = jsonschema::validator_for(schema).map_err(|error| error.to_string())?;
+    validator
+        .validate(output)
+        .map_err(|error| error.to_string())
+}
+
+fn task_definition_fingerprint(
+    workflow: &Workflow,
+    task: &agentctl_core::CompiledTask,
+    policy: &PolicyEngine,
+    recorded_effects: Option<&[EffectRecord]>,
+) -> Result<String, RuntimeError> {
+    let execution = match &task.uses {
+        TaskUse::Action(name) => serde_json::json!({
+            "kind": "action",
+            "task": task,
+            "action": workflow.spec.actions.get(name),
+        }),
+        TaskUse::Agent(name) => {
+            let agent = workflow.spec.agents.get(name).ok_or_else(|| {
+                RuntimeError::InvalidState(format!("agent `{name}` disappeared after compile"))
+            })?;
+            let provider = workflow
+                .spec
+                .providers
+                .get(&agent.provider)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "provider `{}` disappeared after compile",
+                        agent.provider
+                    ))
+                })?;
+            let tools = agent
+                .tools
+                .iter()
+                .map(|tool| {
+                    workflow
+                        .spec
+                        .tools
+                        .get(tool)
+                        .map(|definition| (tool.clone(), definition.clone()))
+                        .ok_or_else(|| {
+                            RuntimeError::InvalidState(format!(
+                                "tool `{tool}` disappeared after compile"
+                            ))
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            let instruction_content_digest = if let Some(path) = &agent.instructions_file {
+                let recorded = recorded_effects.and_then(|effects| {
+                    effects
+                        .iter()
+                        .rev()
+                        .find(|effect| {
+                            effect.request.task_id == task.id
+                                && effect.request.operation == "agent.instructions.read"
+                                && effect.status == EffectStatus::Succeeded
+                                && effect.confirmed
+                        })
+                        .and_then(|effect| effect.result.as_ref())
+                        .and_then(|result| result.get("content"))
+                        .and_then(Value::as_str)
+                });
+                let content = recorded.map(ToOwned::to_owned).map_or_else(
+                    || read_bounded_text_sync(&policy.resolve_read_path(path)?),
+                    Ok,
+                )?;
+                Some(format!("sha256:{}", digest(content.as_bytes())))
+            } else {
+                None
+            };
+            serde_json::json!({
+                "kind": "agent",
+                "task": task,
+                "agent": agent,
+                "provider": provider,
+                "tools": tools,
+                "instructionContentDigest": instruction_content_digest,
+            })
+        }
+    };
+    versioned_json_digest(&serde_json::json!({
+        "formatVersion": 1,
+        "execution": execution,
+        "policy": workflow.spec.policy,
+        "packs": workflow.spec.packs,
+    }))
+}
+
+fn resolved_input_digest(
+    inputs: &serde_json::Map<String, Value>,
+    memory: &Value,
+    outputs: &BTreeMap<String, Value>,
+    task: &agentctl_core::CompiledTask,
+) -> Result<String, RuntimeError> {
+    let memory_object = memory
+        .as_object()
+        .ok_or_else(|| RuntimeError::InvalidState("working memory must be an object".to_owned()))?;
+    let mut context = EvalContext {
+        inputs: inputs
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        vars: BTreeMap::new(),
+        memory: memory_object
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        tasks: outputs.clone(),
+    };
+    context.vars = task
+        .vars
+        .iter()
+        .map(|(name, value)| render(value, &context).map(|value| (name.clone(), value)))
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let input = render(&serde_json::to_value(&task.input)?, &context)?;
+    let dependencies = task
+        .needs
+        .iter()
+        .filter_map(|dependency| {
+            outputs
+                .get(dependency)
+                .map(|output| (dependency.clone(), output.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    versioned_json_digest(&serde_json::json!({
+        "formatVersion": 1,
+        "input": input,
+        "vars": context.vars,
+        "workingMemory": memory,
+        "dependencies": dependencies,
+    }))
+}
+
+fn state_delta(before: &Value, after: Option<&Value>) -> Result<Value, RuntimeError> {
+    let before = before
+        .as_object()
+        .ok_or_else(|| RuntimeError::InvalidState("working memory must be an object".to_owned()))?;
+    let after = match after {
+        Some(after) => after.as_object().ok_or_else(|| {
+            RuntimeError::InvalidState("working memory must be an object".to_owned())
+        })?,
+        None => before,
+    };
+    let set = after
+        .iter()
+        .filter(|(key, value)| before.get(*key) != Some(*value))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let remove = before
+        .keys()
+        .filter(|key| !after.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "formatVersion": 1,
+        "set": set,
+        "remove": remove,
+    }))
+}
+
+fn apply_state_delta(memory: &mut Value, delta: &Value) -> Result<(), RuntimeError> {
+    if delta.get("formatVersion").and_then(Value::as_u64) != Some(1) {
+        return Err(RuntimeError::InvalidState(
+            "unsupported task state-delta format".to_owned(),
+        ));
+    }
+    let object = memory
+        .as_object_mut()
+        .ok_or_else(|| RuntimeError::InvalidState("working memory must be an object".to_owned()))?;
+    let set = delta
+        .get("set")
+        .and_then(Value::as_object)
+        .ok_or_else(|| RuntimeError::InvalidState("state delta has no set object".to_owned()))?;
+    for (key, value) in set {
+        object.insert(key.clone(), value.clone());
+    }
+    let remove = delta
+        .get("remove")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RuntimeError::InvalidState("state delta has no remove array".to_owned()))?;
+    for key in remove {
+        let key = key.as_str().ok_or_else(|| {
+            RuntimeError::InvalidState("state delta key is not a string".to_owned())
+        })?;
+        object.remove(key);
+    }
+    Ok(())
+}
+
+fn versioned_json_digest(value: &Value) -> Result<String, RuntimeError> {
+    let canonical = canonical_json(value);
+    Ok(format!(
+        "sha256:v1:{}",
+        digest(&serde_json::to_vec(&canonical)?)
+    ))
+}
+
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), canonical_json(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
+        other => other.clone(),
+    }
+}
+
+fn read_bounded_text_sync(path: &Path) -> Result<String, RuntimeError> {
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = file.take(MAX_WORKSPACE_FILE_BYTES + 1);
+    let mut content = String::new();
+    reader.read_to_string(&mut content)?;
+    if content.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+        return Err(RuntimeError::InvalidState(format!(
+            "file {} exceeds {MAX_WORKSPACE_FILE_BYTES} bytes",
+            path.display()
+        )));
+    }
+    Ok(content)
+}
+
+fn collect_artifacts(
+    policy: &PolicyEngine,
+    effects: &[EffectRecord],
+    task_id: &str,
+) -> Result<Vec<ArtifactRecord>, RuntimeError> {
+    let mut paths = BTreeSet::new();
+    for effect in effects.iter().filter(|effect| {
+        effect.request.task_id == task_id
+            && effect.request.effect_class == EffectClass::WorkspaceMutate
+            && effect.status == EffectStatus::Succeeded
+            && effect.confirmed
+    }) {
+        if let Some(result) = &effect.result {
+            collect_result_paths(result, &mut paths);
+        }
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let resolved = policy.resolve_read_path(&path)?;
+            let metadata = std::fs::metadata(&resolved)?;
+            if metadata.len() > 16 * 1024 * 1024 {
+                return Err(RuntimeError::InvalidState(format!(
+                    "artifact `{path}` exceeds 16777216 bytes"
+                )));
+            }
+            let content = std::fs::read(&resolved)?;
+            Ok(ArtifactRecord {
+                path,
+                digest: format!("sha256:{}", digest(&content)),
+                size_bytes: metadata.len(),
+            })
+        })
+        .collect()
+}
+
+fn collect_result_paths(value: &Value, paths: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(path) = object.get("path").and_then(Value::as_str) {
+                paths.insert(path.to_owned());
+            }
+            for value in object.values() {
+                collect_result_paths(value, paths);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_result_paths(value, paths);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn verify_artifacts(policy: &PolicyEngine, artifacts: &[ArtifactRecord]) -> Result<(), String> {
+    for artifact in artifacts {
+        let resolved = policy
+            .resolve_read_path(&artifact.path)
+            .map_err(|error| error.to_string())?;
+        let metadata =
+            std::fs::metadata(&resolved).map_err(|error| format!("{}: {error}", artifact.path))?;
+        if metadata.len() != artifact.size_bytes {
+            return Err(format!("{} size mismatch", artifact.path));
+        }
+        let content =
+            std::fs::read(&resolved).map_err(|error| format!("{}: {error}", artifact.path))?;
+        let actual = format!("sha256:{}", digest(&content));
+        if actual != artifact.digest {
+            return Err(format!("{} digest mismatch", artifact.path));
+        }
+    }
+    Ok(())
+}
+
 fn next_task<'a>(
     plan: &'a CompiledPlan,
     records: &[TaskRecord],
@@ -2401,7 +3757,8 @@ const fn retryable_error(error: &RuntimeError) -> bool {
         | RuntimeError::UncertainEffect { .. }
         | RuntimeError::ExternalEffectUncertain(_)
         | RuntimeError::Cancelled
-        | RuntimeError::Json(_) => false,
+        | RuntimeError::Json(_)
+        | RuntimeError::RepairBlocked { .. } => false,
     }
 }
 
@@ -2454,7 +3811,7 @@ mod tests {
     use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
     use agentctl_observability::BufferedTraceSink;
     use agentctl_store::ApprovalResolution;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
     use tempfile::tempdir;
 
     struct FixedClock;
@@ -2464,6 +3821,24 @@ mod tests {
             DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
                 .map(|value| value.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now())
+        }
+    }
+
+    struct MutableClock(AtomicI64);
+
+    impl MutableClock {
+        fn new() -> Self {
+            Self(AtomicI64::new(1_767_225_600))
+        }
+
+        fn advance(&self, seconds: i64) {
+            self.0.fetch_add(seconds, Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for MutableClock {
+        fn now(&self) -> DateTime<Utc> {
+            DateTime::from_timestamp(self.0.load(Ordering::SeqCst), 0).unwrap_or_else(Utc::now)
         }
     }
 
@@ -2542,6 +3917,64 @@ mod tests {
                 assistant_content: vec![ContentBlock::Text { text }],
                 continuation: None,
                 usage: Usage::default(),
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct SelectiveRepairProvider {
+        first_calls: AtomicU64,
+        second_calls: AtomicU64,
+    }
+
+    #[async_trait]
+    impl ModelProvider for SelectiveRepairProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            let prompt = match request.messages.first() {
+                Some(Message::User(content)) => content
+                    .first()
+                    .and_then(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                _ => "",
+            };
+            let text = if prompt == "produce durable output" {
+                assert_eq!(
+                    self.first_calls.fetch_add(1, Ordering::SeqCst),
+                    0,
+                    "reused upstream provider must not execute during repair"
+                );
+                r#"{"value":"durable"}"#.to_owned()
+            } else if prompt.starts_with("broken") {
+                self.second_calls.fetch_add(1, Ordering::SeqCst);
+                "not-json".to_owned()
+            } else {
+                assert_eq!(prompt, "fixed durable");
+                self.second_calls.fetch_add(1, Ordering::SeqCst);
+                r#"{"received":"durable"}"#.to_owned()
+            };
+            Ok(ProviderResponse {
+                response_id: Some("repair-test".to_owned()),
+                text: text.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text { text }],
+                continuation: None,
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    ..Usage::default()
+                },
                 finish_reason: FinishReason::Complete,
             })
         }
@@ -2751,6 +4184,1027 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selective_repair_reuses_upstream_agent_output_without_dispatch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(SelectiveRepairProvider::default());
+        let clock = Arc::new(MutableClock::new());
+        let runtime = Runtime::new(store.clone(), directory.path())
+            .with_clock(clock.clone())
+            .with_ids(Arc::new(SequenceIds::default()))
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: selective-repair }
+spec:
+  providers:
+    fake: { kind: fake }
+  agents:
+    first:
+      provider: fake
+      model: fake
+      instructions: produce structured output
+      structuredOutput:
+        type: object
+        required: [value]
+        additionalProperties: false
+        properties:
+          value: { type: string }
+    second:
+      provider: fake
+      model: fake
+      instructions: consume structured output
+      structuredOutput:
+        type: object
+        required: [received]
+        additionalProperties: false
+        properties:
+          received: { type: string }
+  tasks:
+    - id: first
+      uses: agent:first
+      with: { prompt: produce durable output }
+    - id: second
+      uses: agent:second
+      needs: [first]
+      with: { prompt: "broken ${{ tasks.first.output.value }}" }
+"#;
+        let repaired_yaml = source_yaml.replace(
+            r#"with: { prompt: "broken ${{ tasks.first.output.value }}" }"#,
+            r#"with: { prompt: "fixed ${{ tasks.first.output.value }}" }"#,
+        );
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, task, .. }) => {
+                assert_eq!(task, "second");
+                run_id
+            }
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("repair plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        assert_eq!(plan.reused_tasks, ["first"]);
+        assert_eq!(plan.rerun_tasks, ["second"]);
+
+        let invalid_consumer_yaml =
+            repaired_yaml.replace("tasks.first.output.value", "tasks.first.output.missing");
+        let (invalid_consumer_workflow, invalid_consumer_plan) =
+            compile_fixture(&invalid_consumer_yaml);
+        let invalid_consumer = runtime
+            .plan_repair(
+                &source_run_id,
+                &invalid_consumer_workflow,
+                &invalid_consumer_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("invalid consumer plan");
+        assert!(!invalid_consumer.compatible);
+        assert!(
+            invalid_consumer.blocked_reuse.iter().any(|block| {
+                block.task_id == "second" && block.rule == "target_input_resolution"
+            })
+        );
+
+        clock.advance(3_600);
+        let outcome = runtime
+            .repair(
+                &repaired_workflow,
+                &repaired_plan,
+                plan,
+                Some("fix second task"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair succeeds");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(provider.first_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.second_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            outcome.output.as_ref().expect("output")["second"]["received"],
+            "durable"
+        );
+        let repaired_tasks = store.list_tasks(&outcome.run_id).expect("tasks");
+        assert_eq!(
+            repaired_tasks[0].disposition,
+            agentctl_store::TaskDisposition::Reused
+        );
+        assert_eq!(
+            repaired_tasks[1].disposition,
+            agentctl_store::TaskDisposition::Executed
+        );
+        assert!(
+            repaired_tasks[0]
+                .reuse_decision
+                .as_ref()
+                .and_then(|decision| decision.get("sourceEffects"))
+                .and_then(Value::as_array)
+                .is_some_and(|effects| !effects.is_empty())
+        );
+        assert!(
+            store
+                .trace_events(&outcome.run_id)
+                .expect("traces")
+                .iter()
+                .any(|event| {
+                    event.event["name"] == "task.reused" && event.event["taskId"] == "first"
+                })
+        );
+        assert!(
+            store
+                .provider_sessions(&outcome.run_id)
+                .expect("sessions")
+                .iter()
+                .all(|session| session.task_id != "first")
+        );
+        assert_eq!(
+            store
+                .list_effects(&outcome.run_id)
+                .expect("effects")
+                .iter()
+                .filter(|effect| effect.request.task_id == "first")
+                .count(),
+            0
+        );
+        assert_eq!(
+            store.load_run(&source_run_id).expect("source").state,
+            RunState::Failed
+        );
+        let cutoff = DateTime::from_timestamp(1_767_227_400, 0).expect("cutoff");
+        store.garbage_collect(cutoff).expect("source gc");
+        assert!(matches!(
+            store.load_run(&source_run_id),
+            Err(StoreError::RunNotFound(_))
+        ));
+        assert_eq!(
+            store
+                .load_run(&outcome.run_id)
+                .expect("repair survives")
+                .state,
+            RunState::Succeeded
+        );
+        let replay = runtime
+            .replay(&outcome.run_id)
+            .await
+            .expect("offline replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert_eq!(replay.output, outcome.output);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("replay effects")
+                .is_empty()
+        );
+        assert!(
+            store
+                .provider_sessions(&replay.run_id)
+                .expect("replay sessions")
+                .is_empty()
+        );
+        let replay_source_plan = runtime
+            .plan_repair(
+                &replay.run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                true,
+            )
+            .expect("replay-source plan");
+        assert!(!replay_source_plan.compatible);
+        assert!(
+            replay_source_plan
+                .blocked_reuse
+                .iter()
+                .any(|block| { block.rule == "recorded_replay_has_no_direct_effect_history" })
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_plan_uses_minimal_branch_closure_and_blocks_changed_upstream() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: branch-repair }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: prepare
+      uses: action:assign
+      with: { value: stable }
+    - id: analyze_a
+      uses: action:assign
+      needs: [prepare]
+      with: { branch: a }
+    - id: analyze_b
+      uses: action:assert
+      needs: [prepare]
+      with: { that: false, message: broken }
+    - id: combine
+      uses: action:assign
+      needs: [analyze_a, analyze_b]
+      with: { result: combined }
+"#;
+        let repaired_yaml = source_yaml.replace(
+            "with: { that: false, message: broken }",
+            "with: { that: true, message: fixed }",
+        );
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, task, .. }) => {
+                assert_eq!(task, "analyze_b");
+                run_id
+            }
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["analyze_b".to_owned()],
+                false,
+            )
+            .expect("plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        assert_eq!(plan.reused_tasks, ["prepare", "analyze_a"]);
+        assert_eq!(plan.rerun_tasks, ["analyze_b", "combine"]);
+        let outcome = runtime
+            .repair(
+                &repaired_workflow,
+                &repaired_plan,
+                plan,
+                None,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair");
+        assert_eq!(outcome.state, RunState::Succeeded);
+
+        let changed_upstream_yaml =
+            repaired_yaml.replace("with: { value: stable }", "with: { value: changed }");
+        let (changed_workflow, changed_plan) = compile_fixture(&changed_upstream_yaml);
+        let blocked = runtime
+            .plan_repair(
+                &source_run_id,
+                &changed_workflow,
+                &changed_plan,
+                &["analyze_b".to_owned()],
+                false,
+            )
+            .expect("blocked plan");
+        assert!(!blocked.compatible);
+        assert!(blocked.blocked_reuse.iter().any(|block| {
+            block.task_id == "prepare" && block.rule == "definition_fingerprint_mismatch"
+        }));
+
+        let changed_contract_yaml = repaired_yaml.replace(
+            "      with: { value: stable }",
+            concat!(
+                "      with: { value: stable }\n",
+                "      outputSchema:\n",
+                "        type: object\n",
+                "        properties: { value: { type: integer } }\n",
+                "        required: [value]\n"
+            ),
+        );
+        let (contract_workflow, contract_plan) = compile_fixture(&changed_contract_yaml);
+        let contract_blocked = runtime
+            .plan_repair(
+                &source_run_id,
+                &contract_workflow,
+                &contract_plan,
+                &["analyze_b".to_owned()],
+                false,
+            )
+            .expect("contract plan");
+        assert!(!contract_blocked.compatible);
+        assert!(contract_blocked.blocked_reuse.iter().any(|block| {
+            block.task_id == "prepare" && block.rule == "output_contract_mismatch"
+        }));
+
+        let unrelated_yaml = repaired_yaml.replace(
+            "metadata: { name: branch-repair }",
+            "metadata: { name: unrelated }",
+        );
+        let (unrelated_workflow, unrelated_plan) = compile_fixture(&unrelated_yaml);
+        let unrelated = runtime
+            .plan_repair(
+                &source_run_id,
+                &unrelated_workflow,
+                &unrelated_plan,
+                &["analyze_b".to_owned()],
+                false,
+            )
+            .expect("unrelated plan");
+        assert!(!unrelated.compatible);
+        assert!(unrelated.blocked_reuse.iter().any(|block| {
+            block.rule == "workflow_identity_mismatch" && block.full_fork_required
+        }));
+    }
+
+    #[tokio::test]
+    async fn repair_blocks_uncertain_mutation_until_not_applied_reconciliation() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: effect-repair }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:assign
+      with: { value: durable }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+"#;
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let effect = EffectRequest::new(
+            &source_run_id,
+            "second",
+            1,
+            1,
+            "external.publish",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"record": "x"}),
+            "publish a record",
+            "trace-uncertain",
+        );
+        store
+            .record_effect_request(&effect, FixedClock.now())
+            .expect("record effect");
+        store
+            .mark_effect_started(&effect.id, FixedClock.now())
+            .expect("start effect");
+        store
+            .mark_effect_uncertain(&effect.id, "dispatch outcome unknown", FixedClock.now())
+            .expect("uncertain effect");
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let blocked = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("blocked plan");
+        assert!(!blocked.compatible);
+        assert!(
+            blocked
+                .blocked_reuse
+                .iter()
+                .any(|block| { block.task_id == "second" && block.rule == "unreconciled_effect" })
+        );
+
+        store
+            .reconcile_effect_not_applied(
+                &effect.id,
+                "operator",
+                "remote system confirms no record",
+                FixedClock.now(),
+            )
+            .expect("reconcile");
+        let read_only = EffectRequest::new(
+            &source_run_id,
+            "second",
+            1,
+            2,
+            "external.read",
+            EffectClass::Observe,
+            Risk::Low,
+            Idempotency::Idempotent,
+            serde_json::json!({"record": "x"}),
+            "read a record",
+            "trace-read-only",
+        );
+        store
+            .record_effect_request(&read_only, FixedClock.now())
+            .expect("record read-only effect");
+        store
+            .mark_effect_started(&read_only.id, FixedClock.now())
+            .expect("start read-only effect");
+        store
+            .mark_effect_uncertain(&read_only.id, "read response was lost", FixedClock.now())
+            .expect("uncertain read-only effect");
+        let compatible = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("compatible plan");
+        assert!(compatible.compatible, "{:?}", compatible.blocked_reuse);
+        assert_eq!(compatible.fresh_effect_summary.uncertain_source_effects, 1);
+    }
+
+    #[tokio::test]
+    async fn repair_detects_changed_upstream_prompt_file() {
+        let directory = tempdir().expect("tempdir");
+        std::fs::write(directory.path().join("first.txt"), "original instructions")
+            .expect("prompt");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(SelectiveRepairProvider::default());
+        let runtime = Runtime::new(store, directory.path())
+            .with_clock(Arc::new(FixedClock))
+            .with_ids(Arc::new(SequenceIds::default()))
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider));
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: prompt-repair }
+spec:
+  providers:
+    fake: { kind: fake }
+  agents:
+    first:
+      provider: fake
+      model: fake
+      instructionsFile: first.txt
+      structuredOutput:
+        type: object
+        required: [value]
+        properties:
+          value: { type: string }
+  actions:
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: agent:first
+      with: { prompt: produce durable output }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+"#;
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        std::fs::write(directory.path().join("first.txt"), "changed instructions")
+            .expect("changed prompt");
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("plan");
+        assert!(!plan.compatible);
+        assert!(plan.blocked_reuse.iter().any(|block| {
+            block.task_id == "first" && block.rule == "definition_fingerprint_mismatch"
+        }));
+    }
+
+    #[tokio::test]
+    async fn repair_reconstructs_successful_memory_delta_and_excludes_failed_boundary() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: memory-repair }
+spec:
+  memory:
+    working: { durable: false, failed: absent }
+  policy: { approval: never }
+  actions:
+    memory: { kind: builtin.memory.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:memory
+      with: { key: durable, value: true }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+    - id: verify
+      uses: action:assert
+      needs: [second]
+      with: { that: "${{ memory.durable }}" }
+"#;
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        let outcome = runtime
+            .repair(
+                &repaired_workflow,
+                &repaired_plan,
+                plan,
+                None,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        let run = store.load_run(&outcome.run_id).expect("run");
+        assert_eq!(run.working_memory["durable"], true);
+        assert_eq!(run.working_memory["failed"], "absent");
+    }
+
+    #[tokio::test]
+    async fn repair_blocks_when_reused_artifact_is_missing() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: artifact-repair }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:write
+      with: { path: artifact.txt, content: durable }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+"#;
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let compatible = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("plan");
+        assert!(compatible.compatible, "{:?}", compatible.blocked_reuse);
+        std::fs::remove_file(directory.path().join("artifact.txt")).expect("remove artifact");
+        let runs_before = store.stats().expect("stats").runs;
+        assert!(matches!(
+            runtime
+                .repair(
+                    &repaired_workflow,
+                    &repaired_plan,
+                    compatible,
+                    None,
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await,
+            Err(RuntimeError::RepairBlocked { .. })
+        ));
+        assert_eq!(store.stats().expect("stats").runs, runs_before);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("blocked plan");
+        assert!(!plan.compatible);
+        assert!(
+            plan.blocked_reuse
+                .iter()
+                .any(|block| { block.task_id == "first" && block.rule == "artifact_integrity" })
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_blocks_tampered_reused_output_digest() {
+        let directory = tempdir().expect("tempdir");
+        let database = directory.path().join("runtime.db");
+        let store = SqliteStore::open(&database).expect("store");
+        let runtime = runtime(store, directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: corrupt-output-repair }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:assign
+      with: { value: durable }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+"#;
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        rusqlite::Connection::open(&database)
+            .expect("tamper connection")
+            .execute(
+                "UPDATE task_states SET output_json = ?3 WHERE run_id = ?1 AND task_id = ?2",
+                rusqlite::params![source_run_id, "first", r#"{"tampered":true}"#],
+            )
+            .expect("tamper output");
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("plan");
+        assert!(!plan.compatible);
+        assert!(
+            plan.blocked_reuse.iter().any(|block| {
+                block.task_id == "first" && block.rule == "output_digest_mismatch"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_handles_multiple_roots_new_descendants_removed_tasks_and_restart_acknowledgement()
+     {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: graph-repair }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - { id: prepare, uses: "action:assign", with: { value: stable } }
+    - { id: removed, uses: "action:assign", with: { value: obsolete } }
+    - { id: left, uses: "action:assert", needs: [prepare], with: { that: false } }
+    - { id: right, uses: "action:assert", needs: [prepare], with: { that: false } }
+    - { id: combine, uses: "action:assign", needs: [left, right], with: { value: combined } }
+"#;
+        let target_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: graph-repair }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - { id: prepare, uses: "action:assign", with: { value: stable } }
+    - { id: left, uses: "action:assert", needs: [prepare], with: { that: true } }
+    - { id: right, uses: "action:assert", needs: [prepare], with: { that: true } }
+    - { id: combine, uses: "action:assign", needs: [left, right], with: { value: combined } }
+    - { id: verify, uses: "action:assert", needs: [combine], with: { that: true } }
+"#;
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, task, .. }) => {
+                assert_eq!(task, "left");
+                run_id
+            }
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let (target_workflow, target_plan) = compile_fixture(target_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &target_workflow,
+                &target_plan,
+                &["left".to_owned(), "right".to_owned()],
+                false,
+            )
+            .expect("multi-root plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        assert_eq!(plan.repair_roots, ["left", "right"]);
+        assert_eq!(plan.reused_tasks, ["prepare"]);
+        assert_eq!(plan.rerun_tasks, ["left", "right", "combine", "verify"]);
+        assert_eq!(plan.new_tasks, ["verify"]);
+        assert_eq!(plan.removed_tasks, ["removed"]);
+        let outcome = runtime
+            .repair(
+                &target_workflow,
+                &target_plan,
+                plan,
+                None,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("multi-root repair");
+        assert_eq!(outcome.state, RunState::Succeeded);
+
+        let unrelated_yaml = target_yaml.replace(
+            "    - { id: verify, uses: \"action:assert\", needs: [combine], with: { that: true } }\n",
+            concat!(
+                "    - { id: verify, uses: \"action:assert\", needs: [combine], with: { that: true } }\n",
+                "    - { id: unrelated, uses: \"action:assign\", with: { value: new } }\n"
+            ),
+        );
+        let (unrelated_workflow, unrelated_plan) = compile_fixture(&unrelated_yaml);
+        let blocked = runtime
+            .plan_repair(
+                &source_run_id,
+                &unrelated_workflow,
+                &unrelated_plan,
+                &["left".to_owned(), "right".to_owned()],
+                false,
+            )
+            .expect("blocked unrelated plan");
+        assert!(!blocked.compatible);
+        assert!(blocked.blocked_reuse.iter().any(|block| {
+            block.task_id == "unrelated" && block.rule == "new_task_outside_repair_closure"
+        }));
+
+        let successful_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: restart-successful }
+spec:
+  actions: { assign: { kind: builtin.assign } }
+  tasks: [{ id: done, uses: "action:assign", with: { value: old } }]
+"#;
+        let target_successful_yaml = successful_yaml.replace("value: old", "value: new");
+        let (successful_workflow, successful_plan) = compile_fixture(successful_yaml);
+        let successful_run = runtime
+            .start(
+                &successful_workflow,
+                &successful_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("successful source");
+        let (target_successful_workflow, target_successful_plan) =
+            compile_fixture(&target_successful_yaml);
+        let blocked = runtime
+            .plan_repair(
+                &successful_run.run_id,
+                &target_successful_workflow,
+                &target_successful_plan,
+                &["done".to_owned()],
+                false,
+            )
+            .expect("restart plan");
+        assert!(!blocked.compatible);
+        assert!(blocked.blocked_reuse.iter().any(|block| {
+            block.task_id == "done" && block.rule == "successful_root_requires_acknowledgement"
+        }));
+        let acknowledged = runtime
+            .plan_repair(
+                &successful_run.run_id,
+                &target_successful_workflow,
+                &target_successful_plan,
+                &["done".to_owned()],
+                true,
+            )
+            .expect("acknowledged restart plan");
+        assert!(acknowledged.compatible, "{:?}", acknowledged.blocked_reuse);
+    }
+
+    #[tokio::test]
+    async fn repair_allows_confirmed_idempotent_effects_and_preserves_approval_gates() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: effect-safety }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+  actions:
+    assert: { kind: builtin.assert }
+    write: { kind: builtin.write }
+  tasks:
+    - { id: publish, uses: "action:assert", with: { that: false } }
+"#;
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let prior_effect = EffectRequest::new(
+            &source_run_id,
+            "publish",
+            1,
+            1,
+            "external.idempotent-put",
+            EffectClass::ExternalMutate,
+            Risk::Medium,
+            Idempotency::Idempotent,
+            serde_json::json!({"key": "stable", "value": 1}),
+            "put stable value",
+            "trace-idempotent",
+        );
+        store
+            .record_effect_request(&prior_effect, FixedClock.now())
+            .expect("record effect");
+        store
+            .mark_effect_started(&prior_effect.id, FixedClock.now())
+            .expect("start effect");
+        store
+            .complete_effect(
+                &prior_effect.id,
+                Ok(&serde_json::json!({"stored": true})),
+                FixedClock.now(),
+            )
+            .expect("complete effect");
+
+        let target_yaml = source_yaml.replace(
+            "    - { id: publish, uses: \"action:assert\", with: { that: false } }",
+            "    - { id: publish, uses: \"action:write\", with: { path: approved.txt, content: repaired } }",
+        );
+        let (target_workflow, target_plan) = compile_fixture(&target_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &target_workflow,
+                &target_plan,
+                &["publish".to_owned()],
+                false,
+            )
+            .expect("effect-safe plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        let outcome = runtime
+            .repair(
+                &target_workflow,
+                &target_plan,
+                plan,
+                None,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("approval-paused repair");
+        assert_eq!(outcome.state, RunState::Paused);
+        assert!(!directory.path().join("approved.txt").exists());
+        let tasks = store.list_tasks(&outcome.run_id).expect("repair tasks");
+        assert_eq!(tasks[0].state, TaskState::WaitingForApproval);
+        assert_eq!(
+            tasks[0].disposition,
+            agentctl_store::TaskDisposition::Executed
+        );
+        assert_eq!(
+            store
+                .pending_approvals(&outcome.run_id)
+                .expect("approvals")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn deterministic_dataflow_condition_and_working_memory() {
         let directory = tempdir().expect("tempdir");
         let store = SqliteStore::open_memory().expect("store");
@@ -2791,6 +5245,54 @@ spec:
         assert_eq!(
             store.load_run(&outcome.run_id).expect("run").working_memory["result"],
             "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_output_contract_failure_is_durable() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: output-contract }
+spec:
+  actions: { assign: { kind: builtin.assign } }
+  tasks:
+    - id: typed
+      uses: action:assign
+      with: { value: not-an-integer }
+      outputSchema:
+        type: object
+        properties: { value: { type: integer } }
+        required: [value]
+"#,
+        );
+        let run_id = match runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed {
+                run_id, message, ..
+            }) => {
+                assert!(message.contains("task output contract failed"));
+                run_id
+            }
+            other => panic!("expected contract failure, got {other:?}"),
+        };
+        let task = &store.list_tasks(&run_id).expect("tasks")[0];
+        assert_eq!(task.state, TaskState::Failed);
+        assert!(
+            task.error
+                .as_deref()
+                .is_some_and(|error| error.contains("task output contract failed"))
         );
     }
 
