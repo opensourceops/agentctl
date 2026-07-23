@@ -44,7 +44,7 @@ fn main() -> Result<()> {
 
 fn docs_verify(root: &Path) -> Result<()> {
     println!("[1/6] build documentation test binary");
-    run(root, "cargo", &["build", "-p", "agentctl", "--locked"])?;
+    run(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
 
     println!("[2/6] generated CLI and schema freshness");
     verify_generated(root)?;
@@ -69,7 +69,7 @@ pub(crate) fn package(root: &Path) -> Result<()> {
     run(
         root,
         "cargo",
-        &["build", "--release", "-p", "agentctl", "--locked"],
+        &["build", "--release", "-p", "agentctl-cli", "--locked"],
     )?;
     let mut rustc = Command::new("rustc");
     rustc.arg("-vV");
@@ -222,7 +222,7 @@ fn verify(root: &Path) -> Result<()> {
 }
 
 fn generate(root: &Path) -> Result<()> {
-    run(root, "cargo", &["build", "-p", "agentctl", "--locked"])?;
+    run(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
     let binary = binary_path(root);
     let schema_path = root.join("schemas/workflow.schema.json");
     let schema_text = generated_schema(&binary)?;

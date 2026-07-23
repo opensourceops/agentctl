@@ -1,15 +1,21 @@
 # Install agentctl
 
-This guide installs the current `v1alpha1` release-candidate source. There is no published registry package or guaranteed downloadable binary in this checkout, so use a reviewed source build or build the OCI image yourself.
+This guide installs the `v1alpha1` Rust CLI from crates.io, reviewed source, or a locally built OCI image.
 
 ## Prerequisites
 
-- Git
 - Rust 1.88, as pinned by `rust-toolchain.toml`
-- A supported local checkout
+- Git and a supported local checkout for source builds
 - Optional: Docker or Podman for the container path
 
-The repository configures hosted checks for Linux x64, macOS arm64, and Windows x64. Those workflows have not executed on the current remote candidate, so treat cross-platform support as configured and pending hosted evidence.
+## Install from crates.io
+
+```text
+cargo install --locked agentctl-cli
+agentctl version
+```
+
+The crates.io package is named `agentctl-cli`; the installed executable is named `agentctl`.
 
 ## Install from source
 
@@ -25,7 +31,7 @@ The install compiles the Rust CLI and writes it to Cargo's binary directory. It 
 If you only want a repository-local binary, use:
 
 ```text
-cargo build --locked -p agentctl
+cargo build --locked -p agentctl-cli
 ./target/debug/agentctl version
 ```
 
@@ -34,7 +40,7 @@ cargo build --locked -p agentctl
 From the repository root:
 
 ```text
-cargo build --release --locked -p agentctl
+cargo build --release --locked -p agentctl-cli
 ./target/release/agentctl version
 ```
 

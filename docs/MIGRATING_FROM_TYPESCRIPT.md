@@ -1,7 +1,7 @@
 # Migrating from the TypeScript prototype
 
 1. Preserve a copy of the old workflow and run the archived test suite if its behavior matters: `NODE_OPTIONS=--no-deprecation npm test`.
-2. Run `cargo run -p agentctl -- migrate old.yaml --write workflow.yaml`.
+2. Run `cargo run -p agentctl-cli -- migrate old.yaml --write workflow.yaml`.
 3. Run `agentctl check workflow.yaml` and address every diagnostic; the new schema is strict.
 4. Replace `module:name` with `action:name`, and define typed provider entries referenced by agents.
 5. Move credentials to `{ env: NAME }`; remove API-key arguments and inline tokens. Add environment, provider, host, process, readable workspace, and writable-root policy grants explicitly.

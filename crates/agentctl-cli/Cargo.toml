@@ -1,11 +1,15 @@
 [package]
-name = "agentctl"
+name = "agentctl-cli"
 description = "Deterministic declarative control plane for safe agentic automation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
+readme.workspace = true
+keywords = ["agents", "automation", "workflow", "policy", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "agentctl"
