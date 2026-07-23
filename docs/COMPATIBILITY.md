@@ -12,6 +12,8 @@ Unversioned `playbook:` YAML can be translated by `agentctl migrate`; `modules` 
 
 `replay` now means no-effect recorded reconstruction. The prototype operation that created a new effectful run is `fork`. Unknown YAML fields, missing references, cycles, unsupported provider capabilities, invalid tool output, path escapes, unsafe processes/networks, and incompatible durable state now fail explicitly. Direct `--api-key` flags are removed; secret references are required. OpenAI uses current Responses concepts, and Anthropic/Google are native adapters rather than names on an OpenAI-compatible route.
 
+Schema 5 adds selective-repair metadata without changing resume, replay, retry, or fork semantics. New runs persist task fingerprints, output contracts/digests, state deltas, artifacts, and disposition. Older runs migrate and remain inspectable, but tasks completed without metadata version 1 cannot be silently reused by repair.
+
 ## Deprecated and removed
 
 Unversioned YAML is compatibility-only and warns. The TypeScript package exposes no `bin` or `main` and is archived. Placeholder memory adapters, provider environment-name-only “support,” YAML output, legacy profiles, automatic endpoint overrides, old prompt-cache fields, and optimistic replay semantics are removed from production.

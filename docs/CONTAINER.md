@@ -26,7 +26,7 @@ The `Containerfile` combines the secret with public roots on a tmpfs mount for t
 
 Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or `--inputs` JSON. Prefer files for large or sensitive non-provider inputs. Provider credentials are environment references only; never put a key in CLI arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can write them and the runner's artifact collector can read them. Durable state may contain prompts and outputs; protect it like a sensitive build artifact.
 
-The image emits exactly one versioned JSON result on stdout with `--output json`; failures emit one versioned JSON error on stderr. The document includes exit status semantics, run/trace IDs, final state, and declared outputs. Progress is not mixed into stdout. Persist `/state` for later `inspect`, approval resolution, `resume`, or `replay`.
+The image emits exactly one versioned JSON result on stdout with `--output json`; failures emit one versioned JSON error on stderr. The document includes exit status semantics, run/trace IDs, final state, and declared outputs. Progress is not mixed into stdout. Persist `/state` for later `inspect`, approval resolution, `resume`, `replay`, or `repair`.
 
 ## Verified Docker/Podman invocation
 
@@ -45,6 +45,20 @@ docker run --rm --read-only --user 65532:65532 \
 ```
 
 The value form `--env OPENAI_API_KEY` forwards an already protected host variable without placing its value in the command. The credential-free container acceptance uses the same command with the fake provider and without that environment variable.
+
+For selective repair, mount the corrected workflow under `/config`, keep the source database under `/state`, and retain any workspace artifacts required by upstream reuse. Plan without forwarding provider credentials:
+
+```console
+docker run --rm --read-only --user 65532:65532 --network none \
+  --mount type=bind,src="$PWD/config",dst=/config,readonly \
+  --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
+  --mount type=bind,src="$PWD/state",dst=/state \
+  ghcr.io/OWNER/agentctl:0.2.0 \
+  repair /config/repaired.yaml SOURCE_RUN_ID --from failed_task --plan \
+  --workspace /workspace --db /state/runtime.db --output json --color never
+```
+
+The execution invocation may forward only credentials required by tasks in the fresh closure. Reused tasks do not access them. The container acceptance suite executes a credential-free repair under the same non-root, read-only-root, and mounted-state contract.
 
 ## Pipeline examples
 

@@ -143,6 +143,26 @@ flowchart LR
 
 Replay reports historical truth. It does not observe current files, rerun verification, or contact a provider.
 
+## Selective repair flow
+
+Selective repair is a new source-linked run. It is distinct from both effect-free recorded replay and broad fresh fork execution.
+
+```mermaid
+flowchart LR
+  accTitle: Selective repair flow
+  accDescr: Repair verifies successful upstream task boundaries, materializes compatible outputs and state, and executes selected roots and descendants from a target workflow.
+  Source[Terminal source run] --> Plan[Effect-free compatibility plan]
+  Target[Target workflow] --> Plan
+  Plan --> Reuse[Materialize compatible upstream tasks]
+  Plan --> Fresh[Execute roots and descendants]
+  Reuse --> Boundary[Reconstructed task-boundary state]
+  Boundary --> Fresh
+  Fresh --> Repair[New repair run and trace]
+  Source -. remains immutable .-> Repair
+```
+
+The detailed failed-run, plan, reuse, invalidation, lineage, and effect-safety diagrams are in [Repair a failed workflow](../guides/repair-a-failed-workflow.md).
+
 ## Fork or rerun flow
 
 Fork makes fresh execution an explicit choice instead of overloading replay.

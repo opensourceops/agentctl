@@ -43,7 +43,16 @@ spec:
         message: hello from agentctl
 ```
 
-Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, and `fork` when fresh effects are intentional.
+Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, `repair` to reuse compatible successful task boundaries with a corrected workflow, and `fork` when a broader fresh execution is intentional.
+
+Selective repair is planned before execution:
+
+```text
+agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task --plan
+agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task
+```
+
+See [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
 
 ## Safety boundary
 
@@ -62,7 +71,7 @@ CI uses the scripted fake provider. Native, mock-tested adapters cover OpenAI Re
 ## Repository map
 
 - `crates/agentctl-core`: DSL, compiler, templates, policy, state, effects, provider/tool contracts
-- `crates/agentctl-runtime`: scheduler, actions, agent loop, resume/replay/fork
+- `crates/agentctl-runtime`: scheduler, actions, agent loop, resume/replay/repair/fork
 - `crates/agentctl-store`: versioned SQLite persistence
 - `crates/agentctl-providers`: native HTTP provider adapters
 - `crates/agentctl-protocols`: MCP and A2A clients

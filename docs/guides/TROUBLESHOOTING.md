@@ -12,7 +12,7 @@ flowchart TD
   D --> E{Pending approval?}
   E -->|Yes| F[Review and resolve approval, then resume]
   E -->|No| G{Uncertain effect?}
-  G -->|Yes| H[Reconcile the external system before any fork]
+  G -->|Yes| H[Reconcile the external system before repair or fork]
   G -->|No| I[Use task, effect, provider, and audit evidence]
 ```
 
@@ -108,6 +108,22 @@ ls -ld /state /state/runtime.db
 **Diagnose:** Inspect the source run, tasks, effects, and approvals.
 
 **Resolve:** Resume only a safe non-terminal run. Replay only a terminal run. Reconcile uncertain external state before an explicit fork.
+
+## Repair plan blocked
+
+**Symptom:** `repair --plan` emits a valid `RepairPlan` with `compatible: false` and exits `3`.
+
+**Diagnose:**
+
+```text
+agentctl repair target.yaml SOURCE_RUN_ID --from TASK --plan \
+  --db .agentctl/runtime.db --output json --color never
+agentctl effects --db .agentctl/runtime.db inspect SOURCE_RUN_ID --task TASK
+```
+
+**Expected evidence:** Each `blockedReuse` item names the task, compatibility rule, safe source/target fingerprints, suggested root, and whether a full fork is required.
+
+**Resolve:** Choose the earliest changed/incompatible producer as another repair root, restore the exact verified artifact, add a structured output contract and create a fresh source result, or reconcile an uncertain effect only after checking external reality. Do not edit task rows or use fork as a generic force option. See [Repair a failed workflow](repair-a-failed-workflow.md).
 
 ## Container permission or read-only failure
 

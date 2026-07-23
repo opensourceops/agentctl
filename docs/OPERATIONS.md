@@ -60,7 +60,10 @@ A oneshot service has one active invocation at a time. Use distinct databases on
 2. Run `agentctl inspect RUN_ID --db PATH --output json`.
 3. Resolve a pending approval, then `resume`; never use `fork` as an implicit retry.
 4. Use `replay` for a no-effect reconstruction of a terminal run.
-5. Use `fork` for a new run that may execute fresh effects.
-6. For an uncertain effect, reconcile the remote system first. The runtime intentionally refuses unsafe resume.
+5. Use `repair TARGET SOURCE --from TASK --plan` before executing a corrected terminal workflow from a task boundary.
+6. Use `fork` for a broader new run that may execute fresh effects.
+7. For an uncertain effect, reconcile the remote system first. The runtime intentionally refuses unsafe resume or repair.
+
+Repair planning exits `3` when compatibility or effect safety blocks reuse. Read `blockedReuse`, choose an earlier/additional root, restore a verified artifact, or reconcile an effect. Do not bypass the plan with a fresh fork unless repeating all effects is an intentional operator decision.
 
 Use `agentctl gc --db PATH --older-than-days N` for expired memory and old terminal histories after the organization's retention/backup requirements are satisfied. SQLite WAL files belong with the database during backup. A future schedule-run key may improve deduplication; today the external scheduler owns overlap prevention.

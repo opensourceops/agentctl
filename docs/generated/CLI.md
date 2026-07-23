@@ -16,8 +16,10 @@ Commands:
   resume      Continue an interrupted or approval-paused run
   replay      Reconstruct a terminal run only from recorded state and results
   fork        Create a new run from a prior workflow with fresh effects
+  repair      Create a new run that reuses compatible upstream results and executes a repaired suffix
   cancel      Durably request cancellation
   inspect     Inspect durable run, task, and audit state
+  effects     Inspect or narrowly reconcile uncertain effects
   approvals   List or resolve durable approval requests
   providers   Inspect provider capabilities or run the opt-in OpenAI smoke
   auth        Check configured secret references without revealing values
@@ -161,6 +163,33 @@ Options:
   -h, --help                               Print help
 ```
 
+## `agentctl repair`
+
+```text
+Create a new run that reuses compatible upstream results and executes a repaired suffix
+
+Usage: agentctl repair [OPTIONS] --from <FROM> <FILE> <SOURCE_RUN_ID>
+
+Arguments:
+  <FILE>
+  <SOURCE_RUN_ID>
+
+Options:
+      --from <FROM>
+      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --plan
+      --restart-successful
+      --verbose
+      --reason <REASON>
+      --db <DB>                            [default: .agentctl/runtime.db]
+      --interactive
+      --diff
+      --workspace <WORKSPACE>
+      --timeout-seconds <TIMEOUT_SECONDS>
+  -h, --help                               Print help
+```
+
 ## `agentctl cancel`
 
 ```text
@@ -195,6 +224,59 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
+```
+
+## `agentctl effects`
+
+```text
+Inspect or narrowly reconcile uncertain effects
+
+Usage: agentctl effects [OPTIONS] <COMMAND>
+
+Commands:
+  inspect
+  reconcile
+
+Options:
+      --db <DB>          [default: .agentctl/runtime.db]
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl effects inspect`
+
+```text
+Usage: agentctl effects inspect [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --task <TASK>
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl effects reconcile`
+
+```text
+Usage: agentctl effects reconcile [OPTIONS] --outcome <OUTCOME> --reason <REASON> <EFFECT_ID>
+
+Arguments:
+  <EFFECT_ID>
+
+Options:
+      --outcome <OUTCOME>  [possible values: not-applied]
+      --output <OUTPUT>    [default: human] [possible values: human, json]
+      --actor <ACTOR>      [default: cli-user]
+      --color <COLOR>      [default: auto] [possible values: auto, always, never]
+      --reason <REASON>
+      --verbose
+  -h, --help               Print help
 ```
 
 ## `agentctl approvals`

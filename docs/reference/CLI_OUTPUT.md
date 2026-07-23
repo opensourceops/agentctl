@@ -20,13 +20,15 @@ JSONL progress output is not implemented in this release. Event-level informatio
 | --- | --- | --- |
 | `0` | success | Collect outputs and artifacts. |
 | `2` | usage or validation | Correct arguments, YAML, references, templates, or capabilities. |
-| `3` | policy or approval | Inspect denial or retain state for operator approval. |
+| `3` | policy, approval, or blocked repair plan | Inspect denial/compatibility evidence or retain state for operator approval. |
 | `4` | run failure | Inspect the failed task and effect history. |
 | `5` | persistence | Check database compatibility, permissions, corruption, and locking. |
 | `6` | provider or protocol | Diagnose authentication, network, native API, MCP, or A2A evidence. |
 | `130` | cancellation | Inspect the run before deciding whether resume is safe. |
 
 Do not automatically retry every nonzero code. A provider, protocol, process, or tool operation may be uncertain after dispatch.
+
+`repair --plan` returns kind `RepairPlan`. A compatible plan exits `0`; a blocked plan exits `3` while remaining a successful, parseable machine envelope with `compatible: false` and `blockedReuse` explanations. Repair execution returns kind `RepairOutcome` with new/source run IDs, trace ID, state, reused tasks, executed tasks, and output. `inspect` exposes the complete run and task lineage.
 
 ## Example
 

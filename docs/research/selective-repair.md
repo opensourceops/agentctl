@@ -1,0 +1,36 @@
+# Selective repair research
+
+Status: implemented for `agentctl` v1alpha1. Reviewed against primary material on 2026-07-23.
+
+Selective repair is a new execution from a task boundary, not history replay. The design borrows narrow safety patterns from workflow engines and build systems without adopting their execution models.
+
+| Problem solved | Pattern considered | Decision | Reason | `agentctl` consequence | Safety consequence | Compatibility consequence |
+| --- | --- | --- | --- | --- | --- | --- |
+| Keep recorded replay deterministic | [Temporal workflow replay and event history](https://docs.temporal.io/workflow-execution) | Adopt | Replay checks deterministic decisions against recorded history and does not mean "run changed code from the middle." | `replay` retains its effect-free meaning; changed code uses `repair`. | Providers, tools, processes, files, and networks cannot dispatch during recorded replay. | Existing replay behavior and JSON contracts remain unchanged. |
+| Separate orchestration from nondeterministic work | [Temporal workflow definition and determinism](https://docs.temporal.io/workflow-definition) | Adapt | Temporal places external work in Activities and versions workflow code. `agentctl` already has an effect ledger rather than Temporal Activities. | Graph selection is deterministic; fresh provider/tool/action work is confined to repair roots and descendants. | Reuse is based on persisted results and fingerprints, never rerunning hidden work. | No Temporal history or worker protocol is introduced. |
+| Select task boundaries explicitly | [Argo node field selectors](https://argo-workflows.readthedocs.io/en/release-3.7/node-field-selector/) and retry behavior | Adapt | Argo exposes selected-node retry and an explicit successful-node restart option. | `--from` is repeatable and `--restart-successful` is required for a successful repair root. | A successful task cannot be restarted accidentally. | Selection uses stable task IDs in the existing compiled DAG. |
+| Invalidate affected descendants | [GitHub Actions rerun jobs API](https://docs.github.com/en/rest/actions/workflow-runs?apiVersion=2026-03-10) | Adapt | Rerunning a job with its dependent jobs matches the safe default for dataflow invalidation. | Repair executes the union of every root's transitive downstream closure. | No descendant can reuse output derived from a newly executed root. | Independent compatible branches can still be reused. |
+| Reuse only reproducible work | [Bazel remote caching](https://bazel.build/remote/caching) | Adopt | Bazel keys reuse from declared inputs and action identity, and verifies content-addressed results. | Each completed task stores versioned definition, resolved-input, contract, output, state-delta, and artifact digests. | Changed inputs, code/configuration, prompt content, output, state, or artifacts block reuse. | Existing runs without repair metadata are readable but cannot be reused automatically. |
+| Make cached/reused work visible | [Prefect caching](https://docs.prefect.io/v3/concepts/caching) | Adapt | Prefect combines inputs, code identity, and persisted results, and identifies cached task runs. | Reused tasks remain `succeeded` with `disposition: reused` and source provenance. | Inspection cannot mistake reuse for a fresh attempt. | The existing task state machine remains intact; disposition is additive. |
+| Preserve immutable run lineage | [OpenLineage run cycle](https://openlineage.io/docs/spec/run-cycle/) | Adapt | Run events use stable run/job identity and explicit lineage rather than rewriting history. | A repair has a new run/trace ID plus source run ID, source workflow digest, roots, reason, and per-task source attempt. | The terminal source is never reopened or modified. | `parentRunId` retains replay/fork meaning; repair uses explicit source fields. |
+| Create repair state atomically | [SQLite transactions](https://www.sqlite.org/lang_transaction.html) | Adopt | An immediate transaction either creates the run, all task materializations, audit events, and checkpoint, or none of them. | Schema migration 5 adds repair lineage and task reuse metadata; repair creation uses one transaction. | Planning/materialization failure cannot leave a runnable partial repair. | Databases migrate forward; unknown newer versions still fail explicitly. |
+| Start a repaired agent cleanly | [OpenAI conversation state](https://developers.openai.com/api/docs/guides/conversation-state) | Adopt | `previous_response_id` continues one task-local Responses conversation; it is not a cross-run dataflow mechanism. | A repaired task starts a new provider session. Continuation is used only between turns of that new task. | Failed response IDs, pending tool calls, and uncommitted reasoning are never copied. | Provider continuation within ordinary tasks remains unchanged. |
+| Preserve tool-call correlation | [OpenAI Responses migration guidance](https://developers.openai.com/api/docs/guides/migrate-to-responses#additional-differences) | Adopt | Function-call output must correlate to the returned call ID, and stateful continuation has explicit rules. | Repair uses the existing strict tool schema, call-ID, response-ID, and bounded-turn implementation. | Reused upstream data flows through validated JSON output, not hidden conversation state. | OpenAI tool-using agents still require stored continuation in v1alpha1. |
+| Keep artifacts trustworthy | [Bazel remote cache protocol](https://bazel.build/remote/caching#remote-caching) | Adapt | Content-addressed output metadata is useful even without adopting a remote cache. | Successful workspace mutations record bounded path, size, and SHA-256 metadata; planning re-resolves the path and verifies size/digest. | Missing, changed, oversized, or path-escaping artifacts block reuse. | Artifact bytes remain in the configured durable workspace; no remote CAS is added. |
+
+## Patterns rejected
+
+| Rejected pattern | Reason |
+| --- | --- |
+| Reopen the terminal source run | It destroys the immutable audit boundary and confuses resume with repair. |
+| Treat recorded replay as selective re-execution | It would silently change replay from zero effects to fresh effects. |
+| Reuse by task ID alone | IDs do not prove compatible definition, inputs, state, contracts, or artifacts. |
+| Initialize from the source final memory snapshot | It can include failed-task or invalidated downstream state. |
+| Copy provider continuation across the repair boundary | It carries failed task-local conversation and tool state into a new definition. |
+| Generic `--force` | It would turn digest, contract, and effect-uncertainty failures into duplicate-work risks. |
+| Claim exactly-once external mutation | A crash can occur after remote commit and before local acknowledgement. |
+| Clone another engine's event model | `agentctl` already has a compiled DAG, explicit effects, SQLite checkpoints, and task outputs; a second execution model would add ambiguity. |
+
+## Resulting invariant
+
+A task is reusable only if its successful source result, target definition, resolved input boundary, output contract, output bytes, state delta, artifacts, effect certainty, and metadata version all agree. Otherwise planning blocks before a repair run is created and recommends an earlier or additional root.

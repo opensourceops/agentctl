@@ -2,9 +2,11 @@
 
 The current document version is `agentctl.dev/v1alpha1`, with `kind: Workflow`. The generated, authoritative JSON Schema is [`schemas/workflow.schema.json`](../schemas/workflow.schema.json). YAML documents are limited to 1 MiB and reject unknown fields.
 
-`metadata` contains the name, description, and labels. `spec` contains typed inputs/outputs; providers; bounded agents; actions; tool contracts; ordered tasks; policy; memory; MCP servers; A2A peers; packs; runtime; and output settings. A task `uses` either `action:<name>` or `agent:<name>`, declares `needs`, an optional `when`, local `vars`, typed `with` input, retry, timeout, and failure behavior.
+`metadata` contains the name, description, and labels. `spec` contains typed inputs/outputs; providers; bounded agents; actions; tool contracts; ordered tasks; policy; memory; MCP servers; A2A peers; packs; runtime; and output settings. A task `uses` either `action:<name>` or `agent:<name>`, declares `needs`, an optional `when`, local `vars`, typed `with` input, optional `outputSchema`, retry, timeout, and failure behavior.
 
 Templates use only `${{ inputs.path }}`, `${{ vars.path }}`, `${{ memory.path }}`, and `${{ tasks.task-id.output.path }}`. Conditions additionally allow `not` and equality against a JSON literal or string. Exact templates preserve their JSON type; interpolation into text accepts only scalars. Missing and explicit `null` are different. There is no code execution, function call, indexing, arithmetic, or implicit task dependency.
+
+Task output is JSON. Built-in actions own an object contract, agents can declare provider-enforced `structuredOutput`, and a task can override the complete contract with `outputSchema`. The compiler validates schemas; the runtime validates completed and selectively reused values.
 
 Providers, action environments, and protocol headers use `{ env: NAME }` secret references. Secret names are validated and values never become the workflow document.
 

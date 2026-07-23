@@ -44,6 +44,10 @@ These are useful extensions but are not required by the product thesis. They nee
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
+- Selective repair requires task metadata version 1. Successful tasks from databases created before schema 5 remain inspectable but must execute from an earlier repair root or a full fork.
+- Automatic artifact manifests cover bounded files reported by successful workspace-mutation results. Artifact bytes are not copied into SQLite or a content-addressed store; retain the configured workspace and restore by verified digest when needed.
+- A confirmed non-idempotent mutation in a repair closure remains blocked. The only built-in reconciliation outcome is an operator-confirmed `not-applied` result for a started or uncertain effect; compensation and provider-specific deduplication workflows are not implemented.
+- Retry remains a bounded same-run task policy. There is no separate command that creates a new terminal-source retry run for an unchanged workflow; use repair with an unchanged target definition and explicit roots when its compatibility checks fit.
 - Tool-using OpenAI/Azure agents require stored-response continuation. `store: false` is rejected until stateless response-item replay is implemented.
 - Anthropic, Google, Azure OpenAI, MCP, and A2A are native and mock-tested in this release, not live-tested. Only the OpenAI GPT-5.6 tool path has live end-to-end evidence.
 - The current local OCI runtime, vulnerability-scan, and SBOM evidence is Linux arm64. Linux x64 is configured in the unpushed Ubuntu workflow but has not executed.

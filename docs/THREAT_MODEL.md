@@ -17,9 +17,15 @@ The local operator and reviewed binary are trusted. Workflow authors are only as
 | MCP annotation or A2A card claims safety | always treated as untrusted metadata | compromised authorized peer can return malicious but schema-valid data |
 | Crash duplicates an external mutation | request-before-start ledger, uncertain state, no silent retry | external action may have happened without acknowledgement |
 | Replay reissues effects | recorded replay uses stored terminal output only | replayed data may no longer reflect current reality, by design |
+| Repair reuses tampered or unrelated state | stable workflow identity, versioned task/input/contract/output/state fingerprints, artifact digest checks, transactional materialization | an attacker with database/workspace write access is inside the local application trust boundary |
+| Repair duplicates a partial mutation | closure effect inspection, conservative uncertainty block, narrow operator `not-applied` reconciliation | remote truth may remain unknowable and keep the repair blocked |
+| Repair carries failed model state | every repaired agent starts a fresh provider session; dataflow uses validated JSON output | a valid reused output can still contain hostile content and must remain policy constrained |
+| Source deletion breaks repair | reused output/state/artifact metadata is materialized into the repair run | artifact bytes still require durable workspace retention |
 | Approval bypass in CI | non-interactive durable pause or explicit deny/fail; operator resolution | stolen database write access is outside application trust boundary |
 | Pack substitution | SHA-256 verification and semver/API checks | digest source/signature trust is manual |
 | Corrupt or future state misexecutes | schema/version/checksum/deserialization failures | SQLite file deletion or rollback by an attacker is not prevented |
 | Dependency compromise | locked registry-only deps, cargo-deny, license/source checks | registry compromise and zero-days remain possible |
 
 No unresolved critical or high-severity defect is knowingly accepted for the implemented boundary. Deferred sandboxing, signature verification, distributed concurrency, and encrypted storage are explicit product limitations, not implied controls.
+
+Run access control is the database file and operating-system identity. `agentctl` has no multi-tenant authorization layer; do not let an untrusted principal select another tenant's source run from a shared database.

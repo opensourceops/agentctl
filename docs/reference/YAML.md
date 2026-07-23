@@ -44,6 +44,7 @@ Each task requires `id` and `uses`. `uses` is `action:name` or `agent:name`.
 | `when` | true | Constrained boolean/equality expression. |
 | `vars` | `{}` | Task-local JSON values. |
 | `with` | `{}` | Typed action or agent input. |
+| `outputSchema` | action-owned object or agent structured contract | Valid JSON Schema checked at task completion and selective-repair reuse. |
 | `retry` | bounded default | Only definitive retry-safe failures may repeat. |
 | `timeoutSeconds` | action or agent default | Must be within the implementation bound. |
 | failure behavior | fail | Unsupported dynamic control flow is rejected. |
@@ -53,6 +54,8 @@ Ready tasks run in YAML declaration order. There is no `foreach`, matrix, loop, 
 ## Agents
 
 An agent requires `provider` and `model`. Defaults are `maxTurns: 8`, `maxToolCalls: 16`, `maxOutputTokens: 2048`, and `timeoutSeconds: 120`. Set tighter values for known work. Optional fields include instructions or `instructionsFile`, variables, tools, retry, reasoning, structured output, usage limits, and provider-specific options.
+
+`structuredOutput` asks the provider for typed JSON and becomes the default task output contract. A task-level `outputSchema` can define the complete task contract explicitly. An agent result that feeds downstream tasks must have one of these contracts before it can be reused by selective repair. Schema documents are compiled when the workflow is checked; values are validated both when completed and when reused.
 
 Capability negotiation happens during compilation. A provider must explicitly support every requested feature.
 
