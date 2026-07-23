@@ -10,16 +10,18 @@ The repository pins Rust 1.88, the minimum supported version.
 
 ```console
 cargo build --locked
-cargo run -p agentctl -- check examples/v1/hello.yaml
-cargo run -p agentctl -- plan examples/v1/hello.yaml
-cargo run -p agentctl -- run examples/v1/hello.yaml --db .agentctl/quickstart.db
+cargo run -p agentctl-cli -- check examples/v1/hello.yaml
+cargo run -p agentctl-cli -- plan examples/v1/hello.yaml
+cargo run -p agentctl-cli -- run examples/v1/hello.yaml --db .agentctl/quickstart.db
 ```
 
-The last command is credential-free and deterministic. Install locally with:
+The last command is credential-free and deterministic. Install from crates.io with:
 
 ```console
-cargo install --locked --path crates/agentctl-cli
+cargo install --locked agentctl-cli
 ```
+
+For local development, use `cargo install --locked --path crates/agentctl-cli`.
 
 For a tool-using credential-free journey, copy `examples/acceptance/mock-tool` to a clean directory and run its `workflow.yaml`. The repository acceptance suite executes that exact journey outside the source tree.
 

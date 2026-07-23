@@ -17,7 +17,9 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/ompragash/agentctl"
+homepage = "https://github.com/opensourceops/agentctl"
+repository = "https://github.com/opensourceops/agentctl"
+readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1.0.100"

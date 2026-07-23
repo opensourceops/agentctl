@@ -15,7 +15,7 @@ const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
 
 pub fn run(root: &Path) -> Result<()> {
-    command(root, "cargo", &["build", "-p", "agentctl", "--locked"])?;
+    command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
     let binary = debug_binary(root);
     let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");

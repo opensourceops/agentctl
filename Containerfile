@@ -15,7 +15,7 @@ RUN --mount=type=secret,id=agentctl_ca,required=false \
       export CARGO_HTTP_CAINFO=/tmp/agentctl-ca/combined-ca.pem; \
       export SSL_CERT_FILE=/tmp/agentctl-ca/combined-ca.pem; \
     fi; \
-    cargo build --release --locked -p agentctl
+    cargo build --release --locked -p agentctl-cli
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 ARG AGENTCTL_VERSION=0.2.0

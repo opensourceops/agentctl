@@ -617,7 +617,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 &serde_json::json!({
                     "currentVersion": env!("CARGO_PKG_VERSION"),
                     "automaticUpdate": false,
-                    "command": "cargo install --locked agentctl"
+                    "command": "cargo install --locked agentctl-cli"
                 }),
                 Vec::new(),
                 "automatic update is disabled; reinstall from a reviewed release artifact"
