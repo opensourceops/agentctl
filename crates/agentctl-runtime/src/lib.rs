@@ -978,24 +978,6 @@ impl Runtime {
                 ));
                 continue;
             }
-            if source_task.definition_fingerprint.as_deref() != Some(&target_fingerprint) {
-                blocked(
-                    "definition_fingerprint_mismatch",
-                    format!(
-                        "task `{task_id}` changed outside the repair closure; choose it as an earlier repair root"
-                    ),
-                    false,
-                    &mut blocks,
-                    &mut blocked_task_ids,
-                );
-                task_plans.push(blocked_task_plan(
-                    task_id,
-                    Some(source_task.state),
-                    source_fingerprint,
-                    target_fingerprint,
-                ));
-                continue;
-            }
             let source_needs = source
                 .plan
                 .tasks
@@ -1019,6 +1001,62 @@ impl Runtime {
                     target_fingerprint,
                 ));
                 continue;
+            }
+            if source_task.definition_fingerprint.as_deref() != Some(&target_fingerprint) {
+                blocked(
+                    "definition_fingerprint_mismatch",
+                    format!(
+                        "task `{task_id}` changed outside the repair closure; choose it as an earlier repair root"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
+            match unresolved_reuse_effects(source_task, &source_effects) {
+                Ok(effect_ids) if !effect_ids.is_empty() => {
+                    blocked(
+                        "unresolved_reused_effect",
+                        format!(
+                            "task `{task_id}` has unresolved source effect(s) {}; reconcile external reality before reusing its result",
+                            effect_ids.join(", ")
+                        ),
+                        false,
+                        &mut blocks,
+                        &mut blocked_task_ids,
+                    );
+                    task_plans.push(blocked_task_plan(
+                        task_id,
+                        Some(source_task.state),
+                        source_fingerprint,
+                        target_fingerprint,
+                    ));
+                    continue;
+                }
+                Err(message) => {
+                    blocked(
+                        "reuse_effect_provenance",
+                        format!("task `{task_id}` has invalid reused-effect provenance: {message}"),
+                        false,
+                        &mut blocks,
+                        &mut blocked_task_ids,
+                    );
+                    task_plans.push(blocked_task_plan(
+                        task_id,
+                        Some(source_task.state),
+                        source_fingerprint,
+                        target_fingerprint,
+                    ));
+                    continue;
+                }
+                Ok(_) => {}
             }
             if matches!(target_task.uses, TaskUse::Agent(_))
                 && task_output_schema(target_workflow, target_task).is_none()
@@ -1117,11 +1155,24 @@ impl Runtime {
                 ));
                 continue;
             }
-            let state_delta = source_task.state_delta.as_ref().ok_or_else(|| {
-                RuntimeError::InvalidState(format!(
-                    "successful source task `{task_id}` has no state delta"
-                ))
-            })?;
+            let Some(state_delta) = source_task.state_delta.as_ref() else {
+                blocked(
+                    "state_delta_missing",
+                    format!(
+                        "successful source task `{task_id}` has no committed state delta; choose it as an earlier repair root"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            };
             let state_delta_digest = versioned_json_digest(state_delta)?;
             if source_task.state_delta_digest.as_deref() != Some(&state_delta_digest) {
                 blocked(
@@ -1139,7 +1190,24 @@ impl Runtime {
                 ));
                 continue;
             }
-            apply_state_delta(&mut memory, state_delta)?;
+            if let Err(error) = apply_state_delta(&mut memory, state_delta) {
+                blocked(
+                    "state_delta_invalid",
+                    format!(
+                        "state delta for task `{task_id}` cannot reconstruct boundary memory: {error}"
+                    ),
+                    false,
+                    &mut blocks,
+                    &mut blocked_task_ids,
+                );
+                task_plans.push(blocked_task_plan(
+                    task_id,
+                    Some(source_task.state),
+                    source_fingerprint,
+                    target_fingerprint,
+                ));
+                continue;
+            }
             outputs.insert(task_id.clone(), output.clone());
             let source_effect_summary = if source_task.disposition == TaskDisposition::Reused {
                 source_task
@@ -3254,6 +3322,53 @@ fn repair_effect_is_unsafe(effect: &EffectRecord) -> bool {
             )))
 }
 
+fn unresolved_reuse_effects(
+    task: &TaskRecord,
+    source_effects: &[EffectRecord],
+) -> Result<Vec<String>, String> {
+    if task.disposition != TaskDisposition::Reused {
+        return Ok(source_effects
+            .iter()
+            .filter(|effect| {
+                effect.request.task_id == task.task_id
+                    && matches!(
+                        effect.status,
+                        EffectStatus::Started | EffectStatus::Uncertain
+                    )
+            })
+            .map(|effect| effect.request.id.clone())
+            .collect());
+    }
+
+    let summaries = task
+        .reuse_decision
+        .as_ref()
+        .and_then(|decision| decision.get("sourceEffects"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "sourceEffects is missing or is not an array".to_owned())?;
+    let mut unresolved = Vec::new();
+    for summary in summaries {
+        let effect_id = summary
+            .get("effectId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "source effect summary has no effectId".to_owned())?;
+        let status = summary
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("source effect `{effect_id}` has no status"))?;
+        match status {
+            "started" | "uncertain" => unresolved.push(effect_id.to_owned()),
+            "requested" | "waiting_for_approval" | "succeeded" | "failed" | "cancelled" => {}
+            other => {
+                return Err(format!(
+                    "source effect `{effect_id}` has unsupported status `{other}`"
+                ));
+            }
+        }
+    }
+    Ok(unresolved)
+}
+
 fn task_output_schema(workflow: &Workflow, task: &agentctl_core::CompiledTask) -> Option<Value> {
     task.output_schema.clone().or_else(|| match &task.uses {
         TaskUse::Agent(name) => workflow
@@ -3550,19 +3665,31 @@ fn collect_result_paths(value: &Value, paths: &mut BTreeSet<String>) {
 
 fn verify_artifacts(policy: &PolicyEngine, artifacts: &[ArtifactRecord]) -> Result<(), String> {
     for artifact in artifacts {
+        let restoration = format!(
+            "restore `{}` with expected digest `{}` and size {} bytes, or select its producer as an earlier repair root",
+            artifact.path, artifact.digest, artifact.size_bytes
+        );
         let resolved = policy
             .resolve_read_path(&artifact.path)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("{restoration}: {error}"))?;
         let metadata =
-            std::fs::metadata(&resolved).map_err(|error| format!("{}: {error}", artifact.path))?;
+            std::fs::metadata(&resolved).map_err(|error| format!("{restoration}: {error}"))?;
         if metadata.len() != artifact.size_bytes {
-            return Err(format!("{} size mismatch", artifact.path));
+            return Err(format!(
+                "`{}` size mismatch: expected {} bytes, found {}; {restoration}",
+                artifact.path,
+                artifact.size_bytes,
+                metadata.len()
+            ));
         }
         let content =
-            std::fs::read(&resolved).map_err(|error| format!("{}: {error}", artifact.path))?;
+            std::fs::read(&resolved).map_err(|error| format!("{restoration}: {error}"))?;
         let actual = format!("sha256:{}", digest(&content));
         if actual != artifact.digest {
-            return Err(format!("{} digest mismatch", artifact.path));
+            return Err(format!(
+                "`{}` digest mismatch: expected `{}`, found `{actual}`; {restoration}",
+                artifact.path, artifact.digest
+            ));
         }
     }
     Ok(())
@@ -4052,6 +4179,55 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RepairToolCallingProvider(AtomicU64);
+
+    #[async_trait]
+    impl ModelProvider for RepairToolCallingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
+            if call % 2 == 0 {
+                Ok(ProviderResponse {
+                    response_id: Some(format!("repair-tool-{call}")),
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: format!("repair-call-{call}"),
+                        name: "echo".to_owned(),
+                        input: serde_json::json!({"text": "durable"}),
+                    }],
+                    assistant_content: vec![ContentBlock::ToolCall {
+                        id: format!("repair-call-{call}"),
+                        name: "echo".to_owned(),
+                        input: serde_json::json!({"text": "durable"}),
+                        provider_metadata: None,
+                    }],
+                    continuation: None,
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::ToolCalls,
+                })
+            } else {
+                let text = r#"{"value":"durable"}"#.to_owned();
+                Ok(ProviderResponse {
+                    response_id: Some(format!("repair-final-{call}")),
+                    text: text.clone(),
+                    tool_calls: Vec::new(),
+                    assistant_content: vec![ContentBlock::Text { text }],
+                    continuation: None,
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::Complete,
+                })
+            }
+        }
+    }
+
     struct PanicProvider;
 
     #[async_trait]
@@ -4150,6 +4326,40 @@ mod tests {
         }
     }
 
+    struct SingleUseRepairTool {
+        inner: FixtureTool,
+        calls: AtomicU64,
+    }
+
+    impl SingleUseRepairTool {
+        fn new() -> Self {
+            Self {
+                inner: FixtureTool::new(false),
+                calls: AtomicU64::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ToolExecutor for SingleUseRepairTool {
+        fn contract(&self) -> &ToolContract {
+            self.inner.contract()
+        }
+
+        async fn execute(
+            &self,
+            input: Value,
+            cancellation: &CancellationToken,
+        ) -> Result<ActionResult, ToolContractError> {
+            assert_eq!(
+                self.calls.fetch_add(1, Ordering::SeqCst),
+                0,
+                "reused upstream tool must not execute during repair"
+            );
+            self.inner.execute(input, cancellation).await
+        }
+    }
+
     struct PanicTool {
         contract: ToolContract,
     }
@@ -4175,6 +4385,78 @@ mod tests {
             .workflow;
         let plan = compile(&workflow, "fixture.yaml").expect("compile fixture");
         (workflow, plan)
+    }
+
+    #[test]
+    fn repair_fingerprints_include_tool_definitions_and_resolved_task_variables() {
+        let directory = tempdir().expect("tempdir");
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: fingerprint-repair }
+spec:
+  providers: { fake: { kind: fake } }
+  tools:
+    echo:
+      kind: builtin.echo
+      description: original echo
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: echo the selected value
+      tools: [echo]
+  tasks:
+    - id: first
+      uses: agent:worker
+      vars: { selected: "${{ memory.selected }}" }
+      with: { prompt: "${{ vars.selected }}" }
+"#;
+        let changed_tool = source.replace("original echo", "changed echo");
+        let (source_workflow, source_plan) = compile_fixture(source);
+        let (changed_workflow, changed_plan) = compile_fixture(&changed_tool);
+        let source_policy =
+            PolicyEngine::new(source_workflow.spec.policy.clone(), directory.path())
+                .expect("source policy");
+        let changed_policy =
+            PolicyEngine::new(changed_workflow.spec.policy.clone(), directory.path())
+                .expect("changed policy");
+        let source_task = &source_plan.tasks["first"];
+        let changed_task = &changed_plan.tasks["first"];
+        assert_ne!(
+            task_definition_fingerprint(&source_workflow, source_task, &source_policy, None)
+                .expect("source fingerprint"),
+            task_definition_fingerprint(&changed_workflow, changed_task, &changed_policy, None)
+                .expect("changed fingerprint")
+        );
+
+        let inputs = serde_json::Map::new();
+        let outputs = BTreeMap::new();
+        assert_ne!(
+            resolved_input_digest(
+                &inputs,
+                &serde_json::json!({"selected": "one"}),
+                &outputs,
+                source_task
+            )
+            .expect("first input digest"),
+            resolved_input_digest(
+                &inputs,
+                &serde_json::json!({"selected": "two"}),
+                &outputs,
+                source_task
+            )
+            .expect("second input digest")
+        );
     }
 
     fn runtime(store: SqliteStore, base: &Path) -> Runtime {
@@ -4264,6 +4546,10 @@ spec:
         assert!(plan.compatible, "{:?}", plan.blocked_reuse);
         assert_eq!(plan.reused_tasks, ["first"]);
         assert_eq!(plan.rerun_tasks, ["second"]);
+        let source_before = store.load_run(&source_run_id).expect("source before");
+        let source_tasks_before = store
+            .list_tasks(&source_run_id)
+            .expect("source tasks before");
 
         let invalid_consumer_yaml =
             repaired_yaml.replace("tasks.first.output.value", "tasks.first.output.missing");
@@ -4350,6 +4636,16 @@ spec:
             store.load_run(&source_run_id).expect("source").state,
             RunState::Failed
         );
+        assert_eq!(
+            store.load_run(&source_run_id).expect("source after"),
+            source_before
+        );
+        assert_eq!(
+            store
+                .list_tasks(&source_run_id)
+                .expect("source tasks after"),
+            source_tasks_before
+        );
         let cutoff = DateTime::from_timestamp(1_767_227_400, 0).expect("cutoff");
         store.garbage_collect(cutoff).expect("source gc");
         assert!(matches!(
@@ -4381,6 +4677,12 @@ spec:
                 .expect("replay sessions")
                 .is_empty()
         );
+        assert!(
+            store
+                .tool_calls(&replay.run_id)
+                .expect("replay tool calls")
+                .is_empty()
+        );
         let replay_source_plan = runtime
             .plan_repair(
                 &replay.run_id,
@@ -4396,6 +4698,122 @@ spec:
                 .blocked_reuse
                 .iter()
                 .any(|block| { block.rule == "recorded_replay_has_no_direct_effect_history" })
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_reuses_tool_using_upstream_without_provider_or_tool_dispatch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(RepairToolCallingProvider::default());
+        let tool = Arc::new(SingleUseRepairTool::new());
+        let runtime = Runtime::new(store.clone(), directory.path())
+            .with_clock(Arc::new(FixedClock))
+            .with_ids(Arc::new(SequenceIds::default()))
+            .with_registry(
+                RuntimeRegistry::default()
+                    .with_provider("fake", provider.clone())
+                    .with_tool("echo", tool.clone()),
+            );
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: repair-tool-reuse }
+spec:
+  providers: { fake: { kind: fake } }
+  tools:
+    echo:
+      kind: builtin.echo
+      description: echo input
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    first:
+      provider: fake
+      model: fake
+      instructions: call echo, then return structured output
+      tools: [echo]
+      maxTurns: 2
+      maxToolCalls: 1
+      structuredOutput:
+        type: object
+        properties: { value: { type: string } }
+        required: [value]
+        additionalProperties: false
+  actions:
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: agent:first
+      with: { prompt: produce durable output }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+"#;
+        let target_yaml = source_yaml.replace("that: false", "that: true");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        assert_eq!(provider.0.load(Ordering::SeqCst), 2);
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+
+        let (target_workflow, target_plan) = compile_fixture(&target_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &target_workflow,
+                &target_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("repair plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        let repair = runtime
+            .repair(
+                &target_workflow,
+                &target_plan,
+                plan,
+                None,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair");
+        assert_eq!(repair.state, RunState::Succeeded);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 2);
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            store
+                .list_effects(&repair.run_id)
+                .expect("repair effects")
+                .iter()
+                .all(|effect| effect.request.task_id != "first")
+        );
+        assert!(
+            store
+                .tool_calls(&repair.run_id)
+                .expect("repair tool calls")
+                .iter()
+                .all(|call| call.task_id != "first")
         );
     }
 
@@ -4491,6 +4909,25 @@ spec:
         assert!(!blocked.compatible);
         assert!(blocked.blocked_reuse.iter().any(|block| {
             block.task_id == "prepare" && block.rule == "definition_fingerprint_mismatch"
+        }));
+
+        let changed_dependency_yaml = repaired_yaml.replace(
+            "    - id: analyze_a\n      uses: action:assign\n      needs: [prepare]",
+            "    - id: analyze_a\n      uses: action:assign",
+        );
+        let (dependency_workflow, dependency_plan) = compile_fixture(&changed_dependency_yaml);
+        let dependency_blocked = runtime
+            .plan_repair(
+                &source_run_id,
+                &dependency_workflow,
+                &dependency_plan,
+                &["analyze_b".to_owned()],
+                false,
+            )
+            .expect("dependency plan");
+        assert!(!dependency_blocked.compatible);
+        assert!(dependency_blocked.blocked_reuse.iter().any(|block| {
+            block.task_id == "analyze_a" && block.rule == "dependency_set_mismatch"
         }));
 
         let changed_contract_yaml = repaired_yaml.replace(
@@ -4659,6 +5096,91 @@ spec:
     }
 
     #[tokio::test]
+    async fn repair_rejects_unresolved_effect_on_otherwise_reusable_task() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: reused-effect-repair }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - { id: first, uses: "action:assign", with: { value: durable } }
+    - { id: second, uses: "action:assert", needs: [first], with: { that: false } }
+"#;
+        let repaired_yaml = source_yaml.replace("that: false", "that: true");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let unresolved = EffectRequest::new(
+            &source_run_id,
+            "first",
+            1,
+            99,
+            "external.ambiguous",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"record": "x"}),
+            "create external record",
+            "trace-reused-uncertain",
+        );
+        store
+            .record_effect_request(&unresolved, FixedClock.now())
+            .expect("record effect");
+        store
+            .mark_effect_started(&unresolved.id, FixedClock.now())
+            .expect("start effect");
+
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let stats_before = store.stats().expect("stats");
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("blocked plan");
+        assert!(!plan.compatible);
+        assert!(plan.blocked_reuse.iter().any(|block| {
+            block.task_id == "first"
+                && block.rule == "unresolved_reused_effect"
+                && block.message.contains(&unresolved.id)
+        }));
+        assert!(matches!(
+            runtime
+                .repair(
+                    &repaired_workflow,
+                    &repaired_plan,
+                    plan,
+                    None,
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await,
+            Err(RuntimeError::RepairBlocked { .. })
+        ));
+        assert_eq!(store.stats().expect("stats"), stats_before);
+    }
+
+    #[tokio::test]
     async fn repair_detects_changed_upstream_prompt_file() {
         let directory = tempdir().expect("tempdir");
         std::fs::write(directory.path().join("first.txt"), "original instructions")
@@ -4806,7 +5328,9 @@ spec:
     async fn repair_blocks_when_reused_artifact_is_missing() {
         let directory = tempdir().expect("tempdir");
         let store = SqliteStore::open_memory().expect("store");
-        let runtime = runtime(store.clone(), directory.path());
+        let runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default().with_provider("fake", Arc::new(PanicProvider)),
+        );
         let source_yaml = r#"
 apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
@@ -4828,7 +5352,24 @@ spec:
       needs: [first]
       with: { that: false }
 "#;
-        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let repaired_yaml = source_yaml
+            .replace(
+                "spec:\n",
+                concat!(
+                    "spec:\n",
+                    "  providers:\n",
+                    "    fake: { kind: fake }\n",
+                    "  agents:\n",
+                    "    repaired:\n",
+                    "      provider: fake\n",
+                    "      model: fake\n",
+                    "      instructions: must never execute when the artifact is missing\n"
+                ),
+            )
+            .replace(
+                "    - id: second\n      uses: action:assert\n      needs: [first]\n      with: { that: false }",
+                "    - id: second\n      uses: agent:repaired\n      needs: [first]\n      with: { prompt: repaired }",
+            );
         let (source_workflow, source_plan) = compile_fixture(source_yaml);
         let source_run_id = match runtime
             .start(
@@ -4854,8 +5395,11 @@ spec:
             )
             .expect("plan");
         assert!(compatible.compatible, "{:?}", compatible.blocked_reuse);
+        let expected_digest = compatible.materialized_tasks[0].metadata.artifact_manifest[0]
+            .digest
+            .clone();
         std::fs::remove_file(directory.path().join("artifact.txt")).expect("remove artifact");
-        let runs_before = store.stats().expect("stats").runs;
+        let stats_before = store.stats().expect("stats");
         assert!(matches!(
             runtime
                 .repair(
@@ -4869,7 +5413,7 @@ spec:
                 .await,
             Err(RuntimeError::RepairBlocked { .. })
         ));
-        assert_eq!(store.stats().expect("stats").runs, runs_before);
+        assert_eq!(store.stats().expect("stats"), stats_before);
         let plan = runtime
             .plan_repair(
                 &source_run_id,
@@ -4880,15 +5424,18 @@ spec:
             )
             .expect("blocked plan");
         assert!(!plan.compatible);
-        assert!(
-            plan.blocked_reuse
-                .iter()
-                .any(|block| { block.task_id == "first" && block.rule == "artifact_integrity" })
-        );
+        assert!(plan.blocked_reuse.iter().any(|block| {
+            block.task_id == "first"
+                && block.rule == "artifact_integrity"
+                && block.message.contains("artifact.txt")
+                && block.message.contains(&expected_digest)
+                && block.message.contains("earlier repair root")
+        }));
+        assert_eq!(store.stats().expect("stats"), stats_before);
     }
 
     #[tokio::test]
-    async fn repair_blocks_tampered_reused_output_digest() {
+    async fn repair_blocks_missing_state_delta_and_tampered_reused_output_digest() {
         let directory = tempdir().expect("tempdir");
         let database = directory.path().join("runtime.db");
         let store = SqliteStore::open(&database).expect("store");
@@ -4925,14 +5472,47 @@ spec:
             Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
             other => panic!("expected source failure, got {other:?}"),
         };
-        rusqlite::Connection::open(&database)
-            .expect("tamper connection")
+        let tamper = rusqlite::Connection::open(&database).expect("tamper connection");
+        tamper
+            .execute(
+                "UPDATE task_states SET state_delta_json = NULL WHERE run_id = ?1 AND task_id = ?2",
+                rusqlite::params![source_run_id, "first"],
+            )
+            .expect("remove state delta");
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let missing_delta = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("missing state-delta plan");
+        assert!(!missing_delta.compatible);
+        assert!(
+            missing_delta
+                .blocked_reuse
+                .iter()
+                .any(|block| { block.task_id == "first" && block.rule == "state_delta_missing" })
+        );
+
+        tamper
+            .execute(
+                "UPDATE task_states SET state_delta_json = ?3 WHERE run_id = ?1 AND task_id = ?2",
+                rusqlite::params![
+                    source_run_id,
+                    "first",
+                    r#"{"formatVersion":1,"set":{},"remove":[]}"#
+                ],
+            )
+            .expect("restore state delta");
+        tamper
             .execute(
                 "UPDATE task_states SET output_json = ?3 WHERE run_id = ?1 AND task_id = ?2",
                 rusqlite::params![source_run_id, "first", r#"{"tampered":true}"#],
             )
             .expect("tamper output");
-        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
         let plan = runtime
             .plan_repair(
                 &source_run_id,

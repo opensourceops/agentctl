@@ -176,11 +176,14 @@ Recorded replay has a new replay run ID but the same semantic outputs. It dispat
 | `repair_root_missing` | The root is absent from the target graph. | Correct the task ID or workflow. |
 | `successful_root_requires_acknowledgement` | The selected root succeeded. | Add `--restart-successful` only when fresh execution is intended. |
 | `definition_fingerprint_mismatch` | A task changed outside the rerun closure. | Choose that task as an earlier/additional root. |
+| `dependency_set_mismatch` | A reusable task has different upstream dependencies. | Select the changed consumer as another repair root. |
 | `resolved_input_digest_mismatch` | Inputs, dependency output, or boundary memory changed. | Choose the first affected task as a root. |
 | `missing_output_contract` | A reused agent feeds downstream work without typed output. | Add structured output and create a fresh source result. |
 | `output_contract_mismatch` | The target expects a different contract. | Rerun from the producer. |
 | `output_digest_mismatch` | Persisted output was modified or corrupted. | Do not reuse it; rerun from the producer. |
-| `artifact_integrity` | An artifact is missing, changed, or outside policy. | Restore the verified artifact or rerun its producer. |
+| `state_delta_missing` or `state_delta_invalid` | Successful boundary-state metadata is absent or corrupt. | Select the task as an earlier root; do not edit the database. |
+| `artifact_integrity` | An artifact is missing, changed, or outside policy. The block reports its path, expected digest, and expected size. | Restore the exact retained artifact or select its producer as an earlier repair root. |
+| `unresolved_reused_effect` | A nominally successful reusable task retains a started or uncertain effect. | Reconcile external reality before reuse. |
 | `legacy_task_metadata` | The source predates repair metadata v1. | Use an earlier root or a full fork. |
 | `new_task_outside_repair_closure` | A new unrelated task has no result. | Add it as a root or choose an earlier common boundary. |
 | `unreconciled_effect` | Fresh execution may duplicate a mutation. | Inspect and reconcile external reality first. |

@@ -778,6 +778,28 @@ pub fn run(root: &Path) -> Result<()> {
     ensure_eq(&repair_inspect, "/data/tasks/0/disposition", "reused")?;
     ensure_eq(&repair_inspect, "/data/tasks/1/disposition", "executed")?;
     ensure!(array_len(&repair_inspect, "/data/effects")? == 0);
+    let human_inspect = output_with_code(
+        command_for(
+            &binary,
+            &workspace,
+            &strings([
+                "inspect",
+                repair_run_id,
+                "--db",
+                path(&repair_db)?,
+                "--output",
+                "human",
+                "--color",
+                "never",
+            ]),
+        ),
+        0,
+        "human repair inspection",
+    )?;
+    let human_inspect = String::from_utf8_lossy(&human_inspect.stdout);
+    ensure!(human_inspect.contains(&format!("source={source_run_id}")));
+    ensure!(human_inspect.contains("reused=first"));
+    ensure!(human_inspect.contains("executed=second,third"));
 
     scenario(
         27,

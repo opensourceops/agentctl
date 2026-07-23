@@ -18,7 +18,7 @@ use agentctl_providers::{
     AnthropicProvider, FakeProvider, GoogleProvider, HttpProviderConfig, OpenAiProvider,
 };
 use agentctl_runtime::{BuiltinToolExecutor, RunOptions, Runtime, RuntimeRegistry};
-use agentctl_store::{ApprovalResolution, SqliteStore, StoreError};
+use agentctl_store::{ApprovalResolution, RunMode, SqliteStore, StoreError, TaskDisposition};
 use chrono::{Duration as ChronoDuration, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
@@ -618,7 +618,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let traces = store
                 .trace_events(&args.run_id)
                 .map_err(CliError::persistence)?;
-            let human = format!(
+            let summary = format!(
                 "{} {:?}; {} tasks; {} effects; {} checkpoints; {} audit events; {} traces",
                 args.run_id,
                 run.state,
@@ -628,6 +628,26 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 audit.len(),
                 traces.len(),
             );
+            let human = if run.mode == RunMode::Repair {
+                let reused = tasks
+                    .iter()
+                    .filter(|task| task.disposition == TaskDisposition::Reused)
+                    .map(|task| task.task_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let executed = tasks
+                    .iter()
+                    .filter(|task| task.disposition == TaskDisposition::Executed)
+                    .map(|task| task.task_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{summary}; source={}; reused={reused}; executed={executed}",
+                    run.source_run_id.as_deref().unwrap_or("unknown")
+                )
+            } else {
+                summary
+            };
             let value = serde_json::json!({
                 "run": run,
                 "tasks": tasks,
