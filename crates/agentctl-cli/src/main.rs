@@ -446,6 +446,36 @@ struct DbArgs {
 enum DbCommand {
     Stats,
     Migrate,
+    Encryption {
+        #[command(subcommand)]
+        command: DbEncryptionCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DbEncryptionCommand {
+    /// Inventory protected fields without exposing their values.
+    Inventory,
+    /// Transactionally encrypt every identified sensitive field.
+    Enable {
+        #[arg(long)]
+        key_id: String,
+        /// Environment variable containing a base64-encoded 32-byte key.
+        #[arg(long)]
+        key_env: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Transactionally decrypt and re-encrypt every protected field with a new key.
+    Rotate {
+        #[arg(long)]
+        key_id: String,
+        /// Environment variable containing a base64-encoded 32-byte key.
+        #[arg(long)]
+        key_env: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1658,6 +1688,79 @@ fn db_command(output: OutputFormat, args: DbArgs) -> Result<u8, CliError> {
                 format!("database schema is at version {}", store.schema_version()),
             )?;
         }
+        DbCommand::Encryption { command } => match command {
+            DbEncryptionCommand::Inventory => {
+                let inventory = store
+                    .encryption_inventory()
+                    .map_err(CliError::persistence)?;
+                print_value(
+                    output,
+                    "EncryptionInventory",
+                    &inventory,
+                    Vec::new(),
+                    format!(
+                        "state encryption: {}; protected={}, encrypted={}, plaintext={}, invalid={}",
+                        if inventory.enabled {
+                            format!(
+                                "enabled key={} reference={}",
+                                inventory.key_id.as_deref().unwrap_or("unknown"),
+                                inventory.key_reference.as_deref().unwrap_or("unknown")
+                            )
+                        } else {
+                            "disabled".to_owned()
+                        },
+                        inventory.protected_values,
+                        inventory.encrypted_values,
+                        inventory.plaintext_values,
+                        inventory.invalid_envelopes,
+                    ),
+                )?;
+            }
+            DbEncryptionCommand::Enable {
+                key_id,
+                key_env,
+                dry_run,
+            } => {
+                let report = store
+                    .enable_encryption(&key_id, &key_env, dry_run, Utc::now())
+                    .map_err(CliError::persistence)?;
+                print_value(
+                    output,
+                    "EncryptionMigration",
+                    &report,
+                    Vec::new(),
+                    format!(
+                        "{} state encryption with key {}: scanned {}, rewrote {}",
+                        if dry_run { "planned" } else { "enabled" },
+                        key_id,
+                        report.values_scanned,
+                        report.values_rewritten,
+                    ),
+                )?;
+            }
+            DbEncryptionCommand::Rotate {
+                key_id,
+                key_env,
+                dry_run,
+            } => {
+                let report = store
+                    .rotate_encryption_key(&key_id, &key_env, dry_run, Utc::now())
+                    .map_err(CliError::persistence)?;
+                print_value(
+                    output,
+                    "EncryptionMigration",
+                    &report,
+                    Vec::new(),
+                    format!(
+                        "{} state-encryption rotation to key {}: scanned {}, rewrote {}",
+                        if dry_run { "planned" } else { "completed" },
+                        key_id,
+                        report.values_scanned,
+                        report.values_rewritten,
+                    ),
+                )?;
+            }
+        },
     }
     Ok(EXIT_OK)
 }

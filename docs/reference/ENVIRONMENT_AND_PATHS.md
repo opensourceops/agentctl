@@ -12,6 +12,10 @@
 
 These names are defaults used by repository examples. A workflow can name another valid environment reference. Policy must allow the name. Values never belong in YAML, CLI arguments, ordinary inputs, logs, or committed fixtures.
 
+## State-encryption keys
+
+State encryption accepts an environment-variable reference through `--key-env`. The referenced value must be base64 for exactly 32 bytes. The database stores the key ID and environment-variable name, never the value. Once enabled, every command that opens that database must receive the current reference. Rotation also needs the new reference for that command.
+
 ## Repository and acceptance variables
 
 | Variable | Scope | Purpose |

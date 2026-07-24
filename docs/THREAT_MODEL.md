@@ -11,6 +11,7 @@ The local operator and reviewed binary are trusted. Workflow authors are only as
 | Malicious YAML/template causes code execution or resource exhaustion | strict fields, constrained paths/equality, 1 MiB bound, fuzzing | deeply nested valid data remains bounded mainly by parser behavior |
 | Path traversal or symlink escape | canonical roots and focused tests | TOCTOU is possible if another process swaps paths; isolate hostile workspaces |
 | Secret exfiltration through CLI/log/database/trace | env references, no key flags, allowlists, redaction, secret scan | authorized tools can deliberately transmit permitted data |
+| SQLite disclosure reveals confidential run content | optional AES-256-GCM field envelopes, external key reference, authenticated context, fail-closed triggers, transactional rotation | metadata and artifact bytes remain visible; unencrypted and pre-migration backups remain sensitive |
 | Command injection | direct argv, no shell, cleared env, executable allowlist | an allowed executable may interpret malicious arguments |
 | SSRF/redirect bypass | URL parse, host allowlist, disabled redirects, tests | DNS/proxy behavior needs external network containment for hostile inputs |
 | Prompt injection grants tool authority | policy outside model, visible tool set, schema validation, approvals | an operator may approve deceptive content |
@@ -27,6 +28,6 @@ The local operator and reviewed binary are trusted. Workflow authors are only as
 | Corrupt or future state misexecutes | schema/version/checksum/deserialization failures | SQLite file deletion or rollback by an attacker is not prevented |
 | Dependency compromise | locked registry-only deps, cargo-deny, license/source checks | registry compromise and zero-days remain possible |
 
-No unresolved critical or high-severity defect is knowingly accepted for the implemented boundary. Deferred sandboxing, signature verification, distributed concurrency, and encrypted storage are explicit product limitations, not implied controls.
+No unresolved critical or high-severity defect is knowingly accepted for the implemented boundary. Process sandboxing, signature verification, and distributed concurrency are not implied controls. State encryption protects its documented columns only and is not described as full-database encryption.
 
 Run access control is the database file and operating-system identity. `agentctl` has no multi-tenant authorization layer; do not let an untrusted principal select another tenant's source run from a shared database.

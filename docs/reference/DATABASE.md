@@ -1,6 +1,6 @@
 # Runtime database and migrations
 
-The local SQLite database and its sibling artifact root are history and part of the correctness boundary. The current database schema version is `9`.
+The local SQLite database and its sibling artifact root are history and part of the correctness boundary. The current database schema version is `10`.
 
 ## Stored records
 
@@ -16,9 +16,9 @@ The local SQLite database and its sibling artifact root are history and part of 
 - content-addressed blob metadata, logical run/task references, provenance, verification time, and bounded ingestion leases
 - legacy-run upgrade analysis and the exact task metadata applied by each upgrade
 
-Working memory is stored on the run and in checkpoints. Provider credentials are not stored. Other confidential content may be stored, including prompts, tool output, and remote artifacts.
+Working memory is stored on the run and in checkpoints. Provider credentials and state-encryption key values are not stored. Prompts, workflow inputs and outputs, task output and errors, effect input/results, approvals, checkpoints, audit/trace payloads, provider continuations, reconciliation evidence, and long-term-memory values can be protected with application-level authenticated envelopes.
 
-Migration 5 adds `source_run_id`, `source_workflow_digest`, repair roots/reason/version, and task-boundary metadata used by repair. Migration 6 adds artifact blob, reference, and ingestion-lease tables. Migration 7 records transactional legacy-run upgrades. Migration 8 adds immutable effect reconciliation records. Migration 9 adds retry roots/reason/version and failed-only selection. A repair or retry transaction creates the run, materializes every reused task and artifact reference, creates pending fresh tasks, records provenance audit events, and writes its first checkpoint atomically. The source identifier is durable lineage rather than a foreign-key dependency, so source garbage collection does not delete the derived run.
+Migration 5 adds `source_run_id`, `source_workflow_digest`, repair roots/reason/version, and task-boundary metadata used by repair. Migration 6 adds artifact blob, reference, and ingestion-lease tables. Migration 7 records transactional legacy-run upgrades. Migration 8 adds immutable effect reconciliation records. Migration 9 adds retry roots/reason/version and failed-only selection. Migration 10 adds state-encryption configuration and fail-closed write guards. A repair or retry transaction creates the run, materializes every reused task and artifact reference, creates pending fresh tasks, records provenance audit events, and writes its first checkpoint atomically. The source identifier is durable lineage rather than a foreign-key dependency, so source garbage collection does not delete the derived run.
 
 Artifact manifests contain logical path/name, media type, byte size, SHA-256 digest, and CAS-relative path. Blob bytes live under `<database-parent>/artifacts/sha256/`; identical content is stored once. A completed repair/replay receives its own references, so source-row and workspace deletion do not break it.
 
@@ -33,13 +33,16 @@ agentctl runs --db .agentctl/runtime.db analyze RUN_ID --output json
 agentctl runs --db .agentctl/runtime.db upgrade RUN_ID --dry-run --output json
 agentctl runs --db .agentctl/runtime.db upgrade RUN_ID --output json
 agentctl effects --db .agentctl/runtime.db list RUN_ID --output json
+agentctl db --db .agentctl/runtime.db encryption inventory --output json
+agentctl db --db .agentctl/runtime.db encryption enable --key-id KEY_ID --key-env KEY_ENV --dry-run
+agentctl db --db .agentctl/runtime.db encryption rotate --key-id NEW_KEY_ID --key-env NEW_KEY_ENV --dry-run
 agentctl artifacts --db .agentctl/runtime.db list --run RUN_ID --output json
 agentctl artifacts --db .agentctl/runtime.db verify --all --output json
 agentctl artifacts --db .agentctl/runtime.db export SHA256_DIGEST ./report.bin
 agentctl artifacts --db .agentctl/runtime.db gc --older-than-days 30 --dry-run
 ```
 
-`db migrate` may write the database. Back up the database and its WAL state before an upgrade.
+`db migrate` and encryption enable/rotation may write the database. Back up the database and its WAL state before an upgrade. An encrypted backup requires the referenced key value; the database stores only the key ID and environment-variable name. Retire pre-encryption backups and snapshots according to their confidentiality requirements.
 
 ## Locking and permissions
 

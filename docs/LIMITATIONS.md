@@ -15,6 +15,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 - Non-interactive approvals durably pause, signals cancel safely, JSON errors include available run/trace correlation, and SQLite uses WAL plus a bounded lock wait.
 - The packaged CLI, clean-directory quickstart, cron-like empty environment, and non-root/read-only OCI contract have executable acceptance coverage.
 - Successful bounded file outputs are atomically ingested into a local immutable content-addressed store with durable references, verification/export commands, lease-safe reachability GC, interrupted-GC recovery, and local/OCI acceptance coverage.
+- Identified confidential JSON and text fields can be transactionally migrated to versioned AES-256-GCM envelopes, rotated through environment key references, inventoried without content disclosure, and fail closed on missing/wrong keys, tampering, plaintext writes, or stale-key writes.
 - Shell execution and acceptance/container helpers use bounded concurrent capture. Output overflow terminates/reaps the child with a structured secret-safe error; timeouts and cancellation retain durable uncertain-effect semantics.
 - Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
@@ -28,7 +29,7 @@ These are useful extensions but are not required by the product thesis. They nee
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
 - pack dependency resolution, pack lockfiles, remote fetching, publisher signatures, and a versioned plugin ABI;
 - vector memory;
-- encrypted application-level persistence and external secret-manager adapters;
+- external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
 - reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
 
 ## Explicit non-goals
@@ -43,6 +44,7 @@ These are useful extensions but are not required by the product thesis. They nee
 - The document API is `v1alpha1`; pin the binary/image version and validate before upgrading.
 - Scheduling is sequential (`maxConcurrency: 1`). Separate runs may overlap safely in SQLite, but they can still target the same external resource. Use the external scheduler's overlap controls (`flock`, systemd unit serialization, or Kubernetes `concurrencyPolicy: Forbid`) when effects must not overlap.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
+- State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
 - Successful tasks from databases created before schema 5 require explicit `runs analyze`/`runs upgrade`. Only provable metadata is imported; unprovable boundaries are returned as conservative safe repair roots.

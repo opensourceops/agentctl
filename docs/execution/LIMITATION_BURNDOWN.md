@@ -38,7 +38,7 @@ complete, every entry must have exactly one final disposition:
 | MIG-001 | Legacy selective repair | verified | implemented |
 | EFX-001 | Effect reconciliation | verified | implemented |
 | RET-001 | Terminal-run retry | verified | implemented |
-| ENC-001 | Sensitive-state encryption | open | implemented |
+| ENC-001 | Sensitive-state encryption | verified | implemented |
 | SEC-001 | Secret providers | open | implemented |
 | NET-001 | Network policy | open | implemented |
 | ISO-001 | Process isolation | open | redesigned |
@@ -178,8 +178,8 @@ complete, every entry must have exactly one final disposition:
 
 ### ENC-001: Envelope encryption for sensitive persisted fields
 
-- Current behavior: SQLite may contain prompts, inputs, outputs, tool data, and
-  provider continuations in plaintext.
+- Current behavior: identified confidential fields can be inventoried and
+  transactionally migrated to authenticated envelopes, then fail closed.
 - User impact: filesystem disclosure reveals confidential workflow history.
 - Security or durability impact: SQLite permissions are not confidentiality at
   rest.
@@ -197,7 +197,11 @@ complete, every entry must have exactly one final disposition:
 - Examples: encrypted state with redacted inspection.
 - Live evidence: no provider call required.
 - Documentation: protected fields, key lifecycle, and residual metadata.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified by authenticated-context
+  roundtrips, missing/wrong-key and tamper failure, dry-run inventory,
+  protected-column scans, trigger-enforced no-fallback writes, injected
+  rotation rollback, full atomic rotation, schema-10 fixture migration, normal
+  read compatibility, checkpoint integrity, and packaged CLI replay.
 
 ## Workflow language and runtime
 

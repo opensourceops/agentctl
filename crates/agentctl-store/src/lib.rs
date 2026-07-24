@@ -1,6 +1,7 @@
 //! Versioned SQLite persistence for agentctl.
 
 pub mod artifact;
+pub mod encryption;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -12,14 +13,19 @@ use agentctl_core::state::{RunState, TaskState};
 use agentctl_core::{CompiledPlan, PLAN_FORMAT_VERSION};
 use artifact::{ArtifactStore, ArtifactStoreError, ArtifactVerification, LocalArtifactStore};
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
+use encryption::{
+    ENVELOPE_PREFIX, EncryptionCodec, EnvironmentKeyResolver, SENSITIVE_COLUMNS,
+    SharedStateProtection, StateKeyResolver, StateProtection, is_encrypted_value,
+    validate_envelope,
+};
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 9;
+pub const DATABASE_SCHEMA_VERSION: u32 = 10;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -300,11 +306,25 @@ ALTER TABLE runs ADD COLUMN retry_format_version INTEGER;
 ALTER TABLE runs ADD COLUMN retry_failed_only INTEGER NOT NULL DEFAULT 0;
 "#;
 
+const MIGRATION_10: &str = r#"
+CREATE TABLE state_encryption (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  format_version INTEGER NOT NULL,
+  key_id TEXT NOT NULL,
+  key_reference TEXT NOT NULL,
+  key_check TEXT NOT NULL,
+  maintenance INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+"#;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
     artifact_store: Arc<LocalArtifactStore>,
     artifact_lock: Arc<Mutex<()>>,
+    protection: SharedStateProtection,
+    key_resolver: Arc<dyn StateKeyResolver>,
 }
 
 #[derive(Debug, Error)]
@@ -319,6 +339,8 @@ pub enum StoreError {
     Incompatible(String),
     #[error("durable state is corrupt: {0}")]
     Corrupt(String),
+    #[error("state encryption error: {0}")]
+    Encryption(String),
     #[error("run `{0}` was not found")]
     RunNotFound(String),
     #[error("task `{task_id}` was not found in run `{run_id}`")]
@@ -642,8 +664,38 @@ pub struct DatabaseStats {
     pub effect_reconciliations: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionInventory {
+    pub enabled: bool,
+    pub key_id: Option<String>,
+    pub key_reference: Option<String>,
+    pub protected_values: u64,
+    pub encrypted_values: u64,
+    pub plaintext_values: u64,
+    pub invalid_envelopes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionMigrationReport {
+    pub operation: String,
+    pub dry_run: bool,
+    pub key_id: String,
+    pub key_reference: String,
+    pub values_scanned: u64,
+    pub values_rewritten: u64,
+}
+
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_key_resolver(path, Arc::new(EnvironmentKeyResolver))
+    }
+
+    pub fn open_with_key_resolver(
+        path: &Path,
+        key_resolver: Arc<dyn StateKeyResolver>,
+    ) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -667,14 +719,32 @@ impl SqliteStore {
         let artifact_store = LocalArtifactStore::open(state_root.join("artifacts"))?;
         let _artifact_file_lock = artifact_store.lock_exclusive()?;
         recover_artifact_quarantine(&connection, &artifact_store)?;
+        let protection = load_state_protection(&connection, key_resolver.as_ref())?;
+        let inventory = encryption_inventory(&connection, &protection)?;
+        if protection.is_enabled()
+            && (inventory.plaintext_values != 0 || inventory.invalid_envelopes != 0)
+        {
+            return Err(StoreError::Encryption(format!(
+                "encrypted database contains {} plaintext and {} invalid protected value(s)",
+                inventory.plaintext_values, inventory.invalid_envelopes
+            )));
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             artifact_store: Arc::new(artifact_store),
             artifact_lock: Arc::new(Mutex::new(())),
+            protection: Arc::new(RwLock::new(protection)),
+            key_resolver,
         })
     }
 
     pub fn open_memory() -> Result<Self, StoreError> {
+        Self::open_memory_with_key_resolver(Arc::new(EnvironmentKeyResolver))
+    }
+
+    pub fn open_memory_with_key_resolver(
+        key_resolver: Arc<dyn StateKeyResolver>,
+    ) -> Result<Self, StoreError> {
         let mut connection = Connection::open_in_memory()?;
         configure(&connection)?;
         migrate(&mut connection)?;
@@ -682,6 +752,8 @@ impl SqliteStore {
             connection: Arc::new(Mutex::new(connection)),
             artifact_store: Arc::new(LocalArtifactStore::temporary()?),
             artifact_lock: Arc::new(Mutex::new(())),
+            protection: Arc::new(RwLock::new(StateProtection::Plaintext)),
+            key_resolver,
         })
     }
 
@@ -772,6 +844,141 @@ impl SqliteStore {
             .unwrap_or(0)
     }
 
+    pub fn encryption_inventory(&self) -> Result<EncryptionInventory, StoreError> {
+        let connection = self.connection.lock();
+        encryption_inventory(&connection, &self.protection.read())
+    }
+
+    pub fn enable_encryption(
+        &self,
+        key_id: &str,
+        key_reference: &str,
+        dry_run: bool,
+        now: DateTime<Utc>,
+    ) -> Result<EncryptionMigrationReport, StoreError> {
+        if self.protection.read().is_enabled() {
+            return Err(StoreError::Encryption(
+                "state encryption is already enabled; use key rotation".to_owned(),
+            ));
+        }
+        let codec = EncryptionCodec::resolve(key_id, key_reference, self.key_resolver.as_ref())?;
+        let mut connection = self.connection.lock();
+        let inventory = encryption_inventory(&connection, &StateProtection::Plaintext)?;
+        if inventory.encrypted_values != 0 || inventory.invalid_envelopes != 0 {
+            return Err(StoreError::Encryption(
+                "unencrypted database contains an unexpected encryption envelope".to_owned(),
+            ));
+        }
+        let report = EncryptionMigrationReport {
+            operation: "enable".to_owned(),
+            dry_run,
+            key_id: key_id.to_owned(),
+            key_reference: key_reference.to_owned(),
+            values_scanned: inventory.protected_values,
+            values_rewritten: if dry_run {
+                0
+            } else {
+                inventory.plaintext_values
+            },
+        };
+        if dry_run {
+            return Ok(report);
+        }
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        rewrite_sensitive_values(
+            &transaction,
+            &StateProtection::Plaintext,
+            &StateProtection::Encrypted(codec.clone()),
+        )?;
+        transaction.execute(
+            "INSERT INTO state_encryption (singleton, format_version, key_id, key_reference, key_check, updated_at) VALUES (1, 1, ?1, ?2, ?3, ?4)",
+            params![
+                key_id,
+                key_reference,
+                codec.key_check()?,
+                now.to_rfc3339()
+            ],
+        )?;
+        transaction.commit()?;
+        *self.protection.write() = StateProtection::Encrypted(codec);
+        Ok(report)
+    }
+
+    pub fn rotate_encryption_key(
+        &self,
+        key_id: &str,
+        key_reference: &str,
+        dry_run: bool,
+        now: DateTime<Utc>,
+    ) -> Result<EncryptionMigrationReport, StoreError> {
+        let current = self.protection.read().clone();
+        let StateProtection::Encrypted(current_codec) = &current else {
+            return Err(StoreError::Encryption(
+                "state encryption is not enabled".to_owned(),
+            ));
+        };
+        if current_codec.key_id() == key_id {
+            return Err(StoreError::Encryption(
+                "rotation requires a different key ID".to_owned(),
+            ));
+        }
+        let next = EncryptionCodec::resolve(key_id, key_reference, self.key_resolver.as_ref())?;
+        let mut connection = self.connection.lock();
+        let inventory = encryption_inventory(&connection, &current)?;
+        if inventory.plaintext_values != 0 || inventory.invalid_envelopes != 0 {
+            return Err(StoreError::Encryption(
+                "encrypted database is not in a fully protected state".to_owned(),
+            ));
+        }
+        let report = EncryptionMigrationReport {
+            operation: "rotate".to_owned(),
+            dry_run,
+            key_id: key_id.to_owned(),
+            key_reference: key_reference.to_owned(),
+            values_scanned: inventory.protected_values,
+            values_rewritten: if dry_run {
+                0
+            } else {
+                inventory.encrypted_values
+            },
+        };
+        if dry_run {
+            return Ok(report);
+        }
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE state_encryption SET format_version = 1, key_id = ?1, key_reference = ?2, key_check = ?3, maintenance = 1, updated_at = ?4 WHERE singleton = 1",
+            params![
+                key_id,
+                key_reference,
+                next.key_check()?,
+                now.to_rfc3339()
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::Encryption(
+                "state-encryption configuration disappeared during rotation".to_owned(),
+            ));
+        }
+        rewrite_sensitive_values(
+            &transaction,
+            &current,
+            &StateProtection::Encrypted(next.clone()),
+        )?;
+        let changed = transaction.execute(
+            "UPDATE state_encryption SET maintenance = 0 WHERE singleton = 1 AND maintenance = 1",
+            [],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::Encryption(
+                "state-encryption configuration disappeared during rotation".to_owned(),
+            ));
+        }
+        transaction.commit()?;
+        *self.protection.write() = StateProtection::Encrypted(next);
+        Ok(report)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_run(
         &self,
@@ -798,10 +1005,14 @@ impl SqliteStore {
                 workflow_schema_version,
                 plan.plan_digest,
                 plan.format_version,
-                encode(workflow)?,
-                encode(plan)?,
-                encode(inputs)?,
-                encode(working_memory)?,
+                encode_protected(&self.protection, workflow, "runs.workflow_json")?,
+                encode_protected(&self.protection, plan, "runs.plan_json")?,
+                encode_protected(&self.protection, inputs, "runs.inputs_json")?,
+                encode_protected(
+                    &self.protection,
+                    working_memory,
+                    "runs.working_memory_json"
+                )?,
                 encode_enum(RunState::Running)?,
                 encode_enum(mode)?,
                 parent_run_id,
@@ -826,8 +1037,9 @@ impl SqliteStore {
             trace_id,
             &serde_json::json!({"mode": mode, "planDigest": plan.plan_digest}),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -874,16 +1086,22 @@ impl SqliteStore {
                 workflow_schema_version,
                 plan.plan_digest,
                 plan.format_version,
-                encode(workflow)?,
-                encode(plan)?,
-                encode(inputs)?,
-                encode(working_memory)?,
+                encode_protected(&self.protection, workflow, "runs.workflow_json")?,
+                encode_protected(&self.protection, plan, "runs.plan_json")?,
+                encode_protected(&self.protection, inputs, "runs.inputs_json")?,
+                encode_protected(
+                    &self.protection,
+                    working_memory,
+                    "runs.working_memory_json"
+                )?,
                 encode_enum(RunState::Running)?,
                 encode_enum(RunMode::Repair)?,
                 source_run_id,
                 source_workflow_digest,
                 encode(repair_roots)?,
-                reason,
+                reason
+                    .map(|value| protect_text(&self.protection, value, "runs.repair_reason"))
+                    .transpose()?,
                 base_path.display().to_string(),
                 now.to_rfc3339(),
             ],
@@ -900,7 +1118,11 @@ impl SqliteStore {
                         task_id,
                         position,
                         encode_enum(TaskState::Succeeded)?,
-                        encode(&task.output)?,
+                        encode_protected(
+                            &self.protection,
+                            &task.output,
+                            "task_states.output_json"
+                        )?,
                         encode_enum(TaskDisposition::Reused)?,
                         task.metadata.execution.metadata_version,
                         task.source_run_id,
@@ -910,10 +1132,18 @@ impl SqliteStore {
                         task.metadata.execution.input_digest,
                         task.metadata.execution.output_contract_fingerprint,
                         task.metadata.output_digest,
-                        encode(&task.metadata.state_delta)?,
+                        encode_protected(
+                            &self.protection,
+                            &task.metadata.state_delta,
+                            "task_states.state_delta_json"
+                        )?,
                         task.metadata.state_delta_digest,
                         encode(&task.metadata.artifact_manifest)?,
-                        encode(&task.reuse_decision)?,
+                        encode_protected(
+                            &self.protection,
+                            &task.reuse_decision,
+                            "task_states.reuse_decision_json"
+                        )?,
                         now.to_rfc3339(),
                     ],
                 )?;
@@ -931,6 +1161,7 @@ impl SqliteStore {
                         "decision": task.reuse_decision,
                     }),
                     now,
+                    &self.protection,
                 )?;
                 record_artifact_references_tx(
                     &transaction,
@@ -971,8 +1202,9 @@ impl SqliteStore {
                 "taskDecisions": task_decisions,
             }),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1020,16 +1252,22 @@ impl SqliteStore {
                 workflow_schema_version,
                 plan.plan_digest,
                 plan.format_version,
-                encode(workflow)?,
-                encode(plan)?,
-                encode(inputs)?,
-                encode(working_memory)?,
+                encode_protected(&self.protection, workflow, "runs.workflow_json")?,
+                encode_protected(&self.protection, plan, "runs.plan_json")?,
+                encode_protected(&self.protection, inputs, "runs.inputs_json")?,
+                encode_protected(
+                    &self.protection,
+                    working_memory,
+                    "runs.working_memory_json"
+                )?,
                 encode_enum(RunState::Running)?,
                 encode_enum(RunMode::Retry)?,
                 source_run_id,
                 source_workflow_digest,
                 encode(retry_roots)?,
-                reason,
+                reason
+                    .map(|value| protect_text(&self.protection, value, "runs.retry_reason"))
+                    .transpose()?,
                 failed_only,
                 base_path.display().to_string(),
                 now.to_rfc3339(),
@@ -1047,7 +1285,11 @@ impl SqliteStore {
                         task_id,
                         position,
                         encode_enum(TaskState::Succeeded)?,
-                        encode(&task.output)?,
+                        encode_protected(
+                            &self.protection,
+                            &task.output,
+                            "task_states.output_json"
+                        )?,
                         encode_enum(TaskDisposition::Reused)?,
                         task.metadata.execution.metadata_version,
                         task.source_run_id,
@@ -1057,10 +1299,18 @@ impl SqliteStore {
                         task.metadata.execution.input_digest,
                         task.metadata.execution.output_contract_fingerprint,
                         task.metadata.output_digest,
-                        encode(&task.metadata.state_delta)?,
+                        encode_protected(
+                            &self.protection,
+                            &task.metadata.state_delta,
+                            "task_states.state_delta_json"
+                        )?,
                         task.metadata.state_delta_digest,
                         encode(&task.metadata.artifact_manifest)?,
-                        encode(&task.reuse_decision)?,
+                        encode_protected(
+                            &self.protection,
+                            &task.reuse_decision,
+                            "task_states.reuse_decision_json"
+                        )?,
                         now.to_rfc3339(),
                     ],
                 )?;
@@ -1078,6 +1328,7 @@ impl SqliteStore {
                         "decision": task.reuse_decision,
                     }),
                     now,
+                    &self.protection,
                 )?;
                 record_artifact_references_tx(
                     &transaction,
@@ -1119,8 +1370,9 @@ impl SqliteStore {
                 "taskDecisions": task_decisions,
             }),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1184,11 +1436,24 @@ impl SqliteStore {
                     workflow_digest: row.2,
                     workflow_schema_version: row.3,
                     plan_digest: row.4,
-                    workflow: decode(&row.5, "workflow_json")?,
-                    plan: decode(&row.6, "plan_json")?,
-                    inputs: decode(&row.7, "inputs_json")?,
-                    working_memory: decode(&row.8, "working_memory_json")?,
-                    output: row.9.map(|value| decode(&value, "output_json")).transpose()?,
+                    workflow: decode_protected(
+                        &self.protection,
+                        &row.5,
+                        "runs.workflow_json",
+                    )?,
+                    plan: decode_protected(&self.protection, &row.6, "runs.plan_json")?,
+                    inputs: decode_protected(&self.protection, &row.7, "runs.inputs_json")?,
+                    working_memory: decode_protected(
+                        &self.protection,
+                        &row.8,
+                        "runs.working_memory_json",
+                    )?,
+                    output: row
+                        .9
+                        .map(|value| {
+                            decode_protected(&self.protection, &value, "runs.output_json")
+                        })
+                        .transpose()?,
                     state: decode_enum(&row.10, "run.state")?,
                     mode: decode_enum(&row.11, "run.mode")?,
                     parent_run_id: row.12,
@@ -1199,14 +1464,22 @@ impl SqliteStore {
                         .map(|value| decode(&value, "run.repair_roots"))
                         .transpose()?
                         .unwrap_or_default(),
-                    repair_reason: row.20,
+                    repair_reason: row
+                        .20
+                        .map(|value| {
+                            expose_text(&self.protection, &value, "runs.repair_reason")
+                        })
+                        .transpose()?,
                     repair_format_version: row.21,
                     retry_roots: row
                         .22
                         .map(|value| decode(&value, "run.retry_roots"))
                         .transpose()?
                         .unwrap_or_default(),
-                    retry_reason: row.23,
+                    retry_reason: row
+                        .23
+                        .map(|value| expose_text(&self.protection, &value, "runs.retry_reason"))
+                        .transpose()?,
                     retry_format_version: row.24,
                     retry_failed_only: row.25,
                     base_path: row.16,
@@ -1264,6 +1537,7 @@ impl SqliteStore {
                 "toolCalls": tool_calls,
             }),
             now,
+            &self.protection,
         )?;
         transaction.commit()?;
         Ok(())
@@ -1308,9 +1582,14 @@ impl SqliteStore {
                 attempt: row.3,
                 output: row
                     .4
-                    .map(|value| decode(&value, "task.output"))
+                    .map(|value| {
+                        decode_protected(&self.protection, &value, "task_states.output_json")
+                    })
                     .transpose()?,
-                error: row.5,
+                error: row
+                    .5
+                    .map(|value| expose_text(&self.protection, &value, "task_states.error"))
+                    .transpose()?,
                 disposition: decode_enum(&row.7, "task.disposition")?,
                 metadata_version: row.8,
                 source_run_id: row.9,
@@ -1322,7 +1601,9 @@ impl SqliteStore {
                 output_digest: row.15,
                 state_delta: row
                     .16
-                    .map(|value| decode(&value, "task.state_delta"))
+                    .map(|value| {
+                        decode_protected(&self.protection, &value, "task_states.state_delta_json")
+                    })
                     .transpose()?,
                 state_delta_digest: row.17,
                 artifact_manifest: row
@@ -1332,7 +1613,13 @@ impl SqliteStore {
                     .unwrap_or_default(),
                 reuse_decision: row
                     .19
-                    .map(|value| decode(&value, "task.reuse_decision"))
+                    .map(|value| {
+                        decode_protected(
+                            &self.protection,
+                            &value,
+                            "task_states.reuse_decision_json",
+                        )
+                    })
                     .transpose()?,
                 updated_at: parse_time(&row.6, "task.updated_at")?,
             })
@@ -1371,12 +1658,32 @@ impl SqliteStore {
             .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
         transaction.execute(
             "UPDATE task_states SET state = ?3, output_json = COALESCE(?4, output_json), error = ?5, attempt = attempt + ?7, updated_at = ?6 WHERE run_id = ?1 AND task_id = ?2",
-            params![run_id, task_id, encode_enum(next)?, output.map(encode).transpose()?, error, now.to_rfc3339(), i64::from(current == TaskState::Ready && next == TaskState::Running)],
+            params![
+                run_id,
+                task_id,
+                encode_enum(next)?,
+                output
+                    .map(|value| encode_protected(
+                        &self.protection,
+                        value,
+                        "task_states.output_json"
+                    ))
+                    .transpose()?,
+                error
+                    .map(|value| protect_text(&self.protection, value, "task_states.error"))
+                    .transpose()?,
+                now.to_rfc3339(),
+                i64::from(current == TaskState::Ready && next == TaskState::Running)
+            ],
         )?;
         if let Some(memory) = working_memory {
             transaction.execute(
                 "UPDATE runs SET working_memory_json = ?2, updated_at = ?3 WHERE run_id = ?1",
-                params![run_id, encode(memory)?, now.to_rfc3339()],
+                params![
+                    run_id,
+                    encode_protected(&self.protection, memory, "runs.working_memory_json")?,
+                    now.to_rfc3339()
+                ],
             )?;
         } else {
             transaction.execute(
@@ -1392,8 +1699,9 @@ impl SqliteStore {
             trace_id,
             &serde_json::json!({"from": current, "to": next, "error": error}),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1463,14 +1771,18 @@ impl SqliteStore {
                 run_id,
                 task_id,
                 encode_enum(TaskState::Succeeded)?,
-                encode(output)?,
+                encode_protected(&self.protection, output, "task_states.output_json")?,
                 encode_enum(TaskDisposition::Executed)?,
                 metadata.execution.metadata_version,
                 metadata.execution.definition_fingerprint,
                 metadata.execution.input_digest,
                 metadata.execution.output_contract_fingerprint,
                 metadata.output_digest,
-                encode(&metadata.state_delta)?,
+                encode_protected(
+                    &self.protection,
+                    &metadata.state_delta,
+                    "task_states.state_delta_json"
+                )?,
                 metadata.state_delta_digest,
                 encode(&metadata.artifact_manifest)?,
                 now.to_rfc3339(),
@@ -1492,7 +1804,11 @@ impl SqliteStore {
         if let Some(memory) = working_memory {
             transaction.execute(
                 "UPDATE runs SET working_memory_json = ?2, updated_at = ?3 WHERE run_id = ?1",
-                params![run_id, encode(memory)?, now.to_rfc3339()],
+                params![
+                    run_id,
+                    encode_protected(&self.protection, memory, "runs.working_memory_json")?,
+                    now.to_rfc3339()
+                ],
             )?;
         } else {
             transaction.execute(
@@ -1514,8 +1830,9 @@ impl SqliteStore {
                 "stateDeltaDigest": metadata.state_delta_digest,
             }),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1546,14 +1863,26 @@ impl SqliteStore {
                 source.input_digest,
                 source.output_contract_fingerprint,
                 source.output_digest,
-                source.state_delta.as_ref().map(encode).transpose()?,
+                source
+                    .state_delta
+                    .as_ref()
+                    .map(|value| encode_protected(
+                        &self.protection,
+                        value,
+                        "task_states.state_delta_json"
+                    ))
+                    .transpose()?,
                 source.state_delta_digest,
                 encode(&source.artifact_manifest)?,
-                encode(&serde_json::json!({
-                    "recordedFromRunId": source.run_id,
-                    "sourceDisposition": source.disposition,
-                    "sourceProvenance": source.reuse_decision,
-                }))?,
+                encode_protected(
+                    &self.protection,
+                    &serde_json::json!({
+                        "recordedFromRunId": source.run_id,
+                        "sourceDisposition": source.disposition,
+                        "sourceProvenance": source.reuse_decision,
+                    }),
+                    "task_states.reuse_decision_json"
+                )?,
                 now.to_rfc3339(),
             ],
         )?;
@@ -1585,6 +1914,7 @@ impl SqliteStore {
                 "outputDigest": source.output_digest,
             }),
             now,
+            &self.protection,
         )?;
         transaction.commit()?;
         Ok(())
@@ -1634,10 +1964,18 @@ impl SqliteStore {
                     update.metadata.execution.input_digest,
                     update.metadata.execution.output_contract_fingerprint,
                     update.metadata.output_digest,
-                    encode(&update.metadata.state_delta)?,
+                    encode_protected(
+                        &self.protection,
+                        &update.metadata.state_delta,
+                        "task_states.state_delta_json"
+                    )?,
                     update.metadata.state_delta_digest,
                     encode(&update.metadata.artifact_manifest)?,
-                    encode(&serde_json::json!({"legacyUpgrade": update.provenance}))?,
+                    encode_protected(
+                        &self.protection,
+                        &serde_json::json!({"legacyUpgrade": update.provenance}),
+                        "task_states.reuse_decision_json"
+                    )?,
                     now.to_rfc3339(),
                     encode_enum(TaskState::Succeeded)?,
                 ],
@@ -1671,8 +2009,12 @@ impl SqliteStore {
             params![
                 run_id,
                 upgrade_id,
-                encode(analysis)?,
-                encode(&upgraded_tasks)?,
+                encode_protected(&self.protection, analysis, "run_upgrades.analysis_json")?,
+                encode_protected(
+                    &self.protection,
+                    &upgraded_tasks,
+                    "run_upgrades.upgraded_tasks_json"
+                )?,
                 now.to_rfc3339(),
             ],
         )?;
@@ -1689,8 +2031,9 @@ impl SqliteStore {
                 "analysis": analysis,
             }),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1719,7 +2062,18 @@ impl SqliteStore {
             .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
         let changed = transaction.execute(
             "UPDATE runs SET state = ?2, output_json = COALESCE(?3, output_json), updated_at = ?4 WHERE run_id = ?1",
-            params![run_id, encode_enum(state)?, output.map(encode).transpose()?, now.to_rfc3339()],
+            params![
+                run_id,
+                encode_enum(state)?,
+                output
+                    .map(|value| encode_protected(
+                        &self.protection,
+                        value,
+                        "runs.output_json"
+                    ))
+                    .transpose()?,
+                now.to_rfc3339()
+            ],
         )?;
         debug_assert_eq!(changed, 1);
         append_audit_tx(
@@ -1730,8 +2084,9 @@ impl SqliteStore {
             trace_id,
             &serde_json::json!({"from": current, "to": state}),
             now,
+            &self.protection,
         )?;
-        checkpoint_tx(&transaction, run_id, now)?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1758,8 +2113,12 @@ impl SqliteStore {
                 encode_enum(request.idempotency)?,
                 request.idempotency_key,
                 request.input_digest,
-                encode(&request.input)?,
-                request.expected_effect,
+                encode_protected(&self.protection, &request.input, "effects.input_json")?,
+                protect_text(
+                    &self.protection,
+                    &request.expected_effect,
+                    "effects.expected_effect"
+                )?,
                 request.trace_id,
                 encode_enum(EffectStatus::Requested)?,
                 now.to_rfc3339(),
@@ -1779,6 +2138,7 @@ impl SqliteStore {
                 "risk": request.risk,
             }),
             now,
+            &self.protection,
         )?;
         transaction.commit()?;
         Ok(EffectRecord {
@@ -1822,8 +2182,22 @@ impl SqliteStore {
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
         let (status, output, error, confirmed) = match result {
-            Ok(output) => (EffectStatus::Succeeded, Some(encode(output)?), None, true),
-            Err(error) => (EffectStatus::Failed, None, Some(error), false),
+            Ok(output) => (
+                EffectStatus::Succeeded,
+                Some(encode_protected(
+                    &self.protection,
+                    output,
+                    "effects.result_json",
+                )?),
+                None,
+                true,
+            ),
+            Err(error) => (
+                EffectStatus::Failed,
+                None,
+                Some(protect_text(&self.protection, error, "effects.error")?),
+                false,
+            ),
         };
         let changed = self.connection.lock().execute(
             "UPDATE effects SET status = ?2, result_json = ?3, error = ?4, confirmed = ?5, completed_at = ?6 WHERE effect_id = ?1 AND status = ?7",
@@ -1847,7 +2221,7 @@ impl SqliteStore {
             params![
                 effect_id,
                 encode_enum(EffectStatus::Uncertain)?,
-                error,
+                protect_text(&self.protection, error, "effects.error")?,
                 now.to_rfc3339(),
                 encode_enum(EffectStatus::Started)?
             ],
@@ -1898,8 +2272,16 @@ impl SqliteStore {
                         idempotency: decode_enum(&row.8, "effect.idempotency")?,
                         idempotency_key: row.9,
                         input_digest: row.10,
-                        input: decode(&row.11, "effect.input")?,
-                        expected_effect: row.12,
+                        input: decode_protected(
+                            &self.protection,
+                            &row.11,
+                            "effects.input_json",
+                        )?,
+                        expected_effect: expose_text(
+                            &self.protection,
+                            &row.12,
+                            "effects.expected_effect",
+                        )?,
                         trace_id: row.13,
                     },
                     status: decode_enum(&row.14, "effect.status")?,
@@ -1907,8 +2289,20 @@ impl SqliteStore {
                     requested_at: parse_time(&row.16, "effect.requested_at")?,
                     started_at: row.17.map(|value| parse_time(&value, "effect.started_at")).transpose()?,
                     completed_at: row.18.map(|value| parse_time(&value, "effect.completed_at")).transpose()?,
-                    result: row.19.map(|value| decode(&value, "effect.result")).transpose()?,
-                    error: row.20,
+                    result: row
+                        .19
+                        .map(|value| {
+                            decode_protected(
+                                &self.protection,
+                                &value,
+                                "effects.result_json",
+                            )
+                        })
+                        .transpose()?,
+                    error: row
+                        .20
+                        .map(|value| expose_text(&self.protection, &value, "effects.error"))
+                        .transpose()?,
                     confirmed: row.21,
                 })
             })
@@ -1976,7 +2370,7 @@ impl SqliteStore {
                 decode_reconciliation_row,
             )
             .optional()?
-            .map(reconciliation_from_row)
+            .map(|row| reconciliation_from_row(row, &self.protection))
             .transpose()?;
 
         if let Some(previous) = &previous {
@@ -2061,11 +2455,39 @@ impl SqliteStore {
                 source.0,
                 encode_enum(request.status)?,
                 request.actor,
-                request.reason,
-                encode(&request.evidence)?,
-                request.result.as_ref().map(encode).transpose()?,
-                request.result_schema.as_ref().map(encode).transpose()?,
-                encode(&request.authorization)?,
+                protect_text(
+                    &self.protection,
+                    &request.reason,
+                    "effect_reconciliations.reason"
+                )?,
+                encode_protected(
+                    &self.protection,
+                    &request.evidence,
+                    "effect_reconciliations.evidence_json"
+                )?,
+                request
+                    .result
+                    .as_ref()
+                    .map(|value| encode_protected(
+                        &self.protection,
+                        value,
+                        "effect_reconciliations.result_json"
+                    ))
+                    .transpose()?,
+                request
+                    .result_schema
+                    .as_ref()
+                    .map(|value| encode_protected(
+                        &self.protection,
+                        value,
+                        "effect_reconciliations.result_schema_json"
+                    ))
+                    .transpose()?,
+                encode_protected(
+                    &self.protection,
+                    &request.authorization,
+                    "effect_reconciliations.authorization_json"
+                )?,
                 request.compensation_effect_id,
                 supersedes_id,
                 request.trace_id,
@@ -2091,6 +2513,7 @@ impl SqliteStore {
             &request.trace_id,
             &payload,
             now,
+            &self.protection,
         )?;
         append_trace_tx(
             &transaction,
@@ -2107,6 +2530,7 @@ impl SqliteStore {
                 "attributes": payload,
             }),
             now,
+            &self.protection,
         )?;
         transaction.commit()?;
         Ok(EffectReconciliationRecord {
@@ -2174,7 +2598,7 @@ impl SqliteStore {
                 decode_reconciliation_row,
             )
             .optional()?
-            .map(reconciliation_from_row)
+            .map(|row| reconciliation_from_row(row, &self.protection))
             .transpose()
     }
 
@@ -2191,7 +2615,7 @@ impl SqliteStore {
         )?;
         statement
             .query_map([effect_id], decode_reconciliation_row)?
-            .map(|row| reconciliation_from_row(row?))
+            .map(|row| reconciliation_from_row(row?, &self.protection))
             .collect()
     }
 
@@ -2208,7 +2632,7 @@ impl SqliteStore {
         )?;
         statement
             .query_map([run_id], decode_reconciliation_row)?
-            .map(|row| reconciliation_from_row(row?))
+            .map(|row| reconciliation_from_row(row?, &self.protection))
             .collect()
     }
 
@@ -2234,7 +2658,29 @@ impl SqliteStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
             "INSERT INTO approvals (approval_id, run_id, effect_id, task_id, agent, tool, capability, risk, redacted_input_json, expected_effect, reason, trace_id, status, requested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', ?13)",
-            params![request.approval_id, request.run_id, request.effect_id, request.task_id, request.agent, request.tool, request.capability, request.risk, encode(&request.redacted_input)?, request.expected_effect, request.reason, request.trace_id, request.requested_at.to_rfc3339()],
+            params![
+                request.approval_id,
+                request.run_id,
+                request.effect_id,
+                request.task_id,
+                request.agent,
+                request.tool,
+                request.capability,
+                request.risk,
+                encode_protected(
+                    &self.protection,
+                    &request.redacted_input,
+                    "approvals.redacted_input_json"
+                )?,
+                protect_text(
+                    &self.protection,
+                    &request.expected_effect,
+                    "approvals.expected_effect"
+                )?,
+                protect_text(&self.protection, &request.reason, "approvals.reason")?,
+                request.trace_id,
+                request.requested_at.to_rfc3339()
+            ],
         )?;
         transaction.execute(
             "UPDATE effects SET status = ?2 WHERE effect_id = ?1",
@@ -2273,7 +2719,17 @@ impl SqliteStore {
         };
         transaction.execute(
             "UPDATE approvals SET status = ?2, resolved_at = ?3, resolved_by = ?4, resolution_reason = ?5 WHERE approval_id = ?1",
-            params![approval_id, status, now.to_rfc3339(), actor, reason],
+            params![
+                approval_id,
+                status,
+                now.to_rfc3339(),
+                actor,
+                protect_text(
+                    &self.protection,
+                    reason,
+                    "approvals.resolution_reason"
+                )?
+            ],
         )?;
         let effect_status = match resolution {
             ApprovalResolution::Approved => EffectStatus::Requested,
@@ -2320,9 +2776,17 @@ impl SqliteStore {
                     tool: row.4,
                     capability: row.5,
                     risk: row.6,
-                    redacted_input: decode(&row.7, "approval.input")?,
-                    expected_effect: row.8,
-                    reason: row.9,
+                    redacted_input: decode_protected(
+                        &self.protection,
+                        &row.7,
+                        "approvals.redacted_input_json",
+                    )?,
+                    expected_effect: expose_text(
+                        &self.protection,
+                        &row.8,
+                        "approvals.expected_effect",
+                    )?,
+                    reason: expose_text(&self.protection, &row.9, "approvals.reason")?,
                     trace_id: row.10,
                     requested_at: parse_time(&row.11, "approval.requested_at")?,
                 })
@@ -2353,6 +2817,7 @@ impl SqliteStore {
             trace_id,
             &Value::Null,
             now,
+            &self.protection,
         )?;
         transaction.commit()?;
         Ok(())
@@ -2388,7 +2853,11 @@ impl SqliteStore {
                     event_type: row.1,
                     task_id: row.2,
                     trace_id: row.3,
-                    payload: decode(&row.4, "audit.payload")?,
+                    payload: decode_protected(
+                        &self.protection,
+                        &row.4,
+                        "audit_events.payload_json",
+                    )?,
                     created_at: parse_time(&row.5, "audit.created_at")?,
                 })
             })
@@ -2441,7 +2910,7 @@ impl SqliteStore {
                 Ok(CheckpointRecord {
                     sequence: row.0,
                     format_version: row.1,
-                    state: decode(&row.2, "checkpoint.state")?,
+                    state: decode_protected(&self.protection, &row.2, "checkpoints.state_json")?,
                     checksum: row.3,
                     created_at: parse_time(&row.4, "checkpoint.created_at")?,
                 })
@@ -2479,7 +2948,11 @@ impl SqliteStore {
                     task_id: row.0,
                     provider: row.1,
                     format_version: row.2,
-                    continuation: decode(&row.3, "provider_session.continuation")?,
+                    continuation: decode_protected(
+                        &self.protection,
+                        &row.3,
+                        "provider_sessions.continuation_json",
+                    )?,
                     updated_at: parse_time(&row.4, "provider_session.updated_at")?,
                 })
             })
@@ -2540,7 +3013,13 @@ impl SqliteStore {
         )?;
         connection.execute(
             "INSERT INTO trace_events (run_id, sequence, trace_id, event_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![run_id, sequence, trace_id, encode(event)?, now.to_rfc3339()],
+            params![
+                run_id,
+                sequence,
+                trace_id,
+                encode_protected(&self.protection, event, "trace_events.event_json")?,
+                now.to_rfc3339()
+            ],
         )?;
         Ok(())
     }
@@ -2564,7 +3043,7 @@ impl SqliteStore {
                 Ok(TraceRecord {
                     sequence: row.0,
                     trace_id: row.1,
-                    event: decode(&row.2, "trace.event")?,
+                    event: decode_protected(&self.protection, &row.2, "trace_events.event_json")?,
                     created_at: parse_time(&row.3, "trace.created_at")?,
                 })
             })
@@ -2581,7 +3060,13 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         self.connection.lock().execute(
             "INSERT INTO long_term_memory (namespace, memory_key, value_json, expires_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(namespace, memory_key) DO UPDATE SET value_json = excluded.value_json, expires_at = excluded.expires_at, updated_at = excluded.updated_at",
-            params![namespace, key, encode(value)?, expires_at.map(|value| value.to_rfc3339()), now.to_rfc3339()],
+            params![
+                namespace,
+                key,
+                encode_protected(&self.protection, value, "long_term_memory.value_json")?,
+                expires_at.map(|value| value.to_rfc3339()),
+                now.to_rfc3339()
+            ],
         )?;
         Ok(())
     }
@@ -2596,7 +3081,17 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         self.connection.lock().execute(
             "INSERT INTO provider_sessions (run_id, task_id, provider, format_version, continuation_json, updated_at) VALUES (?1, ?2, ?3, 1, ?4, ?5) ON CONFLICT(run_id, task_id) DO UPDATE SET provider = excluded.provider, format_version = excluded.format_version, continuation_json = excluded.continuation_json, updated_at = excluded.updated_at",
-            params![run_id, task_id, provider, encode(continuation)?, now.to_rfc3339()],
+            params![
+                run_id,
+                task_id,
+                provider,
+                encode_protected(
+                    &self.protection,
+                    continuation,
+                    "provider_sessions.continuation_json"
+                )?,
+                now.to_rfc3339()
+            ],
         )?;
         Ok(())
     }
@@ -2631,12 +3126,22 @@ impl SqliteStore {
         let (effect_status, output, error, confirmed, call_status) = match result {
             Ok(output) => (
                 EffectStatus::Succeeded,
-                Some(encode(output)?),
+                Some(encode_protected(
+                    &self.protection,
+                    output,
+                    "effects.result_json",
+                )?),
                 None,
                 true,
                 "succeeded",
             ),
-            Err(error) => (EffectStatus::Failed, None, Some(error), false, "failed"),
+            Err(error) => (
+                EffectStatus::Failed,
+                None,
+                Some(protect_text(&self.protection, error, "effects.error")?),
+                false,
+                "failed",
+            ),
         };
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2672,7 +3177,13 @@ impl SqliteStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let effect_changed = transaction.execute(
             "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE effect_id = ?1 AND status = ?5",
-            params![effect_id, encode_enum(EffectStatus::Uncertain)?, error, now.to_rfc3339(), encode_enum(EffectStatus::Started)?],
+            params![
+                effect_id,
+                encode_enum(EffectStatus::Uncertain)?,
+                protect_text(&self.protection, error, "effects.error")?,
+                now.to_rfc3339(),
+                encode_enum(EffectStatus::Started)?
+            ],
         )?;
         if effect_changed != 1 {
             return Err(StoreError::EffectNotFound(effect_id.to_owned()));
@@ -2702,7 +3213,7 @@ impl SqliteStore {
             |row| row.get(0),
         ).optional()?;
         value
-            .map(|value| decode(&value, "long_term_memory.value"))
+            .map(|value| decode_protected(&self.protection, &value, "long_term_memory.value_json"))
             .transpose()
     }
 
@@ -3093,6 +3604,136 @@ fn configure(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn load_state_protection(
+    connection: &Connection,
+    resolver: &dyn StateKeyResolver,
+) -> Result<StateProtection, StoreError> {
+    let config = connection
+        .query_row(
+            "SELECT format_version, key_id, key_reference, key_check, maintenance FROM state_encryption WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, bool>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((format_version, key_id, key_reference, key_check, maintenance)) = config else {
+        return Ok(StateProtection::Plaintext);
+    };
+    if maintenance {
+        return Err(StoreError::Encryption(
+            "state-encryption maintenance transaction is incomplete".to_owned(),
+        ));
+    }
+    if format_version != encryption::ENCRYPTION_FORMAT_VERSION {
+        return Err(StoreError::Encryption(format!(
+            "unsupported state-encryption configuration version {format_version}"
+        )));
+    }
+    let codec = EncryptionCodec::resolve(&key_id, &key_reference, resolver)?;
+    codec.verify_key_check(&key_check)?;
+    Ok(StateProtection::Encrypted(codec))
+}
+
+fn encryption_inventory(
+    connection: &Connection,
+    protection: &StateProtection,
+) -> Result<EncryptionInventory, StoreError> {
+    let config = connection
+        .query_row(
+            "SELECT key_id, key_reference FROM state_encryption WHERE singleton = 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let mut protected_values = 0_u64;
+    let mut encrypted_values = 0_u64;
+    let mut plaintext_values = 0_u64;
+    let mut invalid_envelopes = 0_u64;
+    for column in SENSITIVE_COLUMNS {
+        let context = column.context();
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} IS NOT NULL",
+            column.column, column.table, column.column
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let values = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for value in values {
+            protected_values = protected_values.saturating_add(1);
+            if is_encrypted_value(&value) {
+                encrypted_values = encrypted_values.saturating_add(1);
+                let valid = if protection.is_enabled() {
+                    protection.expose(&value, &context).map(|_| ())
+                } else {
+                    validate_envelope(&value, &context)
+                };
+                if valid.is_err() {
+                    invalid_envelopes = invalid_envelopes.saturating_add(1);
+                }
+            } else {
+                plaintext_values = plaintext_values.saturating_add(1);
+            }
+        }
+    }
+    Ok(EncryptionInventory {
+        enabled: config.is_some(),
+        key_id: config.as_ref().map(|value| value.0.clone()),
+        key_reference: config.map(|value| value.1),
+        protected_values,
+        encrypted_values,
+        plaintext_values,
+        invalid_envelopes,
+    })
+}
+
+fn rewrite_sensitive_values(
+    transaction: &Transaction<'_>,
+    current: &StateProtection,
+    next: &StateProtection,
+) -> Result<(), StoreError> {
+    for column in SENSITIVE_COLUMNS {
+        let context = column.context();
+        let select = format!(
+            "SELECT rowid, {} FROM {} WHERE {} IS NOT NULL",
+            column.column, column.table, column.column
+        );
+        let values = {
+            let mut statement = transaction.prepare(&select)?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (row_id, stored) in values {
+            let plaintext = current.expose(&stored, &context)?;
+            let protected = next.protect(&plaintext, &context)?;
+            if column.table == "checkpoints" && column.column == "state_json" {
+                let checksum = hex::encode(Sha256::digest(protected.as_bytes()));
+                transaction.execute(
+                    "UPDATE checkpoints SET state_json = ?1, checksum = ?2 WHERE rowid = ?3",
+                    params![protected, checksum, row_id],
+                )?;
+            } else {
+                let update = format!(
+                    "UPDATE {} SET {} = ?1 WHERE rowid = ?2",
+                    column.table, column.column
+                );
+                transaction.execute(&update, params![protected, row_id])?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     let current: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if current > DATABASE_SCHEMA_VERSION {
@@ -3111,6 +3752,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (7_u32, MIGRATION_7),
         (8_u32, MIGRATION_8),
         (9_u32, MIGRATION_9),
+        (10_u32, MIGRATION_10),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -3121,6 +3763,46 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         transaction.pragma_update(None, "user_version", version)?;
         transaction.commit()?;
     }
+    install_encryption_triggers(connection)?;
+    Ok(())
+}
+
+fn install_encryption_triggers(connection: &Connection) -> Result<(), StoreError> {
+    for column in SENSITIVE_COLUMNS {
+        let insert_name = format!(
+            "enforce_encryption_{}_{}_insert",
+            column.table, column.column
+        );
+        let update_name = format!(
+            "enforce_encryption_{}_{}_update",
+            column.table, column.column
+        );
+        let expected_prefix = format!(
+            "'{ENVELOPE_PREFIX}' || (SELECT key_id FROM state_encryption WHERE singleton = 1) || ':'"
+        );
+        let condition = format!(
+            "(SELECT COUNT(*) FROM state_encryption WHERE singleton = 1 AND maintenance = 0) = 1
+             AND NEW.{column} IS NOT NULL
+             AND substr(NEW.{column}, 1, length({expected_prefix})) != {expected_prefix}",
+            column = column.column
+        );
+        connection.execute_batch(&format!(
+            "CREATE TRIGGER IF NOT EXISTS {insert_name}
+             BEFORE INSERT ON {table}
+             WHEN {condition}
+             BEGIN
+               SELECT RAISE(ABORT, 'protected field requires the current state-encryption key');
+             END;
+             CREATE TRIGGER IF NOT EXISTS {update_name}
+             BEFORE UPDATE OF {column} ON {table}
+             WHEN {condition}
+             BEGIN
+               SELECT RAISE(ABORT, 'protected field requires the current state-encryption key');
+             END;",
+            table = column.table,
+            column = column.column,
+        ))?;
+    }
     Ok(())
 }
 
@@ -3128,6 +3810,7 @@ fn checkpoint_tx(
     transaction: &Transaction<'_>,
     run_id: &str,
     now: DateTime<Utc>,
+    protection: &SharedStateProtection,
 ) -> Result<(), StoreError> {
     let run_state: (String, String, Option<String>, bool) = transaction.query_row(
         "SELECT state, working_memory_json, output_json, cancellation_requested FROM runs WHERE run_id = ?1",
@@ -3137,26 +3820,52 @@ fn checkpoint_tx(
     let mut statement = transaction.prepare(
         "SELECT task_id, state, attempt, output_json, error FROM task_states WHERE run_id = ?1 ORDER BY position",
     )?;
-    let tasks: Vec<Value> = statement
+    let task_rows = statement
         .query_map([run_id], |row| {
-            Ok(serde_json::json!({
-                "taskId": row.get::<_, String>(0)?,
-                "state": row.get::<_, String>(1)?,
-                "attempt": row.get::<_, u16>(2)?,
-                "output": row.get::<_, Option<String>>(3)?.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
-                "error": row.get::<_, Option<String>>(4)?,
-            }))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u16>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
         })?
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
+    let tasks = task_rows
+        .into_iter()
+        .map(|row| {
+            Ok(serde_json::json!({
+                "taskId": row.0,
+                "state": row.1,
+                "attempt": row.2,
+                "output": row.3
+                    .map(|raw| decode_protected::<Value>(
+                        protection,
+                        &raw,
+                        "task_states.output_json"
+                    ))
+                    .transpose()?,
+                "error": row.4
+                    .map(|raw| expose_text(protection, &raw, "task_states.error"))
+                    .transpose()?,
+            }))
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
     let state = serde_json::json!({
         "runId": run_id,
         "state": run_state.0,
-        "workingMemory": decode::<Value>(&run_state.1, "working_memory")?,
-        "output": run_state.2.map(|raw| decode::<Value>(&raw, "output")).transpose()?,
+        "workingMemory": decode_protected::<Value>(
+            protection,
+            &run_state.1,
+            "runs.working_memory_json"
+        )?,
+        "output": run_state.2
+            .map(|raw| decode_protected::<Value>(protection, &raw, "runs.output_json"))
+            .transpose()?,
         "cancellationRequested": run_state.3,
         "tasks": tasks,
     });
-    let state_json = encode(&state)?;
+    let state_json = encode_protected(protection, &state, "checkpoints.state_json")?;
     let checksum = hex::encode(Sha256::digest(state_json.as_bytes()));
     let sequence: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(sequence), 0) + 1 FROM checkpoints WHERE run_id = ?1",
@@ -3170,6 +3879,7 @@ fn checkpoint_tx(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_audit_tx(
     transaction: &Transaction<'_>,
     run_id: &str,
@@ -3178,6 +3888,7 @@ fn append_audit_tx(
     trace_id: &str,
     payload: &Value,
     now: DateTime<Utc>,
+    protection: &SharedStateProtection,
 ) -> Result<(), StoreError> {
     let sequence: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(sequence), 0) + 1 FROM audit_events WHERE run_id = ?1",
@@ -3186,7 +3897,16 @@ fn append_audit_tx(
     )?;
     transaction.execute(
         "INSERT INTO audit_events (run_id, sequence, event_version, event_type, task_id, trace_id, payload_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![run_id, sequence, AUDIT_EVENT_VERSION, event_type, task_id, trace_id, encode(payload)?, now.to_rfc3339()],
+        params![
+            run_id,
+            sequence,
+            AUDIT_EVENT_VERSION,
+            event_type,
+            task_id,
+            trace_id,
+            encode_protected(protection, payload, "audit_events.payload_json")?,
+            now.to_rfc3339()
+        ],
     )?;
     Ok(())
 }
@@ -3197,6 +3917,7 @@ fn append_trace_tx(
     trace_id: &str,
     event: &Value,
     now: DateTime<Utc>,
+    protection: &SharedStateProtection,
 ) -> Result<(), StoreError> {
     let sequence: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events WHERE run_id = ?1",
@@ -3209,7 +3930,7 @@ fn append_trace_tx(
             run_id,
             sequence,
             trace_id,
-            encode(event)?,
+            encode_protected(protection, event, "trace_events.event_json")?,
             now.to_rfc3339()
         ],
     )?;
@@ -3256,6 +3977,7 @@ fn decode_reconciliation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reconc
 
 fn reconciliation_from_row(
     row: ReconciliationRow,
+    protection: &SharedStateProtection,
 ) -> Result<EffectReconciliationRecord, StoreError> {
     if row.3 != 1 {
         return Err(StoreError::Incompatible(format!(
@@ -3270,17 +3992,27 @@ fn reconciliation_from_row(
         format_version: row.3,
         status: decode_enum(&row.4, "effect_reconciliation.status")?,
         actor: row.5,
-        reason: row.6,
-        evidence: decode(&row.7, "effect_reconciliation.evidence")?,
+        reason: expose_text(protection, &row.6, "effect_reconciliations.reason")?,
+        evidence: decode_protected(protection, &row.7, "effect_reconciliations.evidence_json")?,
         result: row
             .8
-            .map(|value| decode(&value, "effect_reconciliation.result"))
+            .map(|value| decode_protected(protection, &value, "effect_reconciliations.result_json"))
             .transpose()?,
         result_schema: row
             .9
-            .map(|value| decode(&value, "effect_reconciliation.result_schema"))
+            .map(|value| {
+                decode_protected(
+                    protection,
+                    &value,
+                    "effect_reconciliations.result_schema_json",
+                )
+            })
             .transpose()?,
-        authorization: decode(&row.10, "effect_reconciliation.authorization")?,
+        authorization: decode_protected(
+            protection,
+            &row.10,
+            "effect_reconciliations.authorization_json",
+        )?,
         compensation_effect_id: row.11,
         supersedes_id: row.12,
         trace_id: row.13,
@@ -3452,6 +4184,39 @@ fn encode<T: Serialize + ?Sized>(value: &T) -> Result<String, StoreError> {
     serde_json::to_string(value).map_err(StoreError::from)
 }
 
+fn encode_protected<T: Serialize + ?Sized>(
+    protection: &SharedStateProtection,
+    value: &T,
+    context: &str,
+) -> Result<String, StoreError> {
+    protection.read().protect(&encode(value)?, context)
+}
+
+fn decode_protected<T: DeserializeOwned>(
+    protection: &SharedStateProtection,
+    value: &str,
+    context: &str,
+) -> Result<T, StoreError> {
+    let plaintext = protection.read().expose(value, context)?;
+    decode(&plaintext, context)
+}
+
+fn protect_text(
+    protection: &SharedStateProtection,
+    value: &str,
+    context: &str,
+) -> Result<String, StoreError> {
+    protection.read().protect(value, context)
+}
+
+fn expose_text(
+    protection: &SharedStateProtection,
+    value: &str,
+    context: &str,
+) -> Result<String, StoreError> {
+    protection.read().expose(value, context)
+}
+
 fn encode_enum<T: Serialize>(value: T) -> Result<String, StoreError> {
     let value = serde_json::to_value(value)?;
     value
@@ -3481,6 +4246,39 @@ mod tests {
     use agentctl_core::dsl::{API_VERSION, EffectClass, Idempotency, Risk, parse_workflow};
     use agentctl_core::effect::EffectRequest;
     use tempfile::tempdir;
+    use zeroize::Zeroizing;
+
+    #[derive(Default)]
+    struct FixedKeyResolver {
+        keys: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl FixedKeyResolver {
+        fn with(reference: &str, byte: u8) -> Self {
+            Self {
+                keys: BTreeMap::from([(reference.to_owned(), vec![byte; 32])]),
+            }
+        }
+
+        fn and(mut self, reference: &str, byte: u8) -> Self {
+            self.keys.insert(reference.to_owned(), vec![byte; 32]);
+            self
+        }
+    }
+
+    impl StateKeyResolver for FixedKeyResolver {
+        fn resolve(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>, StoreError> {
+            self.keys
+                .get(reference)
+                .cloned()
+                .map(Zeroizing::new)
+                .ok_or_else(|| {
+                    StoreError::Encryption(format!(
+                        "fixed key reference `{reference}` is unavailable"
+                    ))
+                })
+        }
+    }
 
     fn fixture() -> (Value, CompiledPlan) {
         let source = r#"
@@ -3582,6 +4380,7 @@ spec:
             MIGRATION_6,
             MIGRATION_7,
             MIGRATION_8,
+            MIGRATION_9,
         ]
         .into_iter()
         .enumerate()
@@ -3614,6 +4413,283 @@ spec:
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn authenticated_envelope_binds_key_and_field_context() {
+        let codec = EncryptionCodec::from_bytes("key-2026", vec![7; 32]).expect("encryption codec");
+        let protected = codec
+            .encrypt(r#"{"secret":"value"}"#, "runs.inputs_json")
+            .expect("encrypt");
+        assert!(protected.starts_with("agentctl.encrypted.v1:key-2026:"));
+        assert!(!protected.contains(r#""secret":"value""#));
+        assert_eq!(
+            codec
+                .decrypt(&protected, "runs.inputs_json")
+                .expect("decrypt"),
+            r#"{"secret":"value"}"#
+        );
+        assert!(codec.decrypt(&protected, "runs.output_json").is_err());
+        let mut tampered = protected;
+        tampered.push('x');
+        assert!(codec.decrypt(&tampered, "runs.inputs_json").is_err());
+    }
+
+    #[test]
+    fn encryption_inventory_migration_rotation_and_fail_closed_reads_are_transactional() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("runtime.db");
+        let resolver = Arc::new(
+            FixedKeyResolver::with("AGENTCTL_TEST_OLD_KEY", 1).and("AGENTCTL_TEST_NEW_KEY", 2),
+        );
+        let store =
+            SqliteStore::open_with_key_resolver(&path, resolver.clone()).expect("open store");
+        let marker = "protected-marker-value";
+        let (mut workflow, plan) = fixture();
+        workflow["testSensitiveValue"] = Value::String(marker.to_owned());
+        store
+            .create_run(
+                "encrypted-run",
+                API_VERSION,
+                &workflow,
+                &plan,
+                &serde_json::json!({"secret": marker}),
+                &serde_json::json!({"working": marker}),
+                RunMode::Execute,
+                None,
+                directory.path(),
+                Utc::now(),
+                "trace-encryption",
+            )
+            .expect("create run");
+        let effect = EffectRequest::new(
+            "encrypted-run",
+            "one",
+            1,
+            1,
+            "test.sensitive",
+            EffectClass::Observe,
+            Risk::Low,
+            Idempotency::Idempotent,
+            serde_json::json!({"secret": marker}),
+            marker,
+            "trace-encryption",
+        );
+        store
+            .record_effect_request(&effect, Utc::now())
+            .expect("effect request");
+        store
+            .put_provider_session(
+                "encrypted-run",
+                "one",
+                "fake",
+                &serde_json::json!({"opaque": marker}),
+                Utc::now(),
+            )
+            .expect("provider session");
+        store
+            .put_long_term_memory(
+                "test",
+                "secret",
+                &serde_json::json!({"value": marker}),
+                None,
+                Utc::now(),
+            )
+            .expect("memory");
+        store
+            .record_trace_event(
+                "encrypted-run",
+                "trace-encryption",
+                &serde_json::json!({"detail": marker}),
+                Utc::now(),
+            )
+            .expect("trace");
+
+        let before = store.encryption_inventory().expect("inventory");
+        assert!(!before.enabled);
+        assert!(before.plaintext_values > 0);
+        let dry_run = store
+            .enable_encryption("keyXv1", "AGENTCTL_TEST_OLD_KEY", true, Utc::now())
+            .expect("dry run");
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.values_rewritten, 0);
+        assert!(!store.encryption_inventory().expect("inventory").enabled);
+
+        let enabled = store
+            .enable_encryption("keyXv1", "AGENTCTL_TEST_OLD_KEY", false, Utc::now())
+            .expect("enable encryption");
+        assert!(enabled.values_rewritten > 0);
+        let inventory = store.encryption_inventory().expect("encrypted inventory");
+        assert!(inventory.enabled);
+        assert_eq!(inventory.key_id.as_deref(), Some("keyXv1"));
+        assert_eq!(inventory.plaintext_values, 0);
+        assert_eq!(inventory.invalid_envelopes, 0);
+        assert_eq!(inventory.protected_values, inventory.encrypted_values);
+        assert!(
+            !serde_json::to_string(&inventory)
+                .expect("inventory json")
+                .contains(marker)
+        );
+        assert_eq!(
+            store.load_run("encrypted-run").expect("run").inputs["secret"],
+            marker
+        );
+        assert_eq!(
+            store.load_effect(&effect.id).expect("effect").request.input["secret"],
+            marker
+        );
+        assert_eq!(
+            store
+                .get_long_term_memory("test", "secret", Utc::now())
+                .expect("memory")
+                .expect("present")["value"],
+            marker
+        );
+        assert!(
+            !store
+                .checkpoints("encrypted-run")
+                .expect("checkpoints")
+                .is_empty()
+        );
+
+        let stale_ciphertext = {
+            let connection = Connection::open(&path).expect("raw connection");
+            for column in SENSITIVE_COLUMNS {
+                let sql = format!(
+                    "SELECT {} FROM {} WHERE {} IS NOT NULL",
+                    column.column, column.table, column.column
+                );
+                let mut statement = connection.prepare(&sql).expect("prepare");
+                let values = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .expect("query")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("values");
+                for value in values {
+                    assert!(is_encrypted_value(&value), "{}", column.context());
+                    assert!(!value.contains(marker), "{}", column.context());
+                }
+            }
+            assert!(
+                connection
+                    .execute(
+                        "UPDATE runs SET inputs_json = 'plaintext' WHERE run_id = 'encrypted-run'",
+                        [],
+                    )
+                    .is_err()
+            );
+            connection
+                .query_row(
+                    "SELECT inputs_json FROM runs WHERE run_id = 'encrypted-run'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("stale ciphertext")
+        };
+
+        let wrong = Arc::new(
+            FixedKeyResolver::with("AGENTCTL_TEST_OLD_KEY", 9).and("AGENTCTL_TEST_NEW_KEY", 2),
+        );
+        assert!(SqliteStore::open_with_key_resolver(&path, wrong).is_err());
+
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER fail_test_rotation
+                 BEFORE UPDATE OF inputs_json ON runs
+                 WHEN (SELECT maintenance FROM state_encryption WHERE singleton = 1) = 1
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected rotation failure');
+                 END;",
+            )
+            .expect("failure trigger");
+        assert!(
+            store
+                .rotate_encryption_key("key_v1", "AGENTCTL_TEST_NEW_KEY", false, Utc::now(),)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .encryption_inventory()
+                .expect("post-rollback inventory")
+                .key_id
+                .as_deref(),
+            Some("keyXv1")
+        );
+        assert_eq!(
+            store
+                .load_run("encrypted-run")
+                .expect("rollback run")
+                .inputs["secret"],
+            marker
+        );
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER fail_test_rotation")
+            .expect("drop trigger");
+
+        let rotation_plan = store
+            .rotate_encryption_key("key_v1", "AGENTCTL_TEST_NEW_KEY", true, Utc::now())
+            .expect("rotation plan");
+        assert!(rotation_plan.dry_run);
+        let rotated = store
+            .rotate_encryption_key("key_v1", "AGENTCTL_TEST_NEW_KEY", false, Utc::now())
+            .expect("rotate");
+        assert!(rotated.values_rewritten > 0);
+        assert_eq!(
+            store
+                .encryption_inventory()
+                .expect("rotated inventory")
+                .key_id
+                .as_deref(),
+            Some("key_v1")
+        );
+        assert!(
+            Connection::open(&path)
+                .expect("raw connection")
+                .execute(
+                    "UPDATE runs SET inputs_json = ?1 WHERE run_id = 'encrypted-run'",
+                    [stale_ciphertext],
+                )
+                .is_err()
+        );
+        let new_only = Arc::new(FixedKeyResolver::with("AGENTCTL_TEST_NEW_KEY", 2));
+        let reopened =
+            SqliteStore::open_with_key_resolver(&path, new_only).expect("open with new key");
+        assert_eq!(
+            reopened
+                .load_run("encrypted-run")
+                .expect("rotated run")
+                .inputs["secret"],
+            marker
+        );
+        assert!(
+            !reopened
+                .checkpoints("encrypted-run")
+                .expect("rotated checkpoints")
+                .is_empty()
+        );
+
+        let old_for_new = Arc::new(FixedKeyResolver::with("AGENTCTL_TEST_NEW_KEY", 1));
+        assert!(SqliteStore::open_with_key_resolver(&path, old_for_new).is_err());
+        {
+            let connection = Connection::open(&path).expect("raw connection");
+            let mut stored: String = connection
+                .query_row(
+                    "SELECT inputs_json FROM runs WHERE run_id = 'encrypted-run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("stored input");
+            stored.push('x');
+            connection
+                .execute(
+                    "UPDATE runs SET inputs_json = ?1 WHERE run_id = 'encrypted-run'",
+                    [stored],
+                )
+                .expect("tamper");
+        }
+        assert!(reopened.load_run("encrypted-run").is_err());
     }
 
     #[test]

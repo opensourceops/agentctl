@@ -689,6 +689,7 @@ Usage: agentctl db [OPTIONS] <COMMAND>
 Commands:
   stats
   migrate
+  encryption
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
@@ -696,6 +697,71 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
+```
+
+## `agentctl db encryption`
+
+```text
+Usage: agentctl db encryption [OPTIONS] <COMMAND>
+
+Commands:
+  inventory  Inventory protected fields without exposing their values
+  enable     Transactionally encrypt every identified sensitive field
+  rotate     Transactionally decrypt and re-encrypt every protected field with a new key
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl db encryption inventory`
+
+```text
+Inventory protected fields without exposing their values
+
+Usage: agentctl db encryption inventory [OPTIONS]
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl db encryption enable`
+
+```text
+Transactionally encrypt every identified sensitive field
+
+Usage: agentctl db encryption enable [OPTIONS] --key-id <KEY_ID> --key-env <KEY_ENV>
+
+Options:
+      --key-id <KEY_ID>
+      --output <OUTPUT>    [default: human] [possible values: human, json]
+      --color <COLOR>      [default: auto] [possible values: auto, always, never]
+      --key-env <KEY_ENV>  Environment variable containing a base64-encoded 32-byte key
+      --dry-run
+      --verbose
+  -h, --help               Print help
+```
+
+## `agentctl db encryption rotate`
+
+```text
+Transactionally decrypt and re-encrypt every protected field with a new key
+
+Usage: agentctl db encryption rotate [OPTIONS] --key-id <KEY_ID> --key-env <KEY_ENV>
+
+Options:
+      --key-id <KEY_ID>
+      --output <OUTPUT>    [default: human] [possible values: human, json]
+      --color <COLOR>      [default: auto] [possible values: auto, always, never]
+      --key-env <KEY_ENV>  Environment variable containing a base64-encoded 32-byte key
+      --dry-run
+      --verbose
+  -h, --help               Print help
 ```
 
 ## `agentctl memory`

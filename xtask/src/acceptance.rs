@@ -8,6 +8,8 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -15,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 30;
+const ACCEPTANCE_SCENARIOS: usize = 31;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1073,6 +1075,156 @@ pub fn run(root: &Path) -> Result<()> {
     let replay_id = string_at(&replay, "/data/runId")?;
     let replay_inspect = inspect(&binary, &workspace, &terminal_retry_db, replay_id)?;
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        31,
+        "state encryption migrates, rotates, inspects, and replays through the packaged CLI",
+    );
+    let encrypted_db = directory.path().join("encrypted.db");
+    let encrypted_source = successful_json(
+        &binary,
+        &workspace,
+        &run_args(&hello, &encrypted_db, &workspace, &[]),
+    )?;
+    let encrypted_source_id = string_at(&encrypted_source, "/data/runId")?;
+    let key_one = STANDARD.encode([31_u8; 32]);
+    let key_two = STANDARD.encode([47_u8; 32]);
+    let key_one_env = "AGENTCTL_TEST_STATE_KEY_ONE";
+    let key_two_env = "AGENTCTL_TEST_STATE_KEY_TWO";
+    let encryption_plan = json_with_env(
+        &binary,
+        &workspace,
+        &strings([
+            "db",
+            "--db",
+            path(&encrypted_db)?,
+            "encryption",
+            "enable",
+            "--key-id",
+            "acceptance-key-one",
+            "--key-env",
+            key_one_env,
+            "--dry-run",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        &[(key_one_env, key_one.as_str())],
+        0,
+    )?;
+    ensure_eq(&encryption_plan, "/data/dryRun", true)?;
+    let enabled = json_with_env(
+        &binary,
+        &workspace,
+        &strings([
+            "db",
+            "--db",
+            path(&encrypted_db)?,
+            "encryption",
+            "enable",
+            "--key-id",
+            "acceptance-key-one",
+            "--key-env",
+            key_one_env,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        &[(key_one_env, key_one.as_str())],
+        0,
+    )?;
+    ensure_eq(&enabled, "/data/operation", "enable")?;
+    let inventory = json_with_env(
+        &binary,
+        &workspace,
+        &strings([
+            "db",
+            "--db",
+            path(&encrypted_db)?,
+            "encryption",
+            "inventory",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        &[(key_one_env, key_one.as_str())],
+        0,
+    )?;
+    ensure_eq(&inventory, "/data/enabled", true)?;
+    ensure_eq(&inventory, "/data/keyId", "acceptance-key-one")?;
+    ensure_eq(&inventory, "/data/plaintextValues", 0_u64)?;
+    ensure_eq(&inventory, "/data/invalidEnvelopes", 0_u64)?;
+    let encrypted_inspect = json_with_env(
+        &binary,
+        &workspace,
+        &strings([
+            "inspect",
+            encrypted_source_id,
+            "--db",
+            path(&encrypted_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        &[(key_one_env, key_one.as_str())],
+        0,
+    )?;
+    ensure_eq(&encrypted_inspect, "/data/run/runId", encrypted_source_id)?;
+    let rotated = json_with_env(
+        &binary,
+        &workspace,
+        &strings([
+            "db",
+            "--db",
+            path(&encrypted_db)?,
+            "encryption",
+            "rotate",
+            "--key-id",
+            "acceptance-key-two",
+            "--key-env",
+            key_two_env,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        &[
+            (key_one_env, key_one.as_str()),
+            (key_two_env, key_two.as_str()),
+        ],
+        0,
+    )?;
+    ensure_eq(&rotated, "/data/operation", "rotate")?;
+    let encrypted_replay = json_with_env(
+        &binary,
+        &workspace,
+        &strings([
+            "replay",
+            encrypted_source_id,
+            "--db",
+            path(&encrypted_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        &[(key_two_env, key_two.as_str())],
+        0,
+    )?;
+    ensure_eq(&encrypted_replay, "/data/state", "succeeded")?;
+    let raw_connection = rusqlite::Connection::open(&encrypted_db)?;
+    let stored_inputs: String = raw_connection.query_row(
+        "SELECT inputs_json FROM runs WHERE run_id = ?1",
+        [encrypted_source_id],
+        |row| row.get(0),
+    )?;
+    ensure!(stored_inputs.starts_with("agentctl.encrypted.v1:acceptance-key-two:"));
+    ensure!(!serde_json::to_string(&inventory)?.contains(&key_one));
+    ensure!(!serde_json::to_string(&rotated)?.contains(&key_two));
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
@@ -2235,6 +2387,29 @@ fn json_with_removed_env(
     let mut command = command_for(binary, cwd, args);
     command.env_remove(removed);
     let output = output_with_code(command, code, "agentctl with removed credential")?;
+    parse_output(&output)
+}
+
+fn json_with_env(
+    binary: &Path,
+    cwd: &Path,
+    args: &[String],
+    environment: &[(&str, &str)],
+    code: i32,
+) -> Result<Value> {
+    let mut command = command_for(binary, cwd, args);
+    for name in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+    ] {
+        command.env_remove(name);
+    }
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    let output = output_with_code(command, code, "agentctl with state key reference")?;
     parse_output(&output)
 }
 
