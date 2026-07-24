@@ -26,6 +26,7 @@ Commands:
   schema      Print or write the generated workflow JSON Schema
   migrate     Translate an unversioned TypeScript-era workflow into v1alpha1
   packs       Inspect and verify a local reusable pack
+  artifacts   Inspect, verify, export, or collect durable artifacts
   db          Inspect the runtime database
   memory      Read or write namespaced long-term memory
   gc          Garbage-collect expired memory and old terminal runs

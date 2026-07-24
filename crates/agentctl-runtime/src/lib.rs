@@ -566,6 +566,14 @@ impl Runtime {
                 Ok((task, terminal))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for (task, _) in &source_tasks {
+            verify_artifacts(&self.store, &task.artifact_manifest).map_err(|message| {
+                RuntimeError::InvalidState(format!(
+                    "recorded replay cannot verify artifacts for task `{}`: {message}",
+                    task.task_id
+                ))
+            })?;
+        }
         let replay_id = self.ids.next_id("replay");
         let trace_id = self.ids.next_id("trace");
         self.store.create_run(
@@ -1120,7 +1128,7 @@ impl Runtime {
                 ));
                 continue;
             }
-            if let Err(message) = verify_artifacts(&target_policy, &source_task.artifact_manifest) {
+            if let Err(message) = verify_artifacts(&self.store, &source_task.artifact_manifest) {
                 blocked(
                     "artifact_integrity",
                     format!("artifact verification failed for task `{task_id}`: {message}"),
@@ -1772,7 +1780,14 @@ impl Runtime {
                         },
                         output_digest: versioned_json_digest(&output)?,
                         state_delta_digest: versioned_json_digest(&delta)?,
-                        artifact_manifest: collect_artifacts(&policy, &effects, &task.id)?,
+                        artifact_manifest: collect_artifacts(
+                            &self.store,
+                            &policy,
+                            &effects,
+                            run_id,
+                            &task.id,
+                            self.clock.now(),
+                        )?,
                         state_delta: delta,
                     };
                     self.store.complete_task(
@@ -3609,9 +3624,12 @@ fn read_bounded_text_sync(path: &Path) -> Result<String, RuntimeError> {
 }
 
 fn collect_artifacts(
+    store: &SqliteStore,
     policy: &PolicyEngine,
     effects: &[EffectRecord],
+    run_id: &str,
     task_id: &str,
+    now: DateTime<Utc>,
 ) -> Result<Vec<ArtifactRecord>, RuntimeError> {
     let mut paths = BTreeSet::new();
     for effect in effects.iter().filter(|effect| {
@@ -3627,19 +3645,10 @@ fn collect_artifacts(
     paths
         .into_iter()
         .map(|path| {
-            let resolved = policy.resolve_read_path(&path)?;
-            let metadata = std::fs::metadata(&resolved)?;
-            if metadata.len() > 16 * 1024 * 1024 {
-                return Err(RuntimeError::InvalidState(format!(
-                    "artifact `{path}` exceeds 16777216 bytes"
-                )));
-            }
-            let content = std::fs::read(&resolved)?;
-            Ok(ArtifactRecord {
-                path,
-                digest: format!("sha256:{}", digest(&content)),
-                size_bytes: metadata.len(),
-            })
+            let resolved = policy.resolve_artifact_path(&path)?;
+            store
+                .ingest_artifact(run_id, task_id, &resolved, &path, 16 * 1024 * 1024, now)
+                .map_err(RuntimeError::from)
         })
         .collect()
 }
@@ -3663,34 +3672,15 @@ fn collect_result_paths(value: &Value, paths: &mut BTreeSet<String>) {
     }
 }
 
-fn verify_artifacts(policy: &PolicyEngine, artifacts: &[ArtifactRecord]) -> Result<(), String> {
+fn verify_artifacts(store: &SqliteStore, artifacts: &[ArtifactRecord]) -> Result<(), String> {
     for artifact in artifacts {
         let restoration = format!(
-            "restore `{}` with expected digest `{}` and size {} bytes, or select its producer as an earlier repair root",
-            artifact.path, artifact.digest, artifact.size_bytes
+            "restore content-addressed blob `{}` for logical artifact `{}` with size {} bytes, import the legacy artifact, or select its producer as an earlier repair root",
+            artifact.digest, artifact.path, artifact.size_bytes
         );
-        let resolved = policy
-            .resolve_read_path(&artifact.path)
+        store
+            .verify_artifact_record(artifact)
             .map_err(|error| format!("{restoration}: {error}"))?;
-        let metadata =
-            std::fs::metadata(&resolved).map_err(|error| format!("{restoration}: {error}"))?;
-        if metadata.len() != artifact.size_bytes {
-            return Err(format!(
-                "`{}` size mismatch: expected {} bytes, found {}; {restoration}",
-                artifact.path,
-                artifact.size_bytes,
-                metadata.len()
-            ));
-        }
-        let content =
-            std::fs::read(&resolved).map_err(|error| format!("{restoration}: {error}"))?;
-        let actual = format!("sha256:{}", digest(&content));
-        if actual != artifact.digest {
-            return Err(format!(
-                "`{}` digest mismatch: expected `{}`, found `{actual}`; {restoration}",
-                artifact.path, artifact.digest
-            ));
-        }
     }
     Ok(())
 }
@@ -5325,12 +5315,10 @@ spec:
     }
 
     #[tokio::test]
-    async fn repair_blocks_when_reused_artifact_is_missing() {
+    async fn repair_uses_cas_after_workspace_deletion_and_blocks_blob_corruption() {
         let directory = tempdir().expect("tempdir");
         let store = SqliteStore::open_memory().expect("store");
-        let runtime = runtime(store.clone(), directory.path()).with_registry(
-            RuntimeRegistry::default().with_provider("fake", Arc::new(PanicProvider)),
-        );
+        let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
 apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
@@ -5352,24 +5340,7 @@ spec:
       needs: [first]
       with: { that: false }
 "#;
-        let repaired_yaml = source_yaml
-            .replace(
-                "spec:\n",
-                concat!(
-                    "spec:\n",
-                    "  providers:\n",
-                    "    fake: { kind: fake }\n",
-                    "  agents:\n",
-                    "    repaired:\n",
-                    "      provider: fake\n",
-                    "      model: fake\n",
-                    "      instructions: must never execute when the artifact is missing\n"
-                ),
-            )
-            .replace(
-                "    - id: second\n      uses: action:assert\n      needs: [first]\n      with: { that: false }",
-                "    - id: second\n      uses: agent:repaired\n      needs: [first]\n      with: { prompt: repaired }",
-            );
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
         let (source_workflow, source_plan) = compile_fixture(source_yaml);
         let source_run_id = match runtime
             .start(
@@ -5395,17 +5366,64 @@ spec:
             )
             .expect("plan");
         assert!(compatible.compatible, "{:?}", compatible.blocked_reuse);
-        let expected_digest = compatible.materialized_tasks[0].metadata.artifact_manifest[0]
-            .digest
-            .clone();
+        let artifact = compatible.materialized_tasks[0].metadata.artifact_manifest[0].clone();
         std::fs::remove_file(directory.path().join("artifact.txt")).expect("remove artifact");
+        let outcome = runtime
+            .repair(
+                &repaired_workflow,
+                &repaired_plan,
+                compatible,
+                None,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair from CAS");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert!(!directory.path().join("artifact.txt").exists());
+        assert!(
+            store
+                .verify_artifact_record(&artifact)
+                .expect("CAS blob remains valid")
+                .valid
+        );
+        let references = store
+            .artifact_references(Some(&outcome.run_id), Some("first"))
+            .expect("repair artifact references");
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].digest, artifact.digest);
+
+        let compatible_before_corruption = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["second".to_owned()],
+                false,
+            )
+            .expect("second compatible plan");
+        assert!(compatible_before_corruption.compatible);
+        let blob_path = store.artifact_root().join(&artifact.store_path);
+        let mut permissions = std::fs::metadata(&blob_path)
+            .expect("blob metadata")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&blob_path, permissions).expect("make blob writable");
+        std::fs::write(&blob_path, b"corrupt").expect("corrupt blob");
+
         let stats_before = store.stats().expect("stats");
         assert!(matches!(
             runtime
                 .repair(
                     &repaired_workflow,
                     &repaired_plan,
-                    compatible,
+                    compatible_before_corruption,
                     None,
                     RunOptions::default(),
                     &CancellationToken::new(),
@@ -5413,6 +5431,8 @@ spec:
                 .await,
             Err(RuntimeError::RepairBlocked { .. })
         ));
+        assert_eq!(store.stats().expect("stats"), stats_before);
+        assert!(runtime.replay(&source_run_id).await.is_err());
         assert_eq!(store.stats().expect("stats"), stats_before);
         let plan = runtime
             .plan_repair(
@@ -5422,13 +5442,13 @@ spec:
                 &["second".to_owned()],
                 false,
             )
-            .expect("blocked plan");
+            .expect("blocked corrupt plan");
         assert!(!plan.compatible);
         assert!(plan.blocked_reuse.iter().any(|block| {
             block.task_id == "first"
                 && block.rule == "artifact_integrity"
                 && block.message.contains("artifact.txt")
-                && block.message.contains(&expected_digest)
+                && block.message.contains(&artifact.digest)
                 && block.message.contains("earlier repair root")
         }));
         assert_eq!(store.stats().expect("stats"), stats_before);

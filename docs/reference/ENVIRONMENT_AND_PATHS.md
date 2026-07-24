@@ -29,7 +29,8 @@ Normal `cargo xtask docs-verify`, `cargo xtask verify`, and `cargo xtask accepta
 | Workflow file | positional argument | Read-only input, at most 1 MiB. |
 | Workspace | current directory | Override with `--workspace`. |
 | Runtime database | `.agentctl/runtime.db` | Override with `--db`; SQLite WAL belongs to the same state set. |
-| Artifact path | workflow-defined | Must remain under a policy-approved writable root. |
+| CAS artifact root | `<database-parent>/artifacts` | Immutable SHA-256 blobs; back up with SQLite. |
+| Workflow output path | workflow-defined | Must remain under a policy-approved writable root; successful bounded files are ingested into CAS. |
 
 ## Container paths
 
@@ -37,8 +38,8 @@ Normal `cargo xtask docs-verify`, `cargo xtask verify`, and `cargo xtask accepta
 | --- | --- |
 | `/config` | reviewed read-only configuration |
 | `/workspace` | normally read-only workspace |
-| `/state` | writable durable state |
-| `/artifacts` | writable collected output |
+| `/state` | writable SQLite and content-addressed durable state |
+| `/artifacts` | writable workflow output/export mount |
 | `/tmp` | small runtime tmpfs when the root filesystem is read-only |
 
 State and artifacts must be writable by UID/GID 65532 in the production image.

@@ -21,10 +21,10 @@ The `Containerfile` combines the secret with public roots on a tmpfs mount for t
 | --- | --- |
 | `/config` | read-only reviewed workflow and pack configuration |
 | `/workspace` | usually read-only source/fixture workspace |
-| `/state` | writable SQLite database and durable recovery state |
-| `/artifacts` | writable declared workflow artifacts |
+| `/state` | writable SQLite database, CAS blobs, and durable recovery state |
+| `/artifacts` | writable declared workflow output/export surface |
 
-Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or `--inputs` JSON. Prefer files for large or sensitive non-provider inputs. Provider credentials are environment references only; never put a key in CLI arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can write them and the runner's artifact collector can read them. Durable state may contain prompts and outputs; protect it like a sensitive build artifact.
+Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or `--inputs` JSON. Prefer files for large or sensitive non-provider inputs. Provider credentials are environment references only; never put a key in CLI arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can write them. Successful bounded workflow files are copied into `/state/artifacts/sha256`; `/artifacts` remains the convenient CI collection surface. Durable state may contain prompts, outputs, and artifact bytes; protect it like a sensitive build artifact.
 
 The image emits exactly one versioned JSON result on stdout with `--output json`; failures emit one versioned JSON error on stderr. The document includes exit status semantics, run/trace IDs, final state, and declared outputs. Progress is not mixed into stdout. Persist `/state` for later `inspect`, approval resolution, `resume`, `replay`, or `repair`.
 
@@ -46,7 +46,7 @@ docker run --rm --read-only --user 65532:65532 \
 
 The value form `--env OPENAI_API_KEY` forwards an already protected host variable without placing its value in the command. The credential-free container acceptance uses the same command with the fake provider and without that environment variable.
 
-For selective repair, mount the corrected workflow under `/config`, keep the source database under `/state`, and retain any workspace artifacts required by upstream reuse. Plan without forwarding provider credentials:
+For selective repair, mount the corrected workflow under `/config` and keep the source database plus its `/state/artifacts` CAS under `/state`. The original workspace output can be absent after successful ingestion. Plan without forwarding provider credentials:
 
 ```console
 docker run --rm --read-only --user 65532:65532 --network none \

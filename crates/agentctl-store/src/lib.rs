@@ -1,13 +1,16 @@
 //! Versioned SQLite persistence for agentctl.
 
+pub mod artifact;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use agentctl_core::effect::{EffectRecord, EffectRequest, EffectStatus};
 use agentctl_core::state::{RunState, TaskState};
 use agentctl_core::{CompiledPlan, PLAN_FORMAT_VERSION};
+use artifact::{ArtifactStore, ArtifactStoreError, ArtifactVerification, LocalArtifactStore};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -16,10 +19,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 5;
+pub const DATABASE_SCHEMA_VERSION: u32 = 6;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
+const ARTIFACT_INGEST_LEASE_MINUTES: i64 = 60;
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE runs (
@@ -215,9 +219,48 @@ CREATE INDEX idx_runs_source_run ON runs(source_run_id);
 CREATE INDEX idx_tasks_disposition ON task_states(run_id, disposition);
 "#;
 
+const MIGRATION_6: &str = r#"
+CREATE TABLE artifact_blobs (
+  digest TEXT PRIMARY KEY,
+  algorithm TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  relative_path TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  last_verified_at TEXT
+);
+CREATE TABLE artifact_refs (
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  logical_path TEXT NOT NULL,
+  logical_name TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  digest TEXT NOT NULL REFERENCES artifact_blobs(digest),
+  source_run_id TEXT,
+  source_task_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, task_id, logical_path),
+  FOREIGN KEY (run_id, task_id) REFERENCES task_states(run_id, task_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_artifact_refs_digest ON artifact_refs(digest);
+CREATE INDEX idx_artifact_refs_run_task ON artifact_refs(run_id, task_id);
+CREATE TABLE artifact_ingests (
+  run_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  logical_path TEXT NOT NULL,
+  digest TEXT NOT NULL REFERENCES artifact_blobs(digest) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, task_id, logical_path),
+  FOREIGN KEY (run_id, task_id) REFERENCES task_states(run_id, task_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_artifact_ingests_expiry ON artifact_ingests(expires_at);
+"#;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
+    artifact_store: Arc<LocalArtifactStore>,
+    artifact_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Error)]
@@ -244,6 +287,8 @@ pub enum StoreError {
     EffectNotFound(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Artifact(#[from] ArtifactStoreError),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -296,6 +341,48 @@ pub struct ArtifactRecord {
     pub path: String,
     pub digest: String,
     pub size_bytes: u64,
+    #[serde(default)]
+    pub media_type: String,
+    #[serde(default)]
+    pub logical_name: String,
+    #[serde(default)]
+    pub store_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactBlobRecord {
+    pub digest: String,
+    pub algorithm: String,
+    pub size_bytes: u64,
+    pub relative_path: String,
+    pub created_at: DateTime<Utc>,
+    pub last_verified_at: Option<DateTime<Utc>>,
+    pub reference_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactReference {
+    pub run_id: String,
+    pub task_id: String,
+    pub logical_path: String,
+    pub logical_name: String,
+    pub media_type: String,
+    pub digest: String,
+    pub source_run_id: Option<String>,
+    pub source_task_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactGcReport {
+    pub considered: u64,
+    pub removed: Vec<String>,
+    pub reclaimed_bytes: u64,
+    pub temporary_files_considered: u64,
+    pub temporary_files_removed: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -447,6 +534,9 @@ pub struct DatabaseStats {
     pub tool_calls: i64,
     pub trace_events: i64,
     pub long_term_memory: i64,
+    pub artifact_blobs: i64,
+    pub artifact_references: i64,
+    pub artifact_ingests: i64,
 }
 
 impl SqliteStore {
@@ -467,8 +557,17 @@ impl SqliteStore {
         }
         let connection = Connection::open(path)?;
         configure(&connection)?;
+        let state_root = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let artifact_store = LocalArtifactStore::open(state_root.join("artifacts"))?;
+        let _artifact_file_lock = artifact_store.lock_exclusive()?;
+        recover_artifact_quarantine(&connection, &artifact_store)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            artifact_store: Arc::new(artifact_store),
+            artifact_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -478,6 +577,87 @@ impl SqliteStore {
         migrate(&mut connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            artifact_store: Arc::new(LocalArtifactStore::temporary()?),
+            artifact_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    #[must_use]
+    pub fn artifact_root(&self) -> &Path {
+        self.artifact_store.root()
+    }
+
+    pub fn ingest_artifact(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        source: &Path,
+        logical_path: &str,
+        max_bytes: u64,
+        now: DateTime<Utc>,
+    ) -> Result<ArtifactRecord, StoreError> {
+        let _guard = self.artifact_lock.lock();
+        let _file_lock = self.artifact_store.lock_exclusive()?;
+        let logical_name = Path::new(logical_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                StoreError::Incompatible(format!(
+                    "artifact logical path `{logical_path}` has no valid file name"
+                ))
+            })?;
+        let media_type = media_type_for_path(Path::new(logical_path));
+        let blob = self.artifact_store.ingest(source, max_bytes)?;
+        let size_bytes = i64::try_from(blob.size_bytes).map_err(|_| {
+            StoreError::Incompatible(format!(
+                "artifact `{logical_path}` size exceeds SQLite integer range"
+            ))
+        })?;
+        let expires_at = now + chrono::Duration::minutes(ARTIFACT_INGEST_LEASE_MINUTES);
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO artifact_blobs (digest, algorithm, size_bytes, relative_path, created_at) VALUES (?1, 'sha256', ?2, ?3, ?4) ON CONFLICT(digest) DO NOTHING",
+            params![
+                blob.digest,
+                size_bytes,
+                blob.relative_path,
+                now.to_rfc3339(),
+            ],
+        )?;
+        let stored: (i64, String) = transaction.query_row(
+            "SELECT size_bytes, relative_path FROM artifact_blobs WHERE digest = ?1",
+            [&blob.digest],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if sqlite_u64(stored.0, "artifact_blob.size_bytes")? != blob.size_bytes
+            || stored.1 != blob.relative_path
+        {
+            return Err(StoreError::Corrupt(format!(
+                "artifact metadata for `{}` conflicts with its existing blob record",
+                blob.digest
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO artifact_ingests (run_id, task_id, logical_path, digest, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(run_id, task_id, logical_path) DO UPDATE SET digest = excluded.digest, expires_at = excluded.expires_at, created_at = excluded.created_at",
+            params![
+                run_id,
+                task_id,
+                logical_path,
+                blob.digest,
+                expires_at.to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(ArtifactRecord {
+            path: logical_path.to_owned(),
+            digest: blob.digest,
+            size_bytes: blob.size_bytes,
+            media_type: media_type.to_owned(),
+            logical_name: logical_name.to_owned(),
+            store_path: blob.relative_path,
         })
     }
 
@@ -572,6 +752,14 @@ impl SqliteStore {
             .iter()
             .map(|task| (task.task_id.as_str(), task))
             .collect::<BTreeMap<_, _>>();
+        let _artifact_guard = self.artifact_lock.lock();
+        let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
+        for task in reused_tasks {
+            verify_artifact_manifest(
+                self.artifact_store.as_ref(),
+                &task.metadata.artifact_manifest,
+            )?;
+        }
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
@@ -639,6 +827,15 @@ impl SqliteStore {
                         "outputDigest": task.metadata.output_digest,
                         "decision": task.reuse_decision,
                     }),
+                    now,
+                )?;
+                record_artifact_references_tx(
+                    &transaction,
+                    run_id,
+                    task_id,
+                    &task.metadata.artifact_manifest,
+                    Some(&task.source_run_id),
+                    Some(&task.source_task_id),
                     now,
                 )?;
             } else {
@@ -977,6 +1174,9 @@ impl SqliteStore {
         now: DateTime<Utc>,
         trace_id: &str,
     ) -> Result<(), StoreError> {
+        let _artifact_guard = self.artifact_lock.lock();
+        let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
+        verify_artifact_manifest(self.artifact_store.as_ref(), &metadata.artifact_manifest)?;
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current: String = transaction
@@ -1012,6 +1212,19 @@ impl SqliteStore {
                 encode(&metadata.artifact_manifest)?,
                 now.to_rfc3339(),
             ],
+        )?;
+        record_artifact_references_tx(
+            &transaction,
+            run_id,
+            task_id,
+            &metadata.artifact_manifest,
+            None,
+            None,
+            now,
+        )?;
+        transaction.execute(
+            "DELETE FROM artifact_ingests WHERE run_id = ?1 AND task_id = ?2",
+            params![run_id, task_id],
         )?;
         if let Some(memory) = working_memory {
             transaction.execute(
@@ -1051,6 +1264,9 @@ impl SqliteStore {
         now: DateTime<Utc>,
         trace_id: &str,
     ) -> Result<(), StoreError> {
+        let _artifact_guard = self.artifact_lock.lock();
+        let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
+        verify_artifact_manifest(self.artifact_store.as_ref(), &source.artifact_manifest)?;
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = transaction.execute(
@@ -1084,6 +1300,15 @@ impl SqliteStore {
                 task_id: source.task_id.clone(),
             });
         }
+        record_artifact_references_tx(
+            &transaction,
+            replay_run_id,
+            &source.task_id,
+            &source.artifact_manifest,
+            Some(&source.run_id),
+            Some(&source.task_id),
+            now,
+        )?;
         append_audit_tx(
             &transaction,
             replay_run_id,
@@ -1882,6 +2107,303 @@ impl SqliteStore {
             .transpose()
     }
 
+    pub fn artifact_references(
+        &self,
+        run_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<Vec<ArtifactReference>, StoreError> {
+        let connection = self.connection.lock();
+        let mut references = Vec::new();
+        match (run_id, task_id) {
+            (Some(run_id), Some(task_id)) => {
+                let mut statement = connection.prepare(
+                    "SELECT run_id, task_id, logical_path, logical_name, media_type, digest, source_run_id, source_task_id, created_at FROM artifact_refs WHERE run_id = ?1 AND task_id = ?2 ORDER BY logical_path",
+                )?;
+                let rows =
+                    statement.query_map(params![run_id, task_id], decode_artifact_ref_row)?;
+                for row in rows {
+                    references.push(artifact_reference_from_row(row?)?);
+                }
+            }
+            (Some(run_id), None) => {
+                let mut statement = connection.prepare(
+                    "SELECT run_id, task_id, logical_path, logical_name, media_type, digest, source_run_id, source_task_id, created_at FROM artifact_refs WHERE run_id = ?1 ORDER BY task_id, logical_path",
+                )?;
+                let rows = statement.query_map([run_id], decode_artifact_ref_row)?;
+                for row in rows {
+                    references.push(artifact_reference_from_row(row?)?);
+                }
+            }
+            (None, None) => {
+                let mut statement = connection.prepare(
+                    "SELECT run_id, task_id, logical_path, logical_name, media_type, digest, source_run_id, source_task_id, created_at FROM artifact_refs ORDER BY run_id, task_id, logical_path",
+                )?;
+                let rows = statement.query_map([], decode_artifact_ref_row)?;
+                for row in rows {
+                    references.push(artifact_reference_from_row(row?)?);
+                }
+            }
+            (None, Some(_)) => {
+                return Err(StoreError::Incompatible(
+                    "artifact task filter requires a run filter".to_owned(),
+                ));
+            }
+        }
+        Ok(references)
+    }
+
+    pub fn artifact_blobs(&self) -> Result<Vec<ArtifactBlobRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT b.digest, b.algorithm, b.size_bytes, b.relative_path, b.created_at, b.last_verified_at, COUNT(r.digest) FROM artifact_blobs b LEFT JOIN artifact_refs r ON r.digest = b.digest GROUP BY b.digest ORDER BY b.created_at, b.digest",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?
+            .map(|row| {
+                let row = row?;
+                Ok(ArtifactBlobRecord {
+                    digest: row.0,
+                    algorithm: row.1,
+                    size_bytes: sqlite_u64(row.2, "artifact_blob.size_bytes")?,
+                    relative_path: row.3,
+                    created_at: parse_time(&row.4, "artifact_blob.created_at")?,
+                    last_verified_at: row
+                        .5
+                        .map(|value| parse_time(&value, "artifact_blob.last_verified_at"))
+                        .transpose()?,
+                    reference_count: sqlite_u64(row.6, "artifact_blob.reference_count")?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn artifact_blob(&self, digest: &str) -> Result<ArtifactBlobRecord, StoreError> {
+        let row = self
+            .connection
+            .lock()
+            .query_row(
+                "SELECT b.digest, b.algorithm, b.size_bytes, b.relative_path, b.created_at, b.last_verified_at, (SELECT COUNT(*) FROM artifact_refs r WHERE r.digest = b.digest) FROM artifact_blobs b WHERE b.digest = ?1",
+                [digest],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                StoreError::Incompatible(format!("artifact blob `{digest}` was not found"))
+            })?;
+        Ok(ArtifactBlobRecord {
+            digest: row.0,
+            algorithm: row.1,
+            size_bytes: sqlite_u64(row.2, "artifact_blob.size_bytes")?,
+            relative_path: row.3,
+            created_at: parse_time(&row.4, "artifact_blob.created_at")?,
+            last_verified_at: row
+                .5
+                .map(|value| parse_time(&value, "artifact_blob.last_verified_at"))
+                .transpose()?,
+            reference_count: sqlite_u64(row.6, "artifact_blob.reference_count")?,
+        })
+    }
+
+    pub fn verify_artifact(
+        &self,
+        digest: &str,
+        now: DateTime<Utc>,
+    ) -> Result<ArtifactVerification, StoreError> {
+        let blob = self.artifact_blob(digest)?;
+        let _guard = self.artifact_lock.lock();
+        let _file_lock = self.artifact_store.lock_exclusive()?;
+        let verification = self.artifact_store.verify(digest, blob.size_bytes)?;
+        self.connection.lock().execute(
+            "UPDATE artifact_blobs SET last_verified_at = ?2 WHERE digest = ?1",
+            params![digest, now.to_rfc3339()],
+        )?;
+        Ok(verification)
+    }
+
+    pub fn verify_artifact_record(
+        &self,
+        artifact: &ArtifactRecord,
+    ) -> Result<ArtifactVerification, StoreError> {
+        if artifact.store_path.is_empty() {
+            return Err(StoreError::Incompatible(format!(
+                "artifact `{}` has no content-addressed blob reference",
+                artifact.path
+            )));
+        }
+        let blob = self.artifact_blob(&artifact.digest)?;
+        if blob.size_bytes != artifact.size_bytes || blob.relative_path != artifact.store_path {
+            return Err(StoreError::Corrupt(format!(
+                "artifact manifest for `{}` disagrees with blob metadata `{}`",
+                artifact.path, artifact.digest
+            )));
+        }
+        let _guard = self.artifact_lock.lock();
+        let _file_lock = self.artifact_store.lock_exclusive()?;
+        self.artifact_store
+            .verify(&artifact.digest, artifact.size_bytes)
+            .map_err(StoreError::from)
+    }
+
+    pub fn export_artifact(
+        &self,
+        digest: &str,
+        destination: &Path,
+        overwrite: bool,
+    ) -> Result<(), StoreError> {
+        let blob = self.artifact_blob(digest)?;
+        let _guard = self.artifact_lock.lock();
+        let _file_lock = self.artifact_store.lock_exclusive()?;
+        self.artifact_store
+            .export(digest, blob.size_bytes, destination, overwrite)?;
+        Ok(())
+    }
+
+    pub fn garbage_collect_artifacts(
+        &self,
+        before: DateTime<Utc>,
+        dry_run: bool,
+    ) -> Result<ArtifactGcReport, StoreError> {
+        let _artifact_guard = self.artifact_lock.lock();
+        let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
+        let stored_blobs = self.artifact_store.stored_blobs()?;
+        let temporary_files = self
+            .artifact_store
+            .stale_temporary_files(SystemTime::from(before))?;
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tracked_candidates = {
+            let mut statement = transaction.prepare(
+                "SELECT b.digest, b.size_bytes FROM artifact_blobs b LEFT JOIN artifact_refs r ON r.digest = b.digest WHERE r.digest IS NULL AND b.created_at < ?1 AND NOT EXISTS (SELECT 1 FROM artifact_ingests i WHERE i.digest = b.digest AND i.expires_at > ?2) ORDER BY b.created_at, b.digest",
+            )?;
+            statement
+                .query_map(
+                    params![before.to_rfc3339(), Utc::now().to_rfc3339()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut candidates = tracked_candidates
+            .into_iter()
+            .map(|(digest, size)| {
+                sqlite_u64(size, "artifact_gc.size_bytes").map(|size| (digest, (size, true)))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let metadata_digests = {
+            let mut statement = transaction.prepare("SELECT digest FROM artifact_blobs")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for blob in stored_blobs {
+            if blob.modified_at < SystemTime::from(before)
+                && !metadata_digests.contains(&blob.digest)
+            {
+                candidates.insert(blob.digest, (blob.size_bytes, false));
+            }
+        }
+        let considered = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
+        let reclaimed_bytes = candidates
+            .values()
+            .map(|candidate| candidate.0)
+            .chain(temporary_files.iter().map(|file| file.1))
+            .fold(0_u64, u64::saturating_add);
+        let temporary_files_considered = u64::try_from(temporary_files.len()).unwrap_or(u64::MAX);
+        if dry_run {
+            transaction.rollback()?;
+            return Ok(ArtifactGcReport {
+                considered,
+                removed: Vec::new(),
+                reclaimed_bytes,
+                temporary_files_considered,
+                temporary_files_removed: 0,
+            });
+        }
+
+        let mut staged = Vec::new();
+        for (digest, (_, tracked)) in &candidates {
+            match self.artifact_store.stage_remove(digest) {
+                Ok(Some(path)) => staged.push((digest.clone(), path)),
+                Ok(None) => {}
+                Err(error) => {
+                    for (staged_digest, path) in &staged {
+                        let _ = self.artifact_store.restore_staged(staged_digest, path);
+                    }
+                    return Err(error.into());
+                }
+            }
+            if *tracked {
+                let changed = match transaction.execute(
+                    "DELETE FROM artifact_blobs WHERE digest = ?1 AND NOT EXISTS (SELECT 1 FROM artifact_refs WHERE digest = ?1) AND NOT EXISTS (SELECT 1 FROM artifact_ingests WHERE digest = ?1 AND expires_at > ?2)",
+                    params![digest, Utc::now().to_rfc3339()],
+                ) {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        for (staged_digest, path) in &staged {
+                            let _ = self.artifact_store.restore_staged(staged_digest, path);
+                        }
+                        return Err(error.into());
+                    }
+                };
+                if changed != 1 {
+                    for (staged_digest, path) in &staged {
+                        let _ = self.artifact_store.restore_staged(staged_digest, path);
+                    }
+                    return Err(StoreError::Incompatible(format!(
+                        "artifact `{digest}` became reachable during garbage collection"
+                    )));
+                }
+            }
+        }
+        if let Err(error) = transaction.execute(
+            "DELETE FROM artifact_ingests WHERE expires_at <= ?1",
+            [Utc::now().to_rfc3339()],
+        ) {
+            for (digest, path) in &staged {
+                let _ = self.artifact_store.restore_staged(digest, path);
+            }
+            return Err(error.into());
+        }
+        if let Err(error) = transaction.commit() {
+            for (digest, path) in &staged {
+                let _ = self.artifact_store.restore_staged(digest, path);
+            }
+            return Err(error.into());
+        }
+        for (_, path) in &staged {
+            self.artifact_store.finish_staged(path)?;
+        }
+        for (path, _) in &temporary_files {
+            std::fs::remove_file(path)?;
+        }
+        Ok(ArtifactGcReport {
+            considered,
+            removed: candidates.keys().cloned().collect(),
+            reclaimed_bytes,
+            temporary_files_considered,
+            temporary_files_removed: temporary_files_considered,
+        })
+    }
+
     pub fn garbage_collect(&self, before: DateTime<Utc>) -> Result<usize, StoreError> {
         let connection = self.connection.lock();
         let expired = connection.execute(
@@ -1920,6 +2442,9 @@ impl SqliteStore {
                 "tool_calls",
                 "trace_events",
                 "long_term_memory",
+                "artifact_blobs",
+                "artifact_refs",
+                "artifact_ingests",
             ];
             if !allowed.contains(&table) {
                 return Err(StoreError::Incompatible(
@@ -1946,6 +2471,9 @@ impl SqliteStore {
             tool_calls: count("tool_calls")?,
             trace_events: count("trace_events")?,
             long_term_memory: count("long_term_memory")?,
+            artifact_blobs: count("artifact_blobs")?,
+            artifact_references: count("artifact_refs")?,
+            artifact_ingests: count("artifact_ingests")?,
         })
     }
 
@@ -1976,6 +2504,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (3_u32, MIGRATION_3),
         (4_u32, MIGRATION_4),
         (5_u32, MIGRATION_5),
+        (6_u32, MIGRATION_6),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -2056,6 +2585,166 @@ fn append_audit_tx(
     Ok(())
 }
 
+type ArtifactReferenceRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+fn decode_artifact_ref_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactReferenceRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+    ))
+}
+
+fn artifact_reference_from_row(row: ArtifactReferenceRow) -> Result<ArtifactReference, StoreError> {
+    Ok(ArtifactReference {
+        run_id: row.0,
+        task_id: row.1,
+        logical_path: row.2,
+        logical_name: row.3,
+        media_type: row.4,
+        digest: row.5,
+        source_run_id: row.6,
+        source_task_id: row.7,
+        created_at: parse_time(&row.8, "artifact_reference.created_at")?,
+    })
+}
+
+fn verify_artifact_manifest(
+    artifact_store: &dyn ArtifactStore,
+    artifacts: &[ArtifactRecord],
+) -> Result<(), StoreError> {
+    for artifact in artifacts {
+        if artifact.store_path.is_empty() {
+            return Err(StoreError::Incompatible(format!(
+                "artifact `{}` has not been imported into the content-addressed store",
+                artifact.path
+            )));
+        }
+        artifact_store.verify(&artifact.digest, artifact.size_bytes)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_artifact_references_tx(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    task_id: &str,
+    artifacts: &[ArtifactRecord],
+    source_run_id: Option<&str>,
+    source_task_id: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<(), StoreError> {
+    for artifact in artifacts {
+        if artifact.store_path.is_empty() {
+            continue;
+        }
+        let size_bytes = i64::try_from(artifact.size_bytes).map_err(|_| {
+            StoreError::Incompatible(format!(
+                "artifact `{}` size exceeds SQLite integer range",
+                artifact.path
+            ))
+        })?;
+        transaction.execute(
+            "INSERT INTO artifact_blobs (digest, algorithm, size_bytes, relative_path, created_at) VALUES (?1, 'sha256', ?2, ?3, ?4) ON CONFLICT(digest) DO NOTHING",
+            params![
+                artifact.digest,
+                size_bytes,
+                artifact.store_path,
+                now.to_rfc3339(),
+            ],
+        )?;
+        let stored: (i64, String) = transaction.query_row(
+            "SELECT size_bytes, relative_path FROM artifact_blobs WHERE digest = ?1",
+            [&artifact.digest],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if sqlite_u64(stored.0, "artifact_blob.size_bytes")? != artifact.size_bytes
+            || stored.1 != artifact.store_path
+        {
+            return Err(StoreError::Corrupt(format!(
+                "artifact metadata for `{}` conflicts with its existing blob record",
+                artifact.digest
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO artifact_refs (run_id, task_id, logical_path, logical_name, media_type, digest, source_run_id, source_task_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                run_id,
+                task_id,
+                artifact.path,
+                artifact.logical_name,
+                artifact.media_type,
+                artifact.digest,
+                source_run_id,
+                source_task_id,
+                now.to_rfc3339(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn recover_artifact_quarantine(
+    connection: &Connection,
+    artifact_store: &LocalArtifactStore,
+) -> Result<(), StoreError> {
+    for (digest, path) in artifact_store.quarantined()? {
+        let retained: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM artifact_blobs WHERE digest = ?1)",
+            [&digest],
+            |row| row.get(0),
+        )?;
+        if retained {
+            artifact_store.restore_staged(&digest, &path)?;
+        } else {
+            artifact_store.finish_staged(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn media_type_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("json") => "application/json",
+        Some("yaml" | "yml") => "application/yaml",
+        Some("md" | "txt" | "log") => "text/plain",
+        Some("html" | "htm") => "text/html",
+        Some("csv") => "text/csv",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
+fn sqlite_u64(value: i64, field: &str) -> Result<u64, StoreError> {
+    u64::try_from(value)
+        .map_err(|_| StoreError::Corrupt(format!("{field} cannot be negative: {value}")))
+}
+
 fn encode<T: Serialize + ?Sized>(value: &T) -> Result<String, StoreError> {
     serde_json::to_string(value).map_err(StoreError::from)
 }
@@ -2125,6 +2814,58 @@ spec:
                 "trace",
             )
             .expect("create run");
+    }
+
+    fn begin_task(store: &SqliteStore, run_id: &str) {
+        store
+            .transition_task(
+                run_id,
+                "one",
+                TaskState::Ready,
+                None,
+                None,
+                None,
+                Utc::now(),
+                "trace",
+            )
+            .expect("ready");
+        store
+            .transition_task(
+                run_id,
+                "one",
+                TaskState::Running,
+                None,
+                None,
+                None,
+                Utc::now(),
+                "trace",
+            )
+            .expect("running");
+    }
+
+    fn complete_with_artifact(store: &SqliteStore, run_id: &str, artifact: ArtifactRecord) {
+        store
+            .complete_task(
+                run_id,
+                "one",
+                &serde_json::json!({"ok": true}),
+                None,
+                &TaskCompletionMetadata {
+                    execution: TaskExecutionMetadata {
+                        metadata_version: 1,
+                        definition_fingerprint: "definition".to_owned(),
+                        input_digest: "input".to_owned(),
+                        output_contract_fingerprint: "contract".to_owned(),
+                    },
+                    output_digest: "output".to_owned(),
+                    state_delta: serde_json::json!({}),
+                    state_delta_digest: "state".to_owned(),
+                    artifact_manifest: vec![artifact],
+                },
+                Utc::now(),
+                "trace",
+            )
+            .expect("complete task");
     }
 
     fn create_version_four_database(path: &Path) {
@@ -2523,5 +3264,172 @@ spec:
                 .expect("read"),
             Some(serde_json::json!(2))
         );
+    }
+
+    #[test]
+    fn artifacts_are_deduplicated_referenced_and_durable_without_workspace_files() {
+        let directory = tempdir().expect("temp dir");
+        let database = directory.path().join("state").join("runtime.db");
+        let source = directory.path().join("workspace").join("report.txt");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("workspace");
+        std::fs::write(&source, b"durable report").expect("source");
+        let store = SqliteStore::open(&database).expect("store");
+
+        create(&store, "first");
+        begin_task(&store, "first");
+        let first = store
+            .ingest_artifact("first", "one", &source, "report.txt", 1024, Utc::now())
+            .expect("first ingest");
+        assert_eq!(store.stats().expect("stats").artifact_ingests, 1);
+        complete_with_artifact(&store, "first", first.clone());
+        assert_eq!(store.stats().expect("stats").artifact_ingests, 0);
+
+        create(&store, "second");
+        begin_task(&store, "second");
+        let second = store
+            .ingest_artifact("second", "one", &source, "report.json", 1024, Utc::now())
+            .expect("deduplicated ingest");
+        assert_eq!(first.digest, second.digest);
+        complete_with_artifact(&store, "second", second);
+        assert_eq!(store.stats().expect("stats").artifact_blobs, 1);
+        let references = store.artifact_references(None, None).expect("references");
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].media_type, "text/plain");
+        assert_eq!(references[1].media_type, "application/json");
+
+        std::fs::remove_file(&source).expect("remove workspace source");
+        drop(store);
+        let reopened = SqliteStore::open(&database).expect("reopen");
+        let verification = reopened
+            .verify_artifact(&first.digest, Utc::now())
+            .expect("verify without workspace");
+        assert!(verification.valid);
+        let export = directory.path().join("export").join("report.txt");
+        reopened
+            .export_artifact(&first.digest, &export, false)
+            .expect("export");
+        assert_eq!(
+            std::fs::read(export).expect("export bytes"),
+            b"durable report"
+        );
+    }
+
+    #[test]
+    fn concurrent_ingests_share_one_blob_and_keep_independent_leases() {
+        let directory = tempdir().expect("temp dir");
+        let database = directory.path().join("state").join("runtime.db");
+        let source = directory.path().join("source.bin");
+        std::fs::write(&source, b"same bytes").expect("source");
+        let store = SqliteStore::open(&database).expect("store");
+        create(&store, "left");
+        create(&store, "right");
+        drop(store);
+
+        let workers = ["left", "right"].map(|run_id| {
+            let database = database.clone();
+            let source = source.clone();
+            std::thread::spawn(move || {
+                let store = SqliteStore::open(&database).expect("worker store");
+                store
+                    .ingest_artifact(
+                        run_id,
+                        "one",
+                        &source,
+                        &format!("{run_id}.bin"),
+                        1024,
+                        Utc::now(),
+                    )
+                    .expect("concurrent ingest")
+            })
+        });
+        let [left_worker, right_worker] = workers;
+        let left = left_worker.join().expect("left worker");
+        let right = right_worker.join().expect("right worker");
+        assert_eq!(left.digest, right.digest);
+        let store = SqliteStore::open(&database).expect("reopen");
+        let stats = store.stats().expect("stats");
+        assert_eq!(stats.artifact_blobs, 1);
+        assert_eq!(stats.artifact_ingests, 2);
+    }
+
+    #[test]
+    fn artifact_gc_respects_leases_references_orphans_and_partial_files() {
+        let directory = tempdir().expect("temp dir");
+        let database = directory.path().join("state").join("runtime.db");
+        let source = directory.path().join("artifact.bin");
+        std::fs::write(&source, b"leased").expect("source");
+        let store = SqliteStore::open(&database).expect("store");
+        create(&store, "leased");
+        let leased = store
+            .ingest_artifact("leased", "one", &source, "leased.bin", 1024, Utc::now())
+            .expect("leased ingest");
+        let future = Utc::now() + chrono::Duration::days(1);
+        let protected = store
+            .garbage_collect_artifacts(future, false)
+            .expect("lease-protected gc");
+        assert!(protected.removed.is_empty());
+        store
+            .verify_artifact(&leased.digest, Utc::now())
+            .expect("leased blob remains");
+
+        store
+            .connection()
+            .execute(
+                "UPDATE artifact_ingests SET expires_at = ?1",
+                [(Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()],
+            )
+            .expect("expire lease");
+        let removed = store
+            .garbage_collect_artifacts(future, false)
+            .expect("expired lease gc");
+        assert_eq!(removed.removed, [leased.digest]);
+
+        let orphan = store
+            .artifact_store
+            .ingest(&source, 1024)
+            .expect("orphan blob");
+        let partial = store.artifact_root().join("tmp").join("interrupted");
+        std::fs::write(&partial, b"partial").expect("partial file");
+        let preview = store
+            .garbage_collect_artifacts(future, true)
+            .expect("dry run");
+        assert_eq!(preview.considered, 1);
+        assert_eq!(preview.temporary_files_considered, 1);
+        assert_eq!(preview.temporary_files_removed, 0);
+        assert!(partial.exists());
+        let collected = store
+            .garbage_collect_artifacts(future, false)
+            .expect("orphan gc");
+        assert_eq!(collected.removed, [orphan.digest]);
+        assert_eq!(collected.temporary_files_removed, 1);
+        assert!(!partial.exists());
+    }
+
+    #[test]
+    fn artifact_quarantine_is_recovered_after_interrupted_gc() {
+        let directory = tempdir().expect("temp dir");
+        let database = directory.path().join("state").join("runtime.db");
+        let source = directory.path().join("artifact.bin");
+        std::fs::write(&source, b"recoverable").expect("source");
+        let store = SqliteStore::open(&database).expect("store");
+        create(&store, "run");
+        begin_task(&store, "run");
+        let artifact = store
+            .ingest_artifact("run", "one", &source, "artifact.bin", 1024, Utc::now())
+            .expect("ingest");
+        complete_with_artifact(&store, "run", artifact.clone());
+        let staged = store
+            .artifact_store
+            .stage_remove(&artifact.digest)
+            .expect("stage")
+            .expect("staged path");
+        assert!(staged.exists());
+        drop(store);
+
+        let reopened = SqliteStore::open(&database).expect("recover quarantine");
+        reopened
+            .verify_artifact(&artifact.digest, Utc::now())
+            .expect("restored referenced artifact");
+        assert!(!staged.exists());
     }
 }

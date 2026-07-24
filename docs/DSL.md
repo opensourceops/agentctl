@@ -10,6 +10,8 @@ Task output is JSON. Built-in actions own an object contract, agents can declare
 
 Providers, action environments, and protocol headers use `{ env: NAME }` secret references. Secret names are validated and values never become the workflow document.
 
+`policy.workspaceRoot` is the default boundary for relative file paths. Each `writableRoots` entry may be workspace-relative or an explicit absolute mount such as `/artifacts`. Ordinary reads remain workspace-confined. After a successful authorized mutation, the runtime may read that exact output through its writable-root boundary to ingest the bounded regular file into durable CAS; this does not grant tasks general read access to the external root.
+
 The compiler validates missing references, duplicate tasks, cycles, task-aware templates, tool references, provider capabilities, agent limits, and sequential runtime settings before execution. Ready tasks follow declaration order. `maxConcurrency` must be `1` in this version.
 
 `builtin.shell.exec` captures stdout and stderr concurrently. Its optional `stdoutLimitBytes`, `stderrLimitBytes`, and `combinedOutputLimitBytes` fields default to 1 MiB, 1 MiB, and 2 MiB respectively. Each configured value must be between 1 byte and 16 MiB. `timeoutSeconds` must be between 1 and 86,400. Exceeding an output bound terminates and reaps the process and records a structured failed effect; timeout or cancellation remains an uncertain effect because external changes may already have occurred. These fields are validated identically for workflow and pack actions.

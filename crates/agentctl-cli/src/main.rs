@@ -103,6 +103,8 @@ enum Command {
     Migrate(MigrateArgs),
     /// Inspect and verify a local reusable pack.
     Packs(PackArgs),
+    /// Inspect, verify, export, or collect durable artifacts.
+    Artifacts(ArtifactArgs),
     /// Inspect the runtime database.
     Db(DbArgs),
     /// Read or write namespaced long-term memory.
@@ -318,6 +320,44 @@ enum PackCommand {
         manifest: PathBuf,
         #[arg(long)]
         integrity: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct ArtifactArgs {
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[command(subcommand)]
+    command: ArtifactCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ArtifactCommand {
+    List {
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long, requires = "run")]
+        task: Option<String>,
+    },
+    Inspect {
+        digest: String,
+    },
+    Verify {
+        digest: Option<String>,
+        #[arg(long, conflicts_with = "digest")]
+        all: bool,
+    },
+    Export {
+        digest: String,
+        destination: PathBuf,
+        #[arg(long)]
+        overwrite: bool,
+    },
+    Gc {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: i64,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -618,12 +658,16 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let traces = store
                 .trace_events(&args.run_id)
                 .map_err(CliError::persistence)?;
+            let artifacts = store
+                .artifact_references(Some(&args.run_id), None)
+                .map_err(CliError::persistence)?;
             let summary = format!(
-                "{} {:?}; {} tasks; {} effects; {} checkpoints; {} audit events; {} traces",
+                "{} {:?}; {} tasks; {} effects; {} artifacts; {} checkpoints; {} audit events; {} traces",
                 args.run_id,
                 run.state,
                 tasks.len(),
                 effects.len(),
+                artifacts.len(),
                 checkpoints.len(),
                 audit.len(),
                 traces.len(),
@@ -656,6 +700,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 "checkpoints": checkpoints,
                 "providerSessions": provider_sessions,
                 "toolCalls": tool_calls,
+                "artifacts": artifacts,
                 "audit": audit,
                 "traces": traces,
             });
@@ -669,6 +714,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Schema(args) => schema_command(output, args),
         Command::Migrate(args) => migrate_command(output, args),
         Command::Packs(args) => pack_command(output, args),
+        Command::Artifacts(args) => artifact_command(output, args),
         Command::Db(args) => db_command(output, args),
         Command::Memory(args) => memory_command(output, args),
         Command::Gc(args) => gc_command(output, args),
@@ -1288,8 +1334,12 @@ fn db_command(output: OutputFormat, args: DbArgs) -> Result<u8, CliError> {
                 &stats,
                 Vec::new(),
                 format!(
-                    "schema {}: {} runs, {} effects",
-                    stats.schema_version, stats.runs, stats.effects
+                    "schema {}: {} runs, {} effects, {} artifact blobs, {} artifact references",
+                    stats.schema_version,
+                    stats.runs,
+                    stats.effects,
+                    stats.artifact_blobs,
+                    stats.artifact_references
                 ),
             )?;
         }
@@ -1300,6 +1350,141 @@ fn db_command(output: OutputFormat, args: DbArgs) -> Result<u8, CliError> {
                 &serde_json::json!({"schemaVersion": store.schema_version(), "migrated": true}),
                 Vec::new(),
                 format!("database schema is at version {}", store.schema_version()),
+            )?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn artifact_command(output: OutputFormat, args: ArtifactArgs) -> Result<u8, CliError> {
+    let store = open_store(&args.db)?;
+    match args.command {
+        ArtifactCommand::List { run, task } => {
+            let references = store
+                .artifact_references(run.as_deref(), task.as_deref())
+                .map_err(CliError::persistence)?;
+            let blobs = store.artifact_blobs().map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactList",
+                &serde_json::json!({"references": references, "blobs": blobs}),
+                Vec::new(),
+                format!(
+                    "{} artifact reference(s), {} content-addressed blob(s)",
+                    references.len(),
+                    blobs.len()
+                ),
+            )?;
+        }
+        ArtifactCommand::Inspect { digest } => {
+            let blob = store
+                .artifact_blob(&digest)
+                .map_err(CliError::persistence)?;
+            let references = store
+                .artifact_references(None, None)
+                .map_err(CliError::persistence)?
+                .into_iter()
+                .filter(|reference| reference.digest == digest)
+                .collect::<Vec<_>>();
+            print_value(
+                output,
+                "ArtifactInspection",
+                &serde_json::json!({"blob": blob, "references": references}),
+                Vec::new(),
+                format!(
+                    "{}: {} bytes, {} reference(s)",
+                    blob.digest,
+                    blob.size_bytes,
+                    references.len()
+                ),
+            )?;
+        }
+        ArtifactCommand::Verify { digest, all } => {
+            if digest.is_none() && !all {
+                return Err(CliError::validation(
+                    "provide an artifact digest or use --all".to_owned(),
+                ));
+            }
+            let digests = if let Some(digest) = digest {
+                vec![digest]
+            } else {
+                store
+                    .artifact_blobs()
+                    .map_err(CliError::persistence)?
+                    .into_iter()
+                    .map(|blob| blob.digest)
+                    .collect()
+            };
+            let verifications = digests
+                .iter()
+                .map(|digest| store.verify_artifact(digest, Utc::now()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactVerification",
+                &serde_json::json!({"valid": true, "artifacts": verifications}),
+                Vec::new(),
+                format!("verified {} artifact blob(s)", verifications.len()),
+            )?;
+        }
+        ArtifactCommand::Export {
+            digest,
+            destination,
+            overwrite,
+        } => {
+            store
+                .export_artifact(&digest, &destination, overwrite)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactExport",
+                &serde_json::json!({
+                    "digest": digest,
+                    "destination": destination,
+                    "overwritten": overwrite,
+                }),
+                Vec::new(),
+                format!("exported {} to {}", digest, destination.display()),
+            )?;
+        }
+        ArtifactCommand::Gc {
+            older_than_days,
+            dry_run,
+        } => {
+            if older_than_days < 0 {
+                return Err(CliError::validation(
+                    "--older-than-days must be zero or greater".to_owned(),
+                ));
+            }
+            let before = Utc::now() - ChronoDuration::days(older_than_days);
+            let report = store
+                .garbage_collect_artifacts(before, dry_run)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactGarbageCollection",
+                &serde_json::json!({
+                    "dryRun": dry_run,
+                    "before": before,
+                    "report": report,
+                }),
+                Vec::new(),
+                format!(
+                    "{} {} artifact blob(s) and {} temporary file(s), {} reclaimable byte(s)",
+                    if dry_run { "considered" } else { "removed" },
+                    if dry_run {
+                        report.considered
+                    } else {
+                        u64::try_from(report.removed.len()).unwrap_or(u64::MAX)
+                    },
+                    if dry_run {
+                        report.temporary_files_considered
+                    } else {
+                        report.temporary_files_removed
+                    },
+                    report.reclaimed_bytes
+                ),
             )?;
         }
     }
@@ -1870,6 +2055,7 @@ mod tests {
             "schema",
             "migrate",
             "packs",
+            "artifacts",
             "db",
             "memory",
             "gc",

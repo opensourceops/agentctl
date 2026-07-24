@@ -10,7 +10,7 @@
 - Tool input and output JSON Schemas are enforced. Models, MCP annotations, A2A cards, remote schemas, and results cannot grant capabilities.
 - Requests are ledgered before effects. Global denial or approval cannot be weakened by a tool contract. Approval is durable; non-interactive mode pauses with exit `3` or uses an explicitly stricter deny/fail mode, never a prompt or implicit approval.
 - SQLite uses foreign keys, WAL/busy timeout, version checks, checksummed checkpoints, and mode `0600` on Unix.
-- Repair never mutates a terminal source. Reuse requires versioned definition/input/contract/output/state metadata and verified artifact paths, sizes, and SHA-256 digests. Repair creation and reused-task materialization are one SQLite transaction.
+- Repair never mutates a terminal source. Reuse requires versioned definition/input/contract/output/state metadata and verified content-addressed artifact sizes and SHA-256 digests. Artifact ingestion uses atomic no-clobber writes, immutable blobs, bounded leases, and a cross-process GC lock. Repair creation and reused-task/reference materialization are one SQLite transaction.
 - A recorded replay cannot be a repair source because it has no direct effect ledger. A materialized reused/recorded task cannot be selected for restart without returning to direct effect history. Repaired agents start fresh provider sessions.
 - Packs require a supported manifest/version and can be checked against SHA-256 integrity.
 - The workspace forbids unsafe Rust, denies warnings, locks dependencies, checks licenses/sources/advisories, scans secret patterns, and keeps live tests outside CI.
@@ -23,6 +23,6 @@ Prompts, file content, model output, remote artifacts, and tool output may be co
 
 MCP reconnection and A2A resubmission are intentionally not automatic. Streaming is bounded but completed results, not token deltas, enter workflow state. Windows cannot express Unix database mode bits; rely on the user profile ACL and CI tests.
 
-SQLite file access is the repair authorization boundary. There is no tenant identity or row-level authorization. Artifact bytes remain in the workspace rather than SQLite; losing or changing them blocks reuse but does not restore them automatically.
+SQLite and sibling artifact-root access are the repair authorization boundary. There is no tenant identity or row-level authorization. Artifact bytes are not encrypted; an identity that can modify the state directory can corrupt or replace local history, although digest verification prevents silent reuse of changed bytes.
 
 Report vulnerabilities privately to the repository maintainer. Do not include credentials, database contents, or production prompts in a report.

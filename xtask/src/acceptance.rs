@@ -169,6 +169,7 @@ pub fn run(root: &Path) -> Result<()> {
     ensure!(array_len(&mock_inspect, "/data/checkpoints")? > 0);
     ensure!(array_len(&mock_inspect, "/data/audit")? > 0);
     ensure!(array_len(&mock_inspect, "/data/traces")? > 0);
+    ensure!(array_len(&mock_inspect, "/data/artifacts")? == 1);
     ensure!(
         mock_inspect
             .pointer("/data/toolCalls/0/callId")
@@ -177,6 +178,76 @@ pub fn run(root: &Path) -> Result<()> {
                 .pointer("/data/toolCalls/0/effectId")
                 .and_then(Value::as_str)
     );
+    let artifact_digest = string_at(&mock_inspect, "/data/artifacts/0/digest")?;
+    let artifact_list = successful_json(
+        &binary,
+        &mock_workspace,
+        &strings([
+            "artifacts",
+            "--db",
+            path(&mock_db)?,
+            "list",
+            "--run",
+            mock_id,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure!(array_len(&artifact_list, "/data/references")? == 1);
+    ensure!(array_len(&artifact_list, "/data/blobs")? == 1);
+    let artifact_inspect = successful_json(
+        &binary,
+        &mock_workspace,
+        &strings([
+            "artifacts",
+            "--db",
+            path(&mock_db)?,
+            "inspect",
+            artifact_digest,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&artifact_inspect, "/data/blob/referenceCount", 1_u64)?;
+    fs::remove_file(mock_workspace.join("artifacts/mock-report.txt"))?;
+    let artifact_verify = successful_json(
+        &binary,
+        &mock_workspace,
+        &strings([
+            "artifacts",
+            "--db",
+            path(&mock_db)?,
+            "verify",
+            artifact_digest,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&artifact_verify, "/data/valid", true)?;
+    let exported_artifact = mock_workspace.join("exports/mock-report.txt");
+    successful_json(
+        &binary,
+        &mock_workspace,
+        &strings([
+            "artifacts",
+            "--db",
+            path(&mock_db)?,
+            "export",
+            artifact_digest,
+            path(&exported_artifact)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure!(fs::read_to_string(exported_artifact)? == VERIFY_TOKEN);
 
     scenario(
         7,
@@ -425,6 +496,7 @@ pub fn run(root: &Path) -> Result<()> {
     ensure!(replay_id != mock_id);
     let replay_inspect = inspect(&binary, &mock_workspace, &mock_db, replay_id)?;
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/artifacts")? == 1);
     let failed_replay = json_with_code(
         &binary,
         &workspace,

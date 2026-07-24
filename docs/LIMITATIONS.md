@@ -14,6 +14,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 - Timeout/transport ambiguity is not automatically retried; confirmed effects survive resume; call IDs are scoped by run; missing credentials fail before run/database creation.
 - Non-interactive approvals durably pause, signals cancel safely, JSON errors include available run/trace correlation, and SQLite uses WAL plus a bounded lock wait.
 - The packaged CLI, clean-directory quickstart, cron-like empty environment, and non-root/read-only OCI contract have executable acceptance coverage.
+- Successful bounded file outputs are atomically ingested into a local immutable content-addressed store with durable references, verification/export commands, lease-safe reachability GC, interrupted-GC recovery, and local/OCI acceptance coverage.
 - Shell execution and acceptance/container helpers use bounded concurrent capture. Output overflow terminates/reaps the child with a structured secret-safe error; timeouts and cancellation retain durable uncertain-effect semantics.
 - Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
@@ -45,7 +46,7 @@ These are useful extensions but are not required by the product thesis. They nee
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
 - Selective repair requires task metadata version 1. Successful tasks from databases created before schema 5 remain inspectable but must execute from an earlier repair root or a full fork.
-- Automatic artifact manifests cover bounded files reported by successful workspace-mutation results. Artifact bytes are not copied into SQLite or a content-addressed store; retain the configured workspace. Missing, moved, size-mismatched, or digest-mismatched bytes block repair before run creation and report the expected artifact identity.
+- Automatic artifact ingestion covers regular files up to 16 MiB reported by successful built-in workspace-mutation results. Larger outputs and artifacts produced only by opaque external effects require an explicit bounded import/export integration. The local CAS must be backed up with SQLite; missing or corrupt blob bytes block repair before run creation and report the expected artifact identity.
 - A confirmed non-idempotent mutation in a repair closure remains blocked. The only built-in reconciliation outcome is an operator-confirmed `not-applied` result for a started or uncertain effect; compensation and provider-specific deduplication workflows are not implemented.
 - Retry remains a bounded same-run task policy. There is no separate command that creates a new terminal-source retry run for an unchanged workflow; use repair with an unchanged target definition and explicit roots when its compatibility checks fit.
 - Tool-using OpenAI/Azure agents require stored-response continuation. `store: false` is rejected until stateless response-item replay is implemented.

@@ -182,7 +182,7 @@ Recorded replay has a new replay run ID but the same semantic outputs. It dispat
 | `output_contract_mismatch` | The target expects a different contract. | Rerun from the producer. |
 | `output_digest_mismatch` | Persisted output was modified or corrupted. | Do not reuse it; rerun from the producer. |
 | `state_delta_missing` or `state_delta_invalid` | Successful boundary-state metadata is absent or corrupt. | Select the task as an earlier root; do not edit the database. |
-| `artifact_integrity` | An artifact is missing, changed, or outside policy. The block reports its path, expected digest, and expected size. | Restore the exact retained artifact or select its producer as an earlier repair root. |
+| `artifact_integrity` | A content-addressed artifact is missing or corrupt. The block reports its logical path, expected digest, and expected size. | Restore the database and sibling CAS from a consistent backup, or select its producer as an earlier repair root. |
 | `unresolved_reused_effect` | A nominally successful reusable task retains a started or uncertain effect. | Reconcile external reality before reuse. |
 | `legacy_task_metadata` | The source predates repair metadata v1. | Use an earlier root or a full fork. |
 | `new_task_outside_repair_closure` | A new unrelated task has no result. | Add it as a root or choose an earlier common boundary. |

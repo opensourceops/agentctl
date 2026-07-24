@@ -218,6 +218,21 @@ impl PolicyEngine {
         }
     }
 
+    pub fn resolve_artifact_path(&self, requested: &str) -> Result<PathBuf, PolicyError> {
+        let candidate = self.join_workspace(requested)?;
+        let canonical = fs::canonicalize(&candidate)
+            .map_err(|error| PolicyError::PathEscape(format!("{requested}: {error}")))?;
+        if self
+            .writable_roots
+            .iter()
+            .any(|root| canonical.starts_with(root))
+        {
+            Ok(canonical)
+        } else {
+            Err(PolicyError::PathEscape(requested.to_owned()))
+        }
+    }
+
     pub fn authorize_network(&self, target: &Url) -> Result<(), PolicyError> {
         if target.scheme() != "https" && target.scheme() != "http" {
             return Err(PolicyError::NetworkDenied(target.to_string()));
@@ -403,6 +418,35 @@ mod tests {
             fs::canonicalize(root.path())
                 .expect("canonical root")
                 .join("safe/new/nested/output.txt")
+        );
+    }
+
+    #[test]
+    fn collects_existing_artifacts_from_an_absolute_writable_root() {
+        let workspace = tempdir().expect("workspace");
+        let artifacts = tempdir().expect("artifacts");
+        let artifact = artifacts.path().join("report.txt");
+        fs::write(&artifact, b"report").expect("artifact");
+        let engine = PolicyEngine::new(
+            PolicyDefinition {
+                workspace_root: workspace.path().display().to_string(),
+                writable_roots: vec![artifacts.path().display().to_string()],
+                ..PolicyDefinition::default()
+            },
+            workspace.path(),
+        )
+        .expect("policy");
+
+        assert_eq!(
+            engine
+                .resolve_artifact_path(&artifact.display().to_string())
+                .expect("artifact path"),
+            fs::canonicalize(artifact).expect("canonical artifact")
+        );
+        assert!(
+            engine
+                .resolve_read_path(&artifacts.path().join("report.txt").display().to_string())
+                .is_err()
         );
     }
 

@@ -2,7 +2,7 @@
 
 ## Assets and boundaries
 
-Assets are workspace files, allowed environment secrets, provider accounts, external systems reached by tools, workflow history, prompts/results, approvals, and the integrity of deterministic scheduling. Boundaries are the YAML/pack parser, filesystem/process/network executors, provider APIs, MCP servers, A2A peers, SQLite, trace exporters, and dependencies.
+Assets are workspace files, content-addressed artifact bytes, allowed environment secrets, provider accounts, external systems reached by tools, workflow history, prompts/results, approvals, and the integrity of deterministic scheduling. Boundaries are the YAML/pack parser, filesystem/process/network executors, provider APIs, MCP servers, A2A peers, SQLite and its sibling artifact root, trace exporters, and dependencies.
 
 The local operator and reviewed binary are trusted. Workflow authors are only as trusted as policy grants. Models, file content, remote descriptions/results, pack content without independent provenance, and all network peers are untrusted. The host OS, CA store, and Rust dependency supply chain are assumed but monitored dependencies.
 
@@ -17,10 +17,11 @@ The local operator and reviewed binary are trusted. Workflow authors are only as
 | MCP annotation or A2A card claims safety | always treated as untrusted metadata | compromised authorized peer can return malicious but schema-valid data |
 | Crash duplicates an external mutation | request-before-start ledger, uncertain state, no silent retry | external action may have happened without acknowledgement |
 | Replay reissues effects | recorded replay uses stored terminal output only | replayed data may no longer reflect current reality, by design |
-| Repair reuses tampered or unrelated state | stable workflow identity, versioned task/input/contract/output/state fingerprints, artifact digest checks, transactional materialization | an attacker with database/workspace write access is inside the local application trust boundary |
+| Repair reuses tampered or unrelated state | stable workflow identity, versioned task/input/contract/output/state fingerprints, immutable CAS blobs, artifact digest checks, transactional materialization | an attacker with database/artifact-root write access is inside the local application trust boundary |
 | Repair duplicates a partial mutation | closure effect inspection, conservative uncertainty block, narrow operator `not-applied` reconciliation | remote truth may remain unknowable and keep the repair blocked |
 | Repair carries failed model state | every repaired agent starts a fresh provider session; dataflow uses validated JSON output | a valid reused output can still contain hostile content and must remain policy constrained |
-| Source deletion breaks repair | reused output/state/artifact metadata is materialized into the repair run | artifact bytes still require durable workspace retention |
+| Source or workspace deletion breaks repair | reused output/state metadata and independent CAS references are materialized into the repair run | deleting/corrupting the shared CAS or restoring SQLite without it still blocks repair |
+| Concurrent GC removes an in-flight artifact | cross-process lock, durable ingestion leases, transactional references, quarantine recovery | network filesystems with broken advisory-lock semantics are unsupported |
 | Approval bypass in CI | non-interactive durable pause or explicit deny/fail; operator resolution | stolen database write access is outside application trust boundary |
 | Pack substitution | SHA-256 verification and semver/API checks | digest source/signature trust is manual |
 | Corrupt or future state misexecutes | schema/version/checksum/deserialization failures | SQLite file deletion or rollback by an attacker is not prevented |
