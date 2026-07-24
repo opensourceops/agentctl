@@ -22,4 +22,4 @@ Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2
 
 ## Separate product decisions
 
-Sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1. Bounded loops are additive; unbounded or model-controlled iteration is intentionally unsupported.
+Teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1. Bounded loops and namespaced sub-workflows are additive; unbounded or model-controlled graph growth is intentionally unsupported.

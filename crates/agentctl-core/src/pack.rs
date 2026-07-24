@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::dsl::{ActionDefinition, AgentDefinition, PolicyDefinition, ToolDefinition};
+use crate::dsl::{
+    ActionDefinition, AgentDefinition, PolicyDefinition, SubworkflowDefinition, ToolDefinition,
+};
 
 pub const PACK_API_VERSION: &str = "agentctl.dev/pack/v1alpha1";
 
@@ -25,6 +27,8 @@ pub struct PackManifest {
     pub agents: BTreeMap<String, AgentDefinition>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolDefinition>,
+    #[serde(default)]
+    pub workflows: BTreeMap<String, SubworkflowDefinition>,
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default)]
@@ -65,6 +69,21 @@ impl PackManifest {
                     "action `{name}` has invalid process bounds: {message}"
                 ))
             })?;
+        }
+        for (name, workflow) in &self.workflows {
+            Version::parse(&workflow.version).map_err(|error| {
+                PackError::Invalid(format!("workflow `{name}` version is not semver: {error}"))
+            })?;
+            for (label, schema) in [
+                ("inputSchema", &workflow.input_schema),
+                ("outputSchema", &workflow.output_schema),
+            ] {
+                jsonschema::validator_for(schema).map_err(|error| {
+                    PackError::Invalid(format!(
+                        "workflow `{name}` {label} is not valid JSON Schema: {error}"
+                    ))
+                })?;
+            }
         }
         Ok(())
     }

@@ -95,6 +95,13 @@
           },
           "default": {}
         },
+        "subworkflows": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SubworkflowDefinition"
+          },
+          "default": {}
+        },
         "tasks": {
           "type": "array",
           "items": {
@@ -684,6 +691,39 @@
         "policy",
         "never",
         "always"
+      ]
+    },
+    "SubworkflowDefinition": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "inputSchema": true,
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "outputSchema": true,
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskDefinition"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "inputSchema",
+        "outputSchema",
+        "tasks"
       ]
     },
     "TaskDefinition": {

@@ -62,6 +62,7 @@ For bounded independent branches and working-memory conflict rules, use [Determi
 For bounded static task expansion and child-level recovery, use [Matrix and foreach tasks](docs/guides/MATRIX_AND_FOREACH.md).
 For typed branching and durable decisions, use [Conditions and routers](docs/guides/CONDITIONS_AND_ROUTERS.md).
 For iterative work with a hard execution ceiling and iteration-level recovery, use [Bounded loops](docs/guides/BOUNDED_LOOPS.md).
+For typed reusable graphs with namespaced recovery boundaries, use [Reusable sub-workflows](docs/guides/SUB_WORKFLOWS.md).
 
 ## Safety boundary
 

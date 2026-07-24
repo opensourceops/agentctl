@@ -48,4 +48,9 @@ pure aggregate. Each iteration retains its guard decision, output, effects,
 artifacts, attempts, and recovery identity. A false guard skips the remaining
 chain. A guard that remains true after the declared maximum fails closed.
 
+Sub-workflows also compile before run creation. Typed input and output boundary
+tasks surround namespaced child tasks, so child attempts, effects, artifacts,
+approvals, retry/repair lineage, cancellation, and replay stay in the ordinary
+run graph.
+
 The artifact root is `artifacts/` beside the database. `agentctl artifacts` lists references and blobs, verifies hashes, exports bytes atomically, and performs reachability-based collection. GC excludes referenced blobs and active ingestion leases, recovers interrupted quarantine operations on startup, and cleans stale untracked blobs and partial temporary files.

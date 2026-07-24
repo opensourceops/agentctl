@@ -2096,6 +2096,11 @@ fn load_packs(workflow: &mut Workflow, workflow_path: &Path) -> Result<(), CliEr
         for agent in pack.agents.values_mut() {
             agent.tools = agent.tools.iter().map(|name| qualify(name)).collect();
         }
+        for definition in pack.workflows.values_mut() {
+            for task in &mut definition.tasks {
+                qualify_pack_task(task, &qualify);
+            }
+        }
         for (name, action) in pack.actions {
             insert_pack_item(
                 &mut workflow.spec.actions,
@@ -2110,8 +2115,28 @@ fn load_packs(workflow: &mut Workflow, workflow_path: &Path) -> Result<(), CliEr
         for (name, agent) in pack.agents {
             insert_pack_item(&mut workflow.spec.agents, qualify(&name), agent, &pack.name)?;
         }
+        for (name, definition) in pack.workflows {
+            insert_pack_item(
+                &mut workflow.spec.subworkflows,
+                qualify(&name),
+                definition,
+                &pack.name,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn qualify_pack_task(
+    task: &mut agentctl_core::dsl::TaskDefinition,
+    qualify: &impl Fn(&str) -> String,
+) {
+    for prefix in ["action:", "agent:", "workflow:"] {
+        if let Some(name) = task.uses.strip_prefix(prefix) {
+            task.uses = format!("{prefix}{}", qualify(name));
+            break;
+        }
+    }
 }
 
 fn insert_pack_item<T>(

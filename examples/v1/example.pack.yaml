@@ -7,3 +7,27 @@ providers: []
 actions:
   assign:
     kind: builtin.assign
+workflows:
+  echo:
+    version: 1.0.0
+    inputSchema:
+      type: object
+      required: [value]
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+    outputSchema:
+      type: object
+      required: [value]
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+    outputs:
+      value: "${{ tasks.assign.output.output.value }}"
+    tasks:
+      - id: assign
+        uses: action:assign
+        with:
+          value: "${{ inputs.value }}"

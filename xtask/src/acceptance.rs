@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 36;
+const ACCEPTANCE_SCENARIOS: usize = 37;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1552,6 +1552,70 @@ pub fn run(root: &Path) -> Result<()> {
     let loop_replay_id = string_at(&loop_replay, "/data/runId")?;
     let loop_replay_inspect = inspect(&binary, root, &loop_db, loop_replay_id)?;
     ensure!(array_len(&loop_replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        37,
+        "packaged CLI expands, inspects, and replays a typed sub-workflow",
+    );
+    let subworkflow = root.join("examples/v1/subworkflow.yaml");
+    let subworkflow_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "plan",
+            path(&subworkflow)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(
+        &subworkflow_plan,
+        "/data/tasks/summary/uses/kind",
+        "subworkflow_aggregate",
+    )?;
+    ensure_eq(
+        &subworkflow_plan,
+        "/data/tasks/summary/uses/name/version",
+        "1.0.0",
+    )?;
+    ensure!(
+        subworkflow_plan
+            .pointer("/data/tasks")
+            .and_then(Value::as_object)
+            .is_some_and(|tasks| tasks.keys().any(|id| id.starts_with("summary--inputs-")))
+    );
+    let subworkflow_db = directory.path().join("subworkflow.db");
+    let subworkflow_run = successful_json(
+        &binary,
+        root,
+        &run_args(&subworkflow, &subworkflow_db, root, &[]),
+    )?;
+    ensure_eq(&subworkflow_run, "/data/state", "succeeded")?;
+    ensure_eq(&subworkflow_run, "/data/output/result", "durable")?;
+    let subworkflow_run_id = string_at(&subworkflow_run, "/data/runId")?;
+    let subworkflow_inspect = inspect(&binary, root, &subworkflow_db, subworkflow_run_id)?;
+    ensure!(array_len(&subworkflow_inspect, "/data/tasks")? == 4);
+    let subworkflow_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            subworkflow_run_id,
+            "--db",
+            path(&subworkflow_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&subworkflow_replay, "/data/state", "succeeded")?;
+    let subworkflow_replay_id = string_at(&subworkflow_replay, "/data/runId")?;
+    let subworkflow_replay_inspect =
+        inspect(&binary, root, &subworkflow_db, subworkflow_replay_id)?;
+    ensure!(array_len(&subworkflow_replay_inspect, "/data/effects")? == 0);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

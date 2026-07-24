@@ -50,6 +50,8 @@ pub struct WorkflowSpec {
     pub actions: BTreeMap<String, ActionDefinition>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolDefinition>,
+    #[serde(default)]
+    pub subworkflows: BTreeMap<String, SubworkflowDefinition>,
     pub tasks: Vec<TaskDefinition>,
     #[serde(default)]
     pub policy: PolicyDefinition,
@@ -444,6 +446,19 @@ pub struct TaskDefinition {
     pub failure: FailureBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubworkflowDefinition {
+    pub version: String,
+    #[serde(default)]
+    pub inputs: JsonMap,
+    pub input_schema: Value,
+    #[serde(default)]
+    pub outputs: JsonMap,
+    pub output_schema: Value,
+    pub tasks: Vec<TaskDefinition>,
 }
 
 pub const DEFAULT_MAX_EXPANSION_ITEMS: usize = 32;

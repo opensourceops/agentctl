@@ -2462,14 +2462,17 @@ impl Runtime {
                 {
                     continue;
                 }
-                if !matches!(task.uses, TaskUse::Aggregate(_) | TaskUse::LoopAggregate(_))
-                    && dependencies.iter().any(|dependency| {
-                        matches!(
-                            dependency.state,
-                            TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
-                        )
-                    })
-                {
+                if !matches!(
+                    task.uses,
+                    TaskUse::Aggregate(_)
+                        | TaskUse::LoopAggregate(_)
+                        | TaskUse::SubworkflowAggregate(_)
+                ) && dependencies.iter().any(|dependency| {
+                    matches!(
+                        dependency.state,
+                        TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
+                    )
+                }) {
                     self.store.transition_task(
                         run_id,
                         task_id,
@@ -3002,14 +3005,17 @@ impl Runtime {
                 .iter()
                 .filter_map(|needed| tasks.iter().find(|candidate| &candidate.task_id == needed))
                 .collect();
-            if !matches!(task.uses, TaskUse::Aggregate(_) | TaskUse::LoopAggregate(_))
-                && dependencies.iter().any(|dependency| {
-                    matches!(
-                        dependency.state,
-                        TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
-                    )
-                })
-            {
+            if !matches!(
+                task.uses,
+                TaskUse::Aggregate(_)
+                    | TaskUse::LoopAggregate(_)
+                    | TaskUse::SubworkflowAggregate(_)
+            ) && dependencies.iter().any(|dependency| {
+                matches!(
+                    dependency.state,
+                    TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
+                )
+            }) {
                 self.store.transition_task(
                     run_id,
                     &task.id,
@@ -3513,6 +3519,12 @@ impl Runtime {
                         "iterations": iterations,
                         "items": items,
                     }),
+                    memory: None,
+                })
+            }
+            TaskUse::SubworkflowInput(_) | TaskUse::SubworkflowAggregate(_) => {
+                Ok(TaskExecution::Complete {
+                    output: input,
                     memory: None,
                 })
             }
@@ -5009,6 +5021,7 @@ fn task_output_schema(workflow: &Workflow, task: &agentctl_core::CompiledTask) -
             },
             "additionalProperties": false
         })),
+        TaskUse::SubworkflowInput(_) | TaskUse::SubworkflowAggregate(_) => None,
     })
 }
 
@@ -5107,6 +5120,16 @@ fn task_definition_fingerprint(
             "kind": "loop_aggregate",
             "task": task,
             "loop": loop_aggregate,
+        }),
+        TaskUse::SubworkflowInput(input) => serde_json::json!({
+            "kind": "subworkflow_input",
+            "task": task,
+            "subworkflow": input,
+        }),
+        TaskUse::SubworkflowAggregate(aggregate) => serde_json::json!({
+            "kind": "subworkflow_aggregate",
+            "task": task,
+            "subworkflow": aggregate,
         }),
     };
     versioned_json_digest(&serde_json::json!({
@@ -10208,6 +10231,258 @@ spec:
                 .iter()
                 .all(|task| task.state == TaskState::Cancelled)
         );
+    }
+
+    #[tokio::test]
+    async fn subworkflow_boundaries_support_typed_execution_retry_repair_and_replay() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: subworkflow-runtime }
+spec:
+  inputs: { message: hello }
+  outputs: { result: "${{ tasks.summary.output.result }}" }
+  actions:
+    assign: { kind: builtin.assign }
+  subworkflows:
+    summarize:
+      version: 1.0.0
+      inputSchema:
+        type: object
+        required: [message]
+        additionalProperties: false
+        properties: { message: { type: string } }
+      outputSchema:
+        type: object
+        required: [result]
+        additionalProperties: false
+        properties: { result: { type: string } }
+      outputs:
+        result: "${{ tasks.second.output.output.value }}"
+      tasks:
+        - { id: first, uses: "action:assign", with: { value: "${{ inputs.message }}" } }
+        - id: second
+          uses: action:assign
+          needs: [first]
+          with: { value: "${{ tasks.first.output.output.value }}" }
+  tasks:
+    - id: summary
+      uses: workflow:summarize
+      with: { message: "${{ inputs.message }}" }
+"#,
+        );
+        let source = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({"message": "hello"}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("sub-workflow succeeds");
+        assert_eq!(source.state, RunState::Succeeded);
+        assert_eq!(source.output.as_ref().expect("output")["result"], "hello");
+        let source_tasks = store.list_tasks(&source.run_id).expect("tasks");
+        assert_eq!(source_tasks.len(), 4);
+        assert!(
+            source_tasks
+                .iter()
+                .any(|task| task.task_id.starts_with("summary--inputs-"))
+        );
+
+        let invalid_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({"message": 7}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed {
+                run_id,
+                task,
+                message,
+                ..
+            }) => {
+                assert!(task.starts_with("summary--inputs-"));
+                assert!(message.contains("task output contract failed"));
+                run_id
+            }
+            other => panic!("expected typed input failure, got {other:?}"),
+        };
+        assert!(
+            store
+                .list_effects(&invalid_run_id)
+                .expect("invalid effects")
+                .is_empty()
+        );
+
+        let retry_plan = runtime
+            .plan_retry(
+                &source.run_id,
+                &workflow,
+                &plan,
+                &["summary--second".to_owned()],
+                false,
+                true,
+            )
+            .expect("retry plan");
+        assert!(retry_plan.compatible, "{:?}", retry_plan.blocked_reuse);
+        assert!(
+            retry_plan
+                .reused_tasks
+                .contains(&"summary--first".to_owned())
+        );
+        assert!(retry_plan.rerun_tasks.contains(&"summary".to_owned()));
+        let retried = runtime
+            .retry(
+                &workflow,
+                &plan,
+                retry_plan,
+                Some("retry namespaced boundary"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("retry");
+        assert_eq!(retried.state, RunState::Succeeded);
+
+        let repair_plan = runtime
+            .plan_repair(
+                &source.run_id,
+                &workflow,
+                &plan,
+                &["summary--second".to_owned()],
+                true,
+            )
+            .expect("repair plan");
+        assert!(repair_plan.compatible, "{:?}", repair_plan.blocked_reuse);
+        let repaired = runtime
+            .repair(
+                &workflow,
+                &plan,
+                repair_plan,
+                Some("repair namespaced boundary"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair");
+        assert_eq!(repaired.state, RunState::Succeeded);
+        let replay = runtime
+            .replay(&repaired.run_id)
+            .await
+            .expect("sub-workflow replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert_eq!(replay.output, repaired.output);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("replay effects")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn subworkflow_children_own_artifacts_and_report_namespaced_failures() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: subworkflow-artifact }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+  subworkflows:
+    publish:
+      version: 1.0.0
+      inputSchema: { type: object, additionalProperties: false }
+      outputSchema: { type: object, additionalProperties: false }
+      tasks:
+        - id: write
+          uses: action:write
+          with: { path: subworkflow.txt, content: durable }
+  tasks:
+    - { id: publish, uses: "workflow:publish" }
+"#,
+        );
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("artifact sub-workflow succeeds");
+        let tasks = store.list_tasks(&outcome.run_id).expect("tasks");
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|task| task.task_id == "publish--write")
+                .expect("artifact child")
+                .artifact_manifest
+                .len(),
+            1
+        );
+        assert!(
+            tasks
+                .iter()
+                .find(|task| task.task_id == "publish")
+                .expect("aggregate")
+                .artifact_manifest
+                .is_empty()
+        );
+
+        let (failed_workflow, failed_plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: subworkflow-failure }
+spec:
+  actions:
+    assert: { kind: builtin.assert }
+  subworkflows:
+    verify:
+      version: 1.0.0
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      tasks:
+        - { id: check, uses: "action:assert", with: { that: false } }
+  tasks:
+    - { id: verify, uses: "workflow:verify" }
+"#,
+        );
+        match runtime
+            .start(
+                &failed_workflow,
+                &failed_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { task, .. }) => {
+                assert_eq!(task, "verify--check");
+            }
+            other => panic!("expected namespaced child failure, got {other:?}"),
+        }
     }
 
     #[tokio::test]

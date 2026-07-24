@@ -47,7 +47,7 @@ complete, every entry must have exactly one final disposition:
 | DYN-001 | Foreach and matrix | in progress | implemented |
 | COND-001 | Conditions and routers | in progress | implemented |
 | LOOP-001 | Bounded loops | in progress | implemented |
-| SUB-001 | Sub-workflows | open | implemented |
+| SUB-001 | Sub-workflows | in progress | implemented |
 | COMP-001 | Compensation | open | implemented |
 | TEAM-001 | Structured teams and handoffs | open | redesigned |
 | STR-001 | Streaming | open | implemented |
@@ -318,7 +318,9 @@ complete, every entry must have exactly one final disposition:
 
 ### SUB-001: Reusable sub-workflows
 
-- Current behavior: packs can contribute actions/agents/tools but not workflows.
+- Current behavior: inline and integrity-pinned pack definitions compile into a
+  typed input boundary, namespaced ordinary child tasks, and a typed output
+  aggregate.
 - User impact: reusable graph composition requires copying tasks.
 - Security or durability impact: implicit policy/provider inheritance could
   broaden authority.
@@ -327,13 +329,24 @@ complete, every entry must have exactly one final disposition:
 - Required implementation: pack/local definitions, namespace escaping,
   recursion/cycle checks, state isolation, provider mapping, artifact ownership,
   lineage, errors, inspection, repair/retry/replay.
-- Migration impact: pack/lock, workflow schema, and plan format.
+- Migration impact: workflow and pack schemas gain additive reusable workflow
+  definitions. Compiled plans gain pure boundary variants; existing task,
+  effect, artifact, checkpoint, and attempt storage is reused.
 - Tests: nesting, collisions, cycles, policy narrowing, output contracts,
   failures, artifacts, repair/retry/replay.
 - Examples: operational workflow calling a reusable sub-workflow.
 - Live evidence: sub-workflow containing one OpenAI task.
 - Documentation: authoring, versioning, and policy inheritance.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Definitions carry a semantic version and
+  JSON Schema input/output interfaces. Nested calls flatten recursively and
+  cycles fail compilation. The caller's policy and providers remain
+  authoritative, deterministic memory keys are invocation-prefixed, and
+  namespaced children retain artifact/effect ownership and ordinary
+  retry/repair/replay lineage. Focused compiler and runtime verification covers
+  stable expansion, typed rejection, state isolation, selected-boundary retry
+  and repair, and zero-effect replay. Packaged CLI scenario 37 and the
+  integrity-pinned pack example pass. Program state remains in progress until
+  the bounded live sub-workflow scenario executes.
 
 ### COMP-001: Explicit compensation
 

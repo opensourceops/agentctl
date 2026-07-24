@@ -47,6 +47,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/reusable-pack.yaml` | Native reusable pack consumer | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | Pack digest | Canonical | passed |
 | `examples/v1/router.yaml` | Typed deterministic route selection | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Decision and skipped branch | passed |
 | `examples/v1/secret-reference.yaml` | Environment reference contract | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | N/A | N/A | Secret-safe live gate | live passed |
+| `examples/v1/subworkflow.yaml` | Typed reusable namespaced graph | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Typed input/output boundaries | passed |
 | `examples/v1/working-memory.yaml` | Working-memory update | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | SQLite | Canonical | passed |
 | `fixtures/compat/v0/assign.playbook.yaml` | Language-neutral TypeScript compatibility fixture | legacy translator | success | 0 | 0 | Compatibility test | N/A | N/A | N/A | N/A | Oracle contract | passed |
 

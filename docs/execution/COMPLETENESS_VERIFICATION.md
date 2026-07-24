@@ -78,7 +78,7 @@ cargo xtask acceptance-container
 | Foreach/matrix | compiler bounds/identity tests and runtime partial-failure, child retry, sibling reuse, aggregation, and replay tests passed | packaged CLI scenario 34 passed | deterministic verified; live pending |
 | Conditions/routers | compiler typed-case/guard failures and runtime durable condition, route, retry, changed-input repair, and skipped replay tests passed | packaged CLI scenario 35 passed | deterministic verified; live pending |
 | Bounded loops | compiler bounds/identity tests and runtime zero/one/max, exhaustion, cancellation, uncertain effect, retry, repair, and replay tests passed | packaged CLI scenario 36 passed | deterministic verified; live pending |
-| Sub-workflows | pending | pending | open |
+| Sub-workflows | compiler namespacing/version/cycle/state-isolation tests and runtime typed boundary, retry, repair, and replay tests passed | packaged CLI scenario 37 and integrity-pinned pack example passed | deterministic verified; live pending |
 | Compensation/handoffs/streaming | pending | pending | open |
 | MCP/A2A resilience | pending | pending | open |
 | Packs/trust/extensions | pending | pending | open |

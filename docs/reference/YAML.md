@@ -25,6 +25,7 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `agents` | `{}` | Named bounded model executors. |
 | `actions` | `{}` | Named deterministic or protocol actions. |
 | `tools` | `{}` | Strict model-callable tool contracts. |
+| `subworkflows` | `{}` | Semantically versioned reusable task graphs with typed input and output boundaries. |
 | `tasks` | required list | Ordered graph nodes. |
 | `policy` | safe defaults | Filesystem, process, network, provider, tool, and approval rules. |
 | `memory` | empty | Initial working memory and optional SQLite long-term namespace. |
@@ -36,8 +37,8 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 
 ## Tasks
 
-Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`, or
-`router`.
+Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`,
+`workflow:name`, or `router`.
 
 | Field | Default | Validation |
 | --- | --- | --- |
@@ -59,8 +60,9 @@ Ready tasks are selected in YAML declaration order up to `maxConcurrency`.
 They read isolated durable snapshots and commit in compiled order. There is no
 runtime or model-controlled expansion. Static `foreach` and `matrix` tasks
 compile to inspectable child tasks and a parent aggregate. Bounded loops
-compile to a sequential child chain and parent aggregate. There is no
-sub-workflow, handler, or separate parallel group in this version.
+compile to a sequential child chain and parent aggregate. Sub-workflows compile
+to namespaced ordinary tasks with typed input and output boundaries. There is
+no handler or separate parallel group in this version.
 
 ## Agents
 
@@ -127,6 +129,7 @@ agentctl run examples/v1/dataflow.yaml --db /tmp/dataflow.db --output json --col
 Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Matrix
 and foreach](../guides/MATRIX_AND_FOREACH.md), [Conditions and
 routers](../guides/CONDITIONS_AND_ROUTERS.md), [Bounded
-loops](../guides/BOUNDED_LOOPS.md), [Secret
+loops](../guides/BOUNDED_LOOPS.md), [Reusable
+sub-workflows](../guides/SUB_WORKFLOWS.md), [Secret
 references](../guides/SECRET_REFERENCES.md), [Policies](../policies.md),
 [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).

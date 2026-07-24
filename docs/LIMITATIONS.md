@@ -23,7 +23,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These are useful extensions but are not required by the product thesis. They need new deterministic state and compatibility contracts before implementation:
 
-- sub-workflows; compensation execution;
+- compensation execution;
 - structured agent teams and handoffs;
 - model token streaming into CLI/workflow state;
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
@@ -53,6 +53,9 @@ These are useful extensions but are not required by the product thesis. They nee
 - Loops are sequential, require a maximum from 1 through 64, and compile all
   iteration boundaries before execution. Runtime or model-controlled graph
   growth and unbounded loops are rejected.
+- Sub-workflows are compile-time namespaced graphs with semantic versions and
+  typed input/output boundaries. Definitions inherit the caller's policy and
+  providers and cannot request independent authority.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.

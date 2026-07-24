@@ -13,10 +13,11 @@ The deterministic examples are exercised by `cargo xtask verify` and never requi
 - `parallel.yaml`: bounded parallel batches with disjoint working-memory writes and stable commits.
 - `matrix.yaml`: bounded static matrix expansion, stable child identities, and ordered aggregation.
 - `loop.yaml`: bounded sequential iteration, stable boundaries, aggregation, and fail-closed exhaustion.
+- `subworkflow.yaml`: typed reusable graph expansion and namespaced recovery boundaries.
 - `working-memory.yaml` and `long-term-memory.yaml`: separate memory lifecycles.
 - `fake-provider.yaml`: deterministic model-provider path.
 - `mcp.yaml` and `a2a.yaml`: local protocol fixtures, backed by the protocol crate's mock-server tests.
-- `example.pack.yaml` and `reusable-pack.yaml`: integrity-pinned local pack and executed packed action.
+- `example.pack.yaml` and `reusable-pack.yaml`: integrity-pinned local pack with an executed packed action and sub-workflow.
 - `secret-reference.yaml`: environment reference without inline secret material.
 - `capability-failure.yaml`: a workflow expected to fail during compilation.
 

@@ -79,6 +79,21 @@ pub struct CompiledLoopAggregate {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledSubworkflowInput {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledSubworkflowAggregate {
+    pub name: String,
+    pub version: String,
+    pub children: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "name")]
 pub enum TaskUse {
     Action(String),
@@ -86,6 +101,8 @@ pub enum TaskUse {
     Aggregate(Vec<String>),
     Router(CompiledRouter),
     LoopAggregate(CompiledLoopAggregate),
+    SubworkflowInput(CompiledSubworkflowInput),
+    SubworkflowAggregate(CompiledSubworkflowAggregate),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,9 +207,19 @@ fn expand_tasks(
     workflow: &Workflow,
     file: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    synthetic_uses: &BTreeMap<String, TaskUse>,
 ) -> Vec<ExpandedTaskDefinition> {
     let mut expanded = Vec::new();
     for (position, task) in workflow.spec.tasks.iter().enumerate() {
+        if let Some(task_use) = synthetic_uses.get(&task.id) {
+            expanded.push(ExpandedTaskDefinition {
+                definition: task.clone(),
+                source_position: position,
+                expansion: None,
+                synthetic_use: Some(task_use.clone()),
+            });
+            continue;
+        }
         if let Some(loop_definition) = &task.loop_definition {
             let loop_path = format!("spec.tasks[{position}].loop");
             if task.foreach.is_some() || task.matrix.is_some() || task.route.is_some() {
@@ -586,12 +613,389 @@ fn is_exact_template(value: &str) -> bool {
             .is_some_and(|closing| closing + 3 == trimmed.len() - 2)
 }
 
+fn expand_subworkflow_calls(
+    workflow: &Workflow,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (Workflow, BTreeMap<String, TaskUse>) {
+    let mut flattened = workflow.clone();
+    let mut tasks = Vec::new();
+    let mut synthetic = BTreeMap::new();
+    for task in &workflow.spec.tasks {
+        instantiate_subworkflow_task(
+            workflow,
+            task.clone(),
+            file,
+            &mut Vec::new(),
+            &mut tasks,
+            &mut synthetic,
+            diagnostics,
+        );
+    }
+    flattened.spec.tasks = tasks;
+    (flattened, synthetic)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn instantiate_subworkflow_task(
+    workflow: &Workflow,
+    task: TaskDefinition,
+    file: &str,
+    stack: &mut Vec<String>,
+    tasks: &mut Vec<TaskDefinition>,
+    synthetic: &mut BTreeMap<String, TaskUse>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(name) = task.uses.strip_prefix("workflow:") else {
+        tasks.push(task);
+        return;
+    };
+    let Some(definition) = workflow.spec.subworkflows.get(name) else {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::MissingReference,
+            file,
+            format!(
+                "sub-workflow invocation `{}` refers to unknown workflow `{name}`",
+                task.id
+            ),
+        ));
+        return;
+    };
+    if stack.iter().any(|active| active == name) {
+        let mut cycle = stack.clone();
+        cycle.push(name.to_owned());
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::DependencyCycle,
+            file,
+            format!("sub-workflow cycle: {}", cycle.join(" -> ")),
+        ));
+        return;
+    }
+    if semver::Version::parse(&definition.version).is_err() {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::SchemaViolation,
+            file,
+            format!("sub-workflow `{name}` version must be semantic versioning"),
+        ));
+        return;
+    }
+    for (label, schema) in [
+        ("inputSchema", &definition.input_schema),
+        ("outputSchema", &definition.output_schema),
+    ] {
+        if let Err(error) = jsonschema::validator_for(schema) {
+            diagnostics.push(Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                format!("sub-workflow `{name}` {label} is not valid JSON Schema: {error}"),
+            ));
+            return;
+        }
+    }
+    if task.foreach.is_some()
+        || task.matrix.is_some()
+        || task.route.is_some()
+        || task.loop_definition.is_some()
+        || task.when.is_some()
+        || !task.vars.is_empty()
+        || !task.memory_writes.is_empty()
+        || task.retry != RetryDefinition::default()
+        || task.timeout_seconds.is_some()
+        || task.output_schema.is_some()
+    {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::SchemaViolation,
+            file,
+            format!(
+                "sub-workflow invocation `{}` accepts needs, with, and failure only",
+                task.id
+            ),
+        ));
+        return;
+    }
+
+    let identity = sha256(format!("{name}@{}", definition.version).as_bytes());
+    let input_id = format!("{}--inputs-{}", task.id, &identity[..8]);
+    let namespace = format!("{}--", task.id);
+    let local_ids = definition
+        .tasks
+        .iter()
+        .map(|child| (child.id.clone(), format!("{namespace}{}", child.id)))
+        .collect::<BTreeMap<_, _>>();
+    if local_ids.values().any(|id| id == &input_id) {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::DuplicateTask,
+            file,
+            format!("sub-workflow `{name}` produces reserved task ID `{input_id}`"),
+        ));
+        return;
+    }
+
+    let mut values = definition.inputs.clone();
+    values.extend(task.input.clone());
+    let mut input_boundary = synthetic_task(&task, input_id.clone(), task.needs.clone());
+    input_boundary.input = values;
+    input_boundary.output_schema = Some(definition.input_schema.clone());
+    tasks.push(input_boundary);
+    synthetic.insert(
+        input_id.clone(),
+        TaskUse::SubworkflowInput(CompiledSubworkflowInput {
+            name: name.to_owned(),
+            version: definition.version.clone(),
+        }),
+    );
+
+    stack.push(name.to_owned());
+    for definition_task in &definition.tasks {
+        let mut child = definition_task.clone();
+        child.id = local_ids[&definition_task.id].clone();
+        child.needs = definition_task
+            .needs
+            .iter()
+            .map(|needed| {
+                local_ids
+                    .get(needed)
+                    .cloned()
+                    .unwrap_or_else(|| needed.clone())
+            })
+            .collect();
+        if !child.needs.contains(&input_id) {
+            child.needs.push(input_id.clone());
+        }
+        rewrite_subworkflow_task(
+            &mut child,
+            &local_ids,
+            &input_id,
+            &format!("{}__", task.id.replace('-', "_")),
+        );
+        namespace_subworkflow_action_state(
+            workflow,
+            &mut child,
+            &format!("{}__", task.id.replace('-', "_")),
+            file,
+            diagnostics,
+        );
+        instantiate_subworkflow_task(workflow, child, file, stack, tasks, synthetic, diagnostics);
+    }
+    stack.pop();
+
+    let children = definition
+        .tasks
+        .iter()
+        .map(|child| local_ids[&child.id].clone())
+        .collect::<Vec<_>>();
+    let outputs = rewrite_subworkflow_value(
+        &Value::Object(definition.outputs.clone().into_iter().collect()),
+        &local_ids,
+        &input_id,
+        &format!("{}__", task.id.replace('-', "_")),
+    );
+    let mut aggregate_needs = children.clone();
+    aggregate_needs.push(input_id);
+    let mut aggregate = synthetic_task(&task, task.id.clone(), aggregate_needs);
+    aggregate.input = outputs
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    aggregate.output_schema = Some(definition.output_schema.clone());
+    tasks.push(aggregate);
+    synthetic.insert(
+        task.id.clone(),
+        TaskUse::SubworkflowAggregate(CompiledSubworkflowAggregate {
+            name: name.to_owned(),
+            version: definition.version.clone(),
+            children,
+        }),
+    );
+}
+
+fn synthetic_task(source: &TaskDefinition, id: String, needs: Vec<String>) -> TaskDefinition {
+    let mut task = source.clone();
+    task.id = id;
+    task.needs = needs;
+    task.foreach = None;
+    task.matrix = None;
+    task.route = None;
+    task.loop_definition = None;
+    task.memory_writes.clear();
+    task.when = None;
+    task.vars.clear();
+    task.input.clear();
+    task.retry = RetryDefinition::default();
+    task.timeout_seconds = None;
+    task.output_schema = None;
+    task
+}
+
+fn namespace_subworkflow_action_state(
+    workflow: &Workflow,
+    task: &mut TaskDefinition,
+    prefix: &str,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(name) = task.uses.strip_prefix("action:") else {
+        return;
+    };
+    let Some(action) = workflow.spec.actions.get(name) else {
+        return;
+    };
+    let field = match action.kind {
+        ActionKind::MemoryRead | ActionKind::MemoryWrite => "key",
+        ActionKind::LongTermMemoryRead | ActionKind::LongTermMemoryWrite => "namespace",
+        _ => return,
+    };
+    let Some(Value::String(value)) = task.input.get_mut(field) else {
+        return;
+    };
+    if value.contains("${{") {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::UnsupportedCapability,
+            file,
+            format!(
+                "sub-workflow task `{}` requires a static `{field}` for isolated state",
+                task.id
+            ),
+        ));
+    } else {
+        value.insert_str(0, prefix);
+    }
+}
+
+fn rewrite_subworkflow_task(
+    task: &mut TaskDefinition,
+    local_ids: &BTreeMap<String, String>,
+    input_id: &str,
+    memory_prefix: &str,
+) {
+    task.when = task
+        .when
+        .as_ref()
+        .map(|value| rewrite_subworkflow_string(value, local_ids, input_id, memory_prefix));
+    task.vars = rewrite_subworkflow_map(&task.vars, local_ids, input_id, memory_prefix);
+    task.input = rewrite_subworkflow_map(&task.input, local_ids, input_id, memory_prefix);
+    task.memory_writes = task
+        .memory_writes
+        .iter()
+        .map(|key| format!("{memory_prefix}{key}"))
+        .collect();
+    if let Some(foreach) = &mut task.foreach {
+        foreach.items = foreach
+            .items
+            .iter()
+            .map(|value| rewrite_subworkflow_value(value, local_ids, input_id, memory_prefix))
+            .collect();
+    }
+    if let Some(matrix) = &mut task.matrix {
+        for values in matrix.axes.values_mut() {
+            *values = values
+                .iter()
+                .map(|value| rewrite_subworkflow_value(value, local_ids, input_id, memory_prefix))
+                .collect();
+        }
+    }
+    if let Some(route) = &mut task.route {
+        route.select =
+            rewrite_subworkflow_string(&route.select, local_ids, input_id, memory_prefix);
+        for case in &mut route.cases {
+            case.tasks = case
+                .tasks
+                .iter()
+                .map(|id| local_ids.get(id).cloned().unwrap_or_else(|| id.clone()))
+                .collect();
+        }
+        route.default = route
+            .default
+            .iter()
+            .map(|id| local_ids.get(id).cloned().unwrap_or_else(|| id.clone()))
+            .collect();
+    }
+    if let Some(loop_definition) = &mut task.loop_definition {
+        loop_definition.condition = rewrite_subworkflow_string(
+            &loop_definition.condition,
+            local_ids,
+            input_id,
+            memory_prefix,
+        );
+        loop_definition.initial =
+            rewrite_subworkflow_value(&loop_definition.initial, local_ids, input_id, memory_prefix);
+    }
+}
+
+fn rewrite_subworkflow_map(
+    values: &JsonMap,
+    local_ids: &BTreeMap<String, String>,
+    input_id: &str,
+    memory_prefix: &str,
+) -> JsonMap {
+    values
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                rewrite_subworkflow_value(value, local_ids, input_id, memory_prefix),
+            )
+        })
+        .collect()
+}
+
+fn rewrite_subworkflow_value(
+    value: &Value,
+    local_ids: &BTreeMap<String, String>,
+    input_id: &str,
+    memory_prefix: &str,
+) -> Value {
+    match value {
+        Value::String(value) => Value::String(rewrite_subworkflow_string(
+            value,
+            local_ids,
+            input_id,
+            memory_prefix,
+        )),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| rewrite_subworkflow_value(value, local_ids, input_id, memory_prefix))
+                .collect(),
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        rewrite_subworkflow_value(value, local_ids, input_id, memory_prefix),
+                    )
+                })
+                .collect(),
+        ),
+        value => value.clone(),
+    }
+}
+
+fn rewrite_subworkflow_string(
+    value: &str,
+    local_ids: &BTreeMap<String, String>,
+    input_id: &str,
+    memory_prefix: &str,
+) -> String {
+    let mut rewritten = value.replace("inputs.", &format!("tasks.{input_id}.output."));
+    rewritten = rewritten.replace("memory.", &format!("memory.{memory_prefix}"));
+    for (local, namespaced) in local_ids {
+        rewritten = rewritten.replace(&format!("tasks.{local}."), &format!("tasks.{namespaced}."));
+    }
+    rewritten
+}
+
 pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut tasks = BTreeMap::new();
     let mut declaration_order = Vec::new();
     let mut source_positions = BTreeMap::new();
-    let expanded_tasks = expand_tasks(workflow, file, &mut diagnostics);
+    let (workflow, synthetic_uses) = expand_subworkflow_calls(workflow, file, &mut diagnostics);
+    let expanded_tasks = expand_tasks(&workflow, file, &mut diagnostics, &synthetic_uses);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -691,17 +1095,23 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             TaskUse::Agent(_)
             | TaskUse::Aggregate(_)
             | TaskUse::Router(_)
-            | TaskUse::LoopAggregate(_) => JsonMap::new(),
+            | TaskUse::LoopAggregate(_)
+            | TaskUse::SubworkflowInput(_)
+            | TaskUse::SubworkflowAggregate(_) => JsonMap::new(),
         };
         input.extend(task.input.clone());
         let memory_writes = if matches!(
             task_use,
-            TaskUse::Aggregate(_) | TaskUse::Router(_) | TaskUse::LoopAggregate(_)
+            TaskUse::Aggregate(_)
+                | TaskUse::Router(_)
+                | TaskUse::LoopAggregate(_)
+                | TaskUse::SubworkflowInput(_)
+                | TaskUse::SubworkflowAggregate(_)
         ) {
             Vec::new()
         } else {
             task_memory_writes(
-                workflow,
+                &workflow,
                 &task_use,
                 &input,
                 &task.memory_writes,
@@ -720,7 +1130,9 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             TaskUse::Action(_)
             | TaskUse::Aggregate(_)
             | TaskUse::Router(_)
-            | TaskUse::LoopAggregate(_) => JsonMap::new(),
+            | TaskUse::LoopAggregate(_)
+            | TaskUse::SubworkflowInput(_)
+            | TaskUse::SubworkflowAggregate(_) => JsonMap::new(),
         };
         vars.extend(task.vars.clone());
         declaration_order.push(task.id.clone());
@@ -781,8 +1193,8 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
     }
 
     validate_routers(&mut tasks, &source_positions, file, &mut diagnostics);
-    validate_tools(workflow, file, &mut diagnostics);
-    validate_agents(workflow, file, &mut diagnostics);
+    validate_tools(&workflow, file, &mut diagnostics);
+    validate_agents(&workflow, file, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -794,7 +1206,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             format!("task dependency cycle: {}", cycle.join(" -> ")),
         )]
     })?;
-    validate_parallel_memory_writes(workflow, &order, &tasks, file, &mut diagnostics);
+    validate_parallel_memory_writes(&workflow, &order, &tasks, file, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -812,6 +1224,9 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             TaskUse::Aggregate(_) => PlanPredictability::FullyPredictable,
             TaskUse::Router(_) => PlanPredictability::FullyPredictable,
             TaskUse::LoopAggregate(_) => PlanPredictability::FullyPredictable,
+            TaskUse::SubworkflowInput(_) | TaskUse::SubworkflowAggregate(_) => {
+                PlanPredictability::FullyPredictable
+            }
         };
     }
     let predictability = tasks
@@ -823,7 +1238,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             PlanPredictability::RequiresExecution => 2,
         })
         .unwrap_or(PlanPredictability::FullyPredictable);
-    let workflow_json = serde_json::to_vec(workflow).map_err(|error| {
+    let workflow_json = serde_json::to_vec(&workflow).map_err(|error| {
         vec![Diagnostic::error(
             DiagnosticCode::SchemaViolation,
             file,
@@ -831,7 +1246,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         )]
     })?;
     let workflow_digest = sha256(&workflow_json);
-    let requirements = plan_requirements(workflow, &tasks);
+    let requirements = plan_requirements(&workflow, &tasks);
     let plan_seed = serde_json::to_vec(&(
         &workflow.metadata.name,
         &workflow_digest,
@@ -909,7 +1324,9 @@ fn task_memory_writes(
         TaskUse::Agent(_)
         | TaskUse::Aggregate(_)
         | TaskUse::Router(_)
-        | TaskUse::LoopAggregate(_) => false,
+        | TaskUse::LoopAggregate(_)
+        | TaskUse::SubworkflowInput(_)
+        | TaskUse::SubworkflowAggregate(_) => false,
     };
     if !is_memory_write {
         if !declared.is_empty() {
@@ -1272,7 +1689,11 @@ fn plan_requirements(
                     predictability: task.predictability,
                 }]
             }
-            TaskUse::Aggregate(_) | TaskUse::Router(_) | TaskUse::LoopAggregate(_) => Vec::new(),
+            TaskUse::Aggregate(_)
+            | TaskUse::Router(_)
+            | TaskUse::LoopAggregate(_)
+            | TaskUse::SubworkflowInput(_)
+            | TaskUse::SubworkflowAggregate(_) => Vec::new(),
         })
         .collect();
     PlanRequirements {
@@ -2181,6 +2602,198 @@ spec:
                 .message
                 .contains("bindings conflict with task vars")
         }));
+    }
+
+    #[test]
+    fn subworkflow_compiles_to_typed_namespaced_boundaries() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: subworkflow }
+spec:
+  inputs: { message: hello }
+  actions:
+    assign: { kind: builtin.assign }
+  subworkflows:
+    summarize:
+      version: 1.2.0
+      inputs: { message: default }
+      inputSchema:
+        type: object
+        required: [message]
+        additionalProperties: false
+        properties: { message: { type: string } }
+      outputs:
+        result: "${{ tasks.second.output.output.value }}"
+      outputSchema:
+        type: object
+        required: [result]
+        additionalProperties: false
+        properties: { result: { type: string } }
+      tasks:
+        - { id: first, uses: "action:assign", with: { value: "${{ inputs.message }}" } }
+        - id: second
+          uses: action:assign
+          needs: [first]
+          with: { value: "${{ tasks.first.output.output.value }}" }
+  tasks:
+    - id: summary
+      uses: workflow:summarize
+      with: { message: "${{ inputs.message }}" }
+    - { id: done, uses: "action:assign", needs: [summary] }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("sub-workflow compiles");
+        let second = compile(&workflow, "fixture.yaml").expect("stable expansion");
+        assert_eq!(plan, second);
+        assert_eq!(plan.order.len(), 5);
+        let input_id = plan
+            .order
+            .iter()
+            .find(|id| id.starts_with("summary--inputs-"))
+            .expect("input boundary")
+            .clone();
+        assert!(matches!(
+            plan.tasks[&input_id].uses,
+            TaskUse::SubworkflowInput(_)
+        ));
+        assert_eq!(
+            plan.tasks["summary--first"].input["value"],
+            Value::String(format!("${{{{ tasks.{input_id}.output.message }}}}"))
+        );
+        assert_eq!(
+            plan.tasks["summary--second"].needs,
+            ["summary--first".to_owned(), input_id.clone()]
+        );
+        let aggregate = match &plan.tasks["summary"].uses {
+            TaskUse::SubworkflowAggregate(aggregate) => aggregate,
+            other => panic!("expected sub-workflow aggregate, got {other:?}"),
+        };
+        assert_eq!(aggregate.name, "summarize");
+        assert_eq!(aggregate.version, "1.2.0");
+        assert_eq!(aggregate.children, ["summary--first", "summary--second"]);
+        assert_eq!(
+            plan.tasks["summary"].needs,
+            [
+                "summary--first".to_owned(),
+                "summary--second".to_owned(),
+                input_id.clone()
+            ]
+        );
+        assert_eq!(
+            plan.tasks["summary"].input["result"],
+            "${{ tasks.summary--second.output.output.value }}"
+        );
+    }
+
+    #[test]
+    fn subworkflow_rejects_cycles_and_invalid_versions() {
+        let cycle = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: subworkflow-cycle }
+spec:
+  subworkflows:
+    first:
+      version: 1.0.0
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      tasks: [{ id: nested, uses: "workflow:second" }]
+    second:
+      version: 1.0.0
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      tasks: [{ id: nested, uses: "workflow:first" }]
+  tasks: [{ id: invoke, uses: "workflow:first" }]
+"#,
+        );
+        let diagnostics = compile(&cycle, "fixture.yaml").expect_err("cycle rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("sub-workflow cycle: first -> second -> first")
+        }));
+
+        let invalid = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-version }
+spec:
+  subworkflows:
+    broken:
+      version: latest
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      tasks: []
+  tasks: [{ id: invoke, uses: "workflow:broken" }]
+"#,
+        );
+        let diagnostics = compile(&invalid, "fixture.yaml").expect_err("version rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("version must be semantic versioning")
+        }));
+
+        let output_override = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: output-override }
+spec:
+  subworkflows:
+    typed:
+      version: 1.0.0
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      tasks: []
+  tasks:
+    - id: invoke
+      uses: workflow:typed
+      outputSchema: { type: string }
+"#,
+        );
+        let diagnostics = compile(&output_override, "fixture.yaml").expect_err("override rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("accepts needs, with, and failure only")
+        }));
+    }
+
+    #[test]
+    fn subworkflow_working_memory_is_namespaced_per_invocation() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: isolated-subworkflows }
+spec:
+  runtime: { maxConcurrency: 2 }
+  actions:
+    remember: { kind: builtin.memory.write }
+  subworkflows:
+    remember:
+      version: 1.0.0
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      tasks:
+        - id: write
+          uses: action:remember
+          with: { key: result, value: stored }
+  tasks:
+    - { id: left, uses: "workflow:remember" }
+    - { id: right, uses: "workflow:remember" }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("isolated calls compile");
+        assert_eq!(plan.tasks["left--write"].memory_writes, ["left__result"]);
+        assert_eq!(plan.tasks["right--write"].memory_writes, ["right__result"]);
+        assert_eq!(plan.tasks["left--write"].input["key"], "left__result");
+        assert_eq!(plan.tasks["right--write"].input["key"], "right__result");
     }
 
     #[test]

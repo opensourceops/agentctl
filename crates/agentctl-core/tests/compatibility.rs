@@ -42,7 +42,9 @@ fn typescript_assign_fixture_translates_to_the_language_neutral_contract() {
         TaskUse::Agent(_)
         | TaskUse::Aggregate(_)
         | TaskUse::Router(_)
-        | TaskUse::LoopAggregate(_) => {
+        | TaskUse::LoopAggregate(_)
+        | TaskUse::SubworkflowInput(_)
+        | TaskUse::SubworkflowAggregate(_) => {
             panic!("expected action task")
         }
     }
