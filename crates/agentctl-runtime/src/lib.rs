@@ -40,6 +40,7 @@ use url::Url;
 use uuid::Uuid;
 
 mod process;
+pub mod secret;
 
 use process::{ProcessOutputLimits, ProcessRunError, run_bounded_process};
 
@@ -3049,20 +3050,18 @@ impl Runtime {
                     .unwrap_or_else(|| self.base_path.clone());
                 let mut resolved_environment = BTreeMap::new();
                 let mut environment_digests = BTreeMap::new();
+                let secret_resolver = secret::SecretResolver::restricted(policy.clone());
                 for (name, reference) in &action.env {
                     policy.authorize_environment(name)?;
-                    policy.authorize_environment(&reference.env)?;
-                    let value = std::env::var(&reference.env).map_err(|_| {
-                        RuntimeError::InvalidState(format!(
-                            "required environment variable `{}` is unavailable",
-                            reference.env
-                        ))
-                    })?;
+                    let value = secret_resolver
+                        .resolve(reference, cancellation)
+                        .await
+                        .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
                     environment_digests.insert(
                         name.clone(),
                         serde_json::json!({
-                            "source": reference.env,
-                            "valueDigest": digest(value.as_bytes()),
+                            "source": reference.source_description(),
+                            "valueDigest": digest(value.expose().as_bytes()),
                         }),
                     );
                     resolved_environment.insert(name.clone(), value);
@@ -3111,7 +3110,7 @@ impl Runtime {
                             .env_clear()
                             .kill_on_drop(true);
                         for (name, value) in &resolved_environment {
-                            process.env(name, value);
+                            process.env(name, value.expose());
                         }
                         let timeout = Duration::from_secs(
                             action
@@ -3129,7 +3128,7 @@ impl Runtime {
                             Ok(result) => {
                                 let secrets = resolved_environment
                                     .values()
-                                    .map(String::as_str)
+                                    .map(agentctl_core::secret::SecretValue::expose)
                                     .collect::<Vec<_>>();
                                 let output = serde_json::json!({
                                     "status": if result.status.success() {"changed"} else {"failed"},
@@ -3176,7 +3175,7 @@ impl Runtime {
                             }) => {
                                 let secrets = resolved_environment
                                     .values()
-                                    .map(String::as_str)
+                                    .map(agentctl_core::secret::SecretValue::expose)
                                     .collect::<Vec<_>>();
                                 let diagnostic = serde_json::json!({
                                     "code": "subprocess_output_limit_exceeded",
@@ -8873,8 +8872,15 @@ spec:
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn normal_subprocess_success_redacts_secret_output() {
+    async fn file_secret_subprocess_output_is_redacted_and_never_persisted() {
         let directory = tempdir().expect("tempdir");
+        std::fs::create_dir(directory.path().join("secrets")).expect("secret directory");
+        let secret = "mounted-file-secret-marker";
+        std::fs::write(
+            directory.path().join("secrets/token"),
+            format!("{secret}\n"),
+        )
+        .expect("secret file");
         let (workflow, plan) = compile_fixture(
             r#"
 apiVersion: agentctl.dev/v1alpha1
@@ -8884,7 +8890,8 @@ spec:
   policy:
     workspaceRoot: .
     processAllowlist: [sh]
-    environmentAllowlist: [SECRET, PATH]
+    environmentAllowlist: [SECRET]
+    secretFileRoots: [secrets]
     approval: never
   actions:
     print:
@@ -8892,11 +8899,13 @@ spec:
       command: /bin/sh
       args: [-c, 'printf "%s" "$SECRET"']
       env:
-        SECRET: { env: PATH }
+        SECRET: { file: secrets/token }
   tasks: [{ id: print, uses: "action:print" }]
 "#,
         );
-        let outcome = runtime(SqliteStore::open_memory().expect("store"), directory.path())
+        let database = directory.path().join("runtime.db");
+        let store = SqliteStore::open(&database).expect("store");
+        let outcome = runtime(store.clone(), directory.path())
             .start(
                 &workflow,
                 &plan,
@@ -8911,6 +8920,38 @@ spec:
             outcome.output.as_ref().expect("output")["print"]["stdout"],
             "[REDACTED]"
         );
+        let effect = &store.list_effects(&outcome.run_id).expect("effects")[0];
+        assert_eq!(
+            effect.request.input["environment"]["SECRET"]["source"],
+            "secret file `secrets/token`"
+        );
+        assert!(
+            !serde_json::to_string(effect)
+                .expect("effect json")
+                .contains(secret)
+        );
+        let raw = rusqlite::Connection::open(database).expect("raw database");
+        let occurrences: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                   SELECT workflow_json AS value FROM runs
+                   UNION ALL SELECT inputs_json FROM runs
+                   UNION ALL SELECT working_memory_json FROM runs
+                   UNION ALL SELECT output_json FROM runs WHERE output_json IS NOT NULL
+                   UNION ALL SELECT output_json FROM task_states WHERE output_json IS NOT NULL
+                   UNION ALL SELECT error FROM task_states WHERE error IS NOT NULL
+                   UNION ALL SELECT input_json FROM effects
+                   UNION ALL SELECT result_json FROM effects WHERE result_json IS NOT NULL
+                   UNION ALL SELECT error FROM effects WHERE error IS NOT NULL
+                   UNION ALL SELECT state_json FROM checkpoints
+                   UNION ALL SELECT payload_json FROM audit_events
+                   UNION ALL SELECT event_json FROM trace_events
+                 ) WHERE instr(value, ?1) > 0",
+                [secret],
+                |row| row.get(0),
+            )
+            .expect("secret scan");
+        assert_eq!(occurrences, 0);
     }
 
     #[cfg(unix)]

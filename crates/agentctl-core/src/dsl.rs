@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -90,10 +91,55 @@ pub struct ProviderDefinition {
     pub headers: BTreeMap<String, SecretReference>,
 }
 
+pub const DEFAULT_SECRET_PROCESS_TIMEOUT_SECONDS: u64 = 5;
+pub const DEFAULT_SECRET_OUTPUT_LIMIT_BYTES: u64 = 16 * 1024;
+pub const MAX_SECRET_OUTPUT_LIMIT_BYTES: u64 = 64 * 1024;
+pub const MAX_SECRET_PROCESS_TIMEOUT_SECONDS: u64 = 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum SecretReference {
+    Environment { env: String },
+    File { file: String },
+    Process { process: SecretProcessReference },
+}
+
+impl SecretReference {
+    #[must_use]
+    pub fn environment(name: impl Into<String>) -> Self {
+        Self::Environment { env: name.into() }
+    }
+
+    #[must_use]
+    pub fn source_description(&self) -> String {
+        match self {
+            Self::Environment { env } => format!("environment variable `{env}`"),
+            Self::File { file } => format!("secret file `{file}`"),
+            Self::Process { process } => {
+                format!("secret process `{}`", process.command)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SecretReference {
-    pub env: String,
+pub struct SecretProcessReference {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_secret_process_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_secret_output_limit_bytes")]
+    pub output_limit_bytes: u64,
+}
+
+const fn default_secret_process_timeout_seconds() -> u64 {
+    DEFAULT_SECRET_PROCESS_TIMEOUT_SECONDS
+}
+
+const fn default_secret_output_limit_bytes() -> u64 {
+    DEFAULT_SECRET_OUTPUT_LIMIT_BYTES
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -433,6 +479,10 @@ pub struct PolicyDefinition {
     #[serde(default)]
     pub process_allowlist: Vec<String>,
     #[serde(default)]
+    pub secret_file_roots: Vec<String>,
+    #[serde(default)]
+    pub secret_process_allowlist: Vec<String>,
+    #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
     pub tools_allow: Vec<String>,
@@ -452,6 +502,8 @@ impl Default for PolicyDefinition {
             environment_allowlist: Vec::new(),
             network_allowlist: Vec::new(),
             process_allowlist: Vec::new(),
+            secret_file_roots: Vec::new(),
+            secret_process_allowlist: Vec::new(),
             providers: Vec::new(),
             tools_allow: Vec::new(),
             tools_deny: Vec::new(),
@@ -871,31 +923,49 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
         }
     }
     for (name, provider) in &workflow.spec.providers {
-        if let Some(secret) = &provider.credential
-            && !valid_env_name(&secret.env)
-        {
-            diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::InvalidSecretReference,
-                    file,
-                    format!("provider `{name}` uses invalid environment variable name"),
-                )
-                .with_path(format!("spec.providers.{name}.credential.env")),
+        if let Some(secret) = &provider.credential {
+            validate_secret_reference(
+                secret,
+                &format!("provider `{name}` credential"),
+                &format!("spec.providers.{name}.credential"),
+                &workflow.spec.policy,
+                file,
+                &mut diagnostics,
             );
         }
         for (header, secret) in &provider.headers {
-            if !valid_env_name(&secret.env) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        DiagnosticCode::InvalidSecretReference,
-                        file,
-                        format!(
-                            "provider `{name}` header `{header}` uses an invalid secret reference"
-                        ),
-                    )
-                    .with_path(format!("spec.providers.{name}.headers.{header}.env")),
-                );
-            }
+            validate_secret_reference(
+                secret,
+                &format!("provider `{name}` header `{header}`"),
+                &format!("spec.providers.{name}.headers.{header}"),
+                &workflow.spec.policy,
+                file,
+                &mut diagnostics,
+            );
+        }
+    }
+    for (name, action) in &workflow.spec.actions {
+        for (environment, secret) in &action.env {
+            validate_secret_reference(
+                secret,
+                &format!("action `{name}` environment `{environment}`"),
+                &format!("spec.actions.{name}.env.{environment}"),
+                &workflow.spec.policy,
+                file,
+                &mut diagnostics,
+            );
+        }
+    }
+    for (name, tool) in &workflow.spec.tools {
+        for (position, secret) in tool.secrets.iter().enumerate() {
+            validate_secret_reference(
+                secret,
+                &format!("tool `{name}` secret {position}"),
+                &format!("spec.tools.{name}.secrets[{position}]"),
+                &workflow.spec.policy,
+                file,
+                &mut diagnostics,
+            );
         }
     }
     for (name, agent) in &workflow.spec.agents {
@@ -970,37 +1040,96 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
     }
     for (name, server) in &workflow.spec.mcp_servers {
         for (header, secret) in &server.headers {
-            if !valid_env_name(&secret.env) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        DiagnosticCode::InvalidSecretReference,
-                        file,
-                        format!(
-                            "MCP server `{name}` header `{header}` has an invalid secret reference"
-                        ),
-                    )
-                    .with_path(format!("spec.mcpServers.{name}.headers.{header}.env")),
-                );
-            }
+            validate_secret_reference(
+                secret,
+                &format!("MCP server `{name}` header `{header}`"),
+                &format!("spec.mcpServers.{name}.headers.{header}"),
+                &workflow.spec.policy,
+                file,
+                &mut diagnostics,
+            );
         }
     }
     for (name, peer) in &workflow.spec.a2a_peers {
         for (header, secret) in &peer.headers {
-            if !valid_env_name(&secret.env) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        DiagnosticCode::InvalidSecretReference,
-                        file,
-                        format!(
-                            "A2A peer `{name}` header `{header}` has an invalid secret reference"
-                        ),
-                    )
-                    .with_path(format!("spec.a2aPeers.{name}.headers.{header}.env")),
-                );
-            }
+            validate_secret_reference(
+                secret,
+                &format!("A2A peer `{name}` header `{header}`"),
+                &format!("spec.a2aPeers.{name}.headers.{header}"),
+                &workflow.spec.policy,
+                file,
+                &mut diagnostics,
+            );
         }
     }
     diagnostics
+}
+
+fn validate_secret_reference(
+    reference: &SecretReference,
+    label: &str,
+    path: &str,
+    policy: &PolicyDefinition,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let error = match reference {
+        SecretReference::Environment { env } if !valid_env_name(env) => {
+            Some(format!("{label} uses an invalid environment variable name"))
+        }
+        SecretReference::File { file } if file.trim().is_empty() || file.contains('\0') => {
+            Some(format!("{label} uses an invalid secret file path"))
+        }
+        SecretReference::File { .. } if policy.secret_file_roots.is_empty() => Some(format!(
+            "{label} requires at least one policy.secretFileRoots entry"
+        )),
+        SecretReference::Process { process } if process.command.trim().is_empty() => {
+            Some(format!("{label} uses an empty secret process command"))
+        }
+        SecretReference::Process { process }
+            if process.args.len() > 64
+                || process.args.iter().any(|argument| argument.len() > 4096) =>
+        {
+            Some(format!(
+                "{label} secret process accepts at most 64 arguments of 4096 bytes each"
+            ))
+        }
+        SecretReference::Process { process }
+            if process.timeout_seconds == 0
+                || process.timeout_seconds > MAX_SECRET_PROCESS_TIMEOUT_SECONDS =>
+        {
+            Some(format!(
+                "{label} secret process timeoutSeconds must be between 1 and {MAX_SECRET_PROCESS_TIMEOUT_SECONDS}"
+            ))
+        }
+        SecretReference::Process { process }
+            if process.output_limit_bytes == 0
+                || process.output_limit_bytes > MAX_SECRET_OUTPUT_LIMIT_BYTES =>
+        {
+            Some(format!(
+                "{label} secret process outputLimitBytes must be between 1 and {MAX_SECRET_OUTPUT_LIMIT_BYTES}"
+            ))
+        }
+        SecretReference::Process { process }
+            if !policy.secret_process_allowlist.iter().any(|allowed| {
+                Path::new(&process.command)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|basename| basename == allowed)
+            }) =>
+        {
+            Some(format!(
+                "{label} process is not in policy.secretProcessAllowlist"
+            ))
+        }
+        _ => None,
+    };
+    if let Some(error) = error {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::InvalidSecretReference, file, error)
+                .with_path(path.to_owned()),
+        );
+    }
 }
 
 fn valid_env_name(name: &str) -> bool {
@@ -1066,6 +1195,46 @@ spec:
         );
         let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("bad env name");
         assert_eq!(diagnostics[0].code, DiagnosticCode::InvalidSecretReference);
+    }
+
+    #[test]
+    fn parses_bounded_file_and_process_secret_references() {
+        let source = MINIMAL.replace(
+            "  actions:",
+            "  policy:\n    secretFileRoots: [secrets]\n    secretProcessAllowlist: [secret-helper]\n  providers:\n    file:\n      kind: openai\n      credential: { file: secrets/openai }\n    process:\n      kind: anthropic\n      credential:\n        process:\n          command: /usr/local/bin/secret-helper\n          args: [read, anthropic]\n          timeoutSeconds: 3\n          outputLimitBytes: 128\n  actions:",
+        );
+        let workflow = parse_workflow(&source, "secrets.yaml")
+            .expect("valid secret references")
+            .workflow;
+        assert!(matches!(
+            workflow.spec.providers["file"].credential.as_ref(),
+            Some(SecretReference::File { .. })
+        ));
+        assert!(matches!(
+            workflow.spec.providers["process"].credential.as_ref(),
+            Some(SecretReference::Process { .. })
+        ));
+    }
+
+    #[test]
+    fn secret_file_and_process_references_require_explicit_policy() {
+        let file_source = MINIMAL.replace(
+            "  actions:",
+            "  providers:\n    openai:\n      kind: openai\n      credential: { file: /run/secrets/openai }\n  actions:",
+        );
+        let diagnostics =
+            parse_workflow(&file_source, "bad.yaml").expect_err("missing secret root");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::InvalidSecretReference);
+        assert!(diagnostics[0].message.contains("secretFileRoots"));
+
+        let process_source = MINIMAL.replace(
+            "  actions:",
+            "  providers:\n    openai:\n      kind: openai\n      credential:\n        process:\n          command: secret-helper\n          timeoutSeconds: 0\n  actions:",
+        );
+        let diagnostics =
+            parse_workflow(&process_source, "bad.yaml").expect_err("invalid secret process");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::InvalidSecretReference);
+        assert!(diagnostics[0].message.contains("timeoutSeconds"));
     }
 
     #[test]

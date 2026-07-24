@@ -109,6 +109,8 @@
             "environmentAllowlist": [],
             "networkAllowlist": [],
             "processAllowlist": [],
+            "secretFileRoots": [],
+            "secretProcessAllowlist": [],
             "providers": [],
             "toolsAllow": [],
             "toolsDeny": [],
@@ -215,15 +217,74 @@
       ]
     },
     "SecretReference": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "env"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "process": {
+              "$ref": "#/$defs/SecretProcessReference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "process"
+          ]
+        }
+      ]
+    },
+    "SecretProcessReference": {
       "type": "object",
       "properties": {
-        "env": {
+        "command": {
           "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 5
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 16384
         }
       },
       "additionalProperties": false,
       "required": [
-        "env"
+        "command"
       ]
     },
     "AgentDefinition": {
@@ -722,6 +783,20 @@
           "default": []
         },
         "processAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "secretFileRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "secretProcessAllowlist": {
           "type": "array",
           "items": {
             "type": "string"

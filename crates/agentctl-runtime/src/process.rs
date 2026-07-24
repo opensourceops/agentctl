@@ -51,6 +51,15 @@ pub enum ProcessRunError {
     },
 }
 
+impl ProcessRunError {
+    pub(crate) fn clear_captured_output(&mut self) {
+        if let Self::OutputLimitExceeded { stdout, stderr, .. } = self {
+            stdout.fill(0);
+            stderr.fill(0);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Stream {
     Stdout,

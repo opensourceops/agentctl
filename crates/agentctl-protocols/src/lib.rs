@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentctl_core::dsl::ActionKind;
+use agentctl_core::secret::SecretValue;
 use agentctl_runtime::{ExternalActionHandler, RuntimeError};
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -50,7 +51,7 @@ pub enum ProtocolError {
 #[derive(Debug, Clone)]
 pub struct ProtocolHttpConfig {
     pub url: Url,
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, SecretValue>,
     pub timeout: Duration,
 }
 
@@ -262,7 +263,7 @@ impl McpClient {
                 .post(self.config.url.clone())
                 .header("Accept", "application/json, text/event-stream")
                 .header("Origin", "agentctl://local"),
-            |request, (name, value)| request.header(name, value),
+            |request, (name, value)| request.header(name, value.expose()),
         )
     }
 
@@ -351,7 +352,7 @@ impl A2aClient {
     ) -> Result<AgentCard, ProtocolError> {
         let request = self.card_config.headers.iter().fold(
             self.client.get(self.card_config.url.clone()),
-            |request, (name, value)| request.header(name, value),
+            |request, (name, value)| request.header(name, value.expose()),
         );
         let response =
             execute_request(request, self.card_config.timeout, cancellation, None).await?;
@@ -557,7 +558,7 @@ impl A2aClient {
                 .post(url)
                 .header("A2A-Version", A2A_PROTOCOL_VERSION)
                 .header("Content-Type", "application/json"),
-            |request, (name, value)| request.header(name, value),
+            |request, (name, value)| request.header(name, value.expose()),
         ))
     }
 }
@@ -683,7 +684,7 @@ async fn response_json<T: for<'de> Deserialize<'de>>(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
-    headers: &BTreeMap<String, String>,
+    headers: &BTreeMap<String, SecretValue>,
 ) -> Result<T, ProtocolError> {
     if !response.status().is_success() {
         return Err(http_error(response).await);
@@ -699,7 +700,7 @@ async fn response_value(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
-    headers: &BTreeMap<String, String>,
+    headers: &BTreeMap<String, SecretValue>,
 ) -> Result<Value, ProtocolError> {
     response_values(response, timeout, cancellation, headers)
         .await?
@@ -712,7 +713,7 @@ async fn response_values(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
-    headers: &BTreeMap<String, String>,
+    headers: &BTreeMap<String, SecretValue>,
 ) -> Result<Vec<Value>, ProtocolError> {
     if !response.status().is_success() {
         return Err(http_error(response).await);
@@ -747,11 +748,11 @@ async fn response_values(
     }
 }
 
-fn redact_header_secrets(value: &mut Value, headers: &BTreeMap<String, String>) {
+fn redact_header_secrets(value: &mut Value, headers: &BTreeMap<String, SecretValue>) {
     match value {
         Value::String(text) => {
             for secret in headers.values().filter(|secret| !secret.is_empty()) {
-                *text = text.replace(secret, "[REDACTED]");
+                *text = text.replace(secret.expose(), "[REDACTED]");
             }
         }
         Value::Array(values) => {
@@ -766,7 +767,9 @@ fn redact_header_secrets(value: &mut Value, headers: &BTreeMap<String, String>) 
                 let name = headers
                     .values()
                     .filter(|secret| !secret.is_empty())
-                    .fold(name, |name, secret| name.replace(secret, "[REDACTED]"));
+                    .fold(name, |name, secret| {
+                        name.replace(secret.expose(), "[REDACTED]")
+                    });
                 values.insert(name, value);
             }
         }
@@ -914,7 +917,7 @@ mod tests {
             .await;
         let client = McpClient::new(ProtocolHttpConfig {
             url: Url::parse(&format!("{}/mcp", server.uri())).expect("url"),
-            headers: BTreeMap::from([("authorization".to_owned(), "Bearer fixture".to_owned())]),
+            headers: BTreeMap::from([("authorization".to_owned(), "Bearer fixture".into())]),
             timeout: Duration::from_secs(2),
         })
         .expect("client");

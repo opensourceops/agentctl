@@ -96,7 +96,12 @@ An exact template preserves objects, arrays, booleans, numbers, strings, and nul
 
 ## Secret references
 
-Provider credentials, action environment values, and protocol headers use `{ env: NAME }`. The environment name is stored in the workflow, but the value is resolved only at the adapter boundary and must be allowed by policy.
+Provider credentials, action environment values, and protocol headers use
+`{ env: NAME }`, `{ file: PATH }`, or a bounded `{ process: ... }` reference.
+The source description is stored in the workflow, but the value is resolved
+only at the execution boundary. File and process sources require explicit
+`secretFileRoots` or `secretProcessAllowlist` policy. See
+[Secret references](../guides/SECRET_REFERENCES.md).
 
 ## Example and validation
 
@@ -108,4 +113,6 @@ agentctl plan examples/v1/dataflow.yaml
 agentctl run examples/v1/dataflow.yaml --db /tmp/dataflow.db --output json --color never
 ```
 
-Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Policies](../policies.md), [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).
+Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Secret
+references](../guides/SECRET_REFERENCES.md), [Policies](../policies.md),
+[Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).

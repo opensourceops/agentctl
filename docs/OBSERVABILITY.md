@@ -41,6 +41,11 @@ When diagnosing a failure, correlate the final envelope's run and trace IDs with
 
 Sensitive field names and registered secret values are redacted before trace attributes leave the runtime. Provider response content is not printed by the live smoke. Operators must still treat trace backends and the local database as sensitive because prompts, file content, tool output, and remote artifacts may contain confidential non-secret data.
 
-Keep provider credentials in environment references, never workflow inputs or command arguments. Apply access control and retention to the database, collected artifacts, CI logs, and trace backend. Before sharing diagnostics, remove credentials, prompt content, file content, remote payloads, and identifying metadata; a run ID alone is sufficient for local correlation.
+Keep provider credentials in typed environment, mounted-file, or policy-gated
+process references, never workflow inputs or command arguments. Apply access
+control and retention to the database, collected artifacts, CI logs, and trace
+backend. Before sharing diagnostics, remove credentials, prompt content, file
+content, remote payloads, and identifying metadata; a run ID alone is
+sufficient for local correlation.
 
 See [CLI output and exit codes](reference/CLI_OUTPUT.md), [local operation](guides/LOCAL_OPERATION.md), and [runtime database and migrations](reference/DATABASE.md) for the complete operating contract.

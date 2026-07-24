@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 31;
+const ACCEPTANCE_SCENARIOS: usize = 32;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1225,6 +1225,92 @@ pub fn run(root: &Path) -> Result<()> {
     ensure!(stored_inputs.starts_with("agentctl.encrypted.v1:acceptance-key-two:"));
     ensure!(!serde_json::to_string(&inventory)?.contains(&key_one));
     ensure!(!serde_json::to_string(&rotated)?.contains(&key_two));
+
+    scenario(
+        32,
+        "file and process secret providers are bounded, redacted, and never persisted",
+    );
+    let secret_workspace = workspace.join("secret-providers");
+    fs::create_dir_all(secret_workspace.join("secrets"))?;
+    let secret_marker = "agentctl-mounted-secret-acceptance-marker";
+    fs::write(
+        secret_workspace.join("secrets/token"),
+        format!("{secret_marker}\n"),
+    )?;
+    let secret_workflow = secret_workspace.join("workflow.yaml");
+    let binary_path = path(&binary)?;
+    let secret_document = serde_json::json!({
+        "apiVersion": "agentctl.dev/v1alpha1",
+        "kind": "Workflow",
+        "metadata": {"name": "secret-providers"},
+        "spec": {
+            "policy": {
+                "workspaceRoot": ".",
+                "processAllowlist": ["agentctl"],
+                "environmentAllowlist": ["FILE_SECRET", "PROCESS_SECRET"],
+                "secretFileRoots": ["secrets"],
+                "secretProcessAllowlist": ["agentctl"],
+                "approval": "never"
+            },
+            "actions": {
+                "consume": {
+                    "kind": "builtin.shell.exec",
+                    "command": binary_path,
+                    "args": ["version"],
+                    "timeoutSeconds": 5,
+                    "env": {
+                        "FILE_SECRET": {"file": "secrets/token"},
+                        "PROCESS_SECRET": {
+                            "process": {
+                                "command": binary_path,
+                                "args": ["version"],
+                                "timeoutSeconds": 5,
+                                "outputLimitBytes": 128
+                            }
+                        }
+                    }
+                }
+            },
+            "tasks": [{"id": "consume", "uses": "action:consume"}]
+        }
+    });
+    write(
+        &secret_workflow,
+        &serde_json::to_string_pretty(&secret_document)?,
+    )?;
+    let secret_db = directory.path().join("secret-providers.db");
+    let secret_run = successful_json(
+        &binary,
+        &secret_workspace,
+        &run_args(&secret_workflow, &secret_db, &secret_workspace, &[]),
+    )?;
+    let secret_run_id = string_at(&secret_run, "/data/runId")?;
+    let secret_inspect = inspect(&binary, &secret_workspace, &secret_db, secret_run_id)?;
+    let secret_inspect_text = serde_json::to_string(&secret_inspect)?;
+    ensure!(secret_inspect_text.contains("[REDACTED]"));
+    ensure!(!secret_inspect_text.contains(secret_marker));
+    let database_bytes = fs::read(&secret_db)?;
+    ensure!(
+        !database_bytes
+            .windows(secret_marker.len())
+            .any(|window| window == secret_marker.as_bytes())
+    );
+
+    fs::remove_file(secret_workspace.join("secrets/token"))?;
+    let missing_secret_db = directory.path().join("missing-secret-provider.db");
+    let missing_secret = json_with_code(
+        &binary,
+        &secret_workspace,
+        &run_args(&secret_workflow, &missing_secret_db, &secret_workspace, &[]),
+        4,
+    )?;
+    ensure!(
+        missing_secret
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("secret file"))
+    );
+    ensure!(!serde_json::to_string(&missing_secret)?.contains(secret_marker));
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

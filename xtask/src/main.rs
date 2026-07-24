@@ -691,6 +691,7 @@ fn verify_public_documentation(root: &Path) -> Result<()> {
         "docs/guides/WORKFLOW_AUTHORING.md",
         "docs/guides/LOCAL_OPERATION.md",
         "docs/guides/SENSITIVE_STATE_ENCRYPTION.md",
+        "docs/guides/SECRET_REFERENCES.md",
         "docs/guides/TERMINAL_RETRY.md",
         "docs/guides/repair-a-failed-workflow.md",
         "docs/guides/LEGACY_RUN_UPGRADE.md",

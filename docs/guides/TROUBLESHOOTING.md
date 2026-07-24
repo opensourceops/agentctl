@@ -37,9 +37,11 @@ agentctl schema --write /tmp/workflow.schema.json --output json --color never
 
 ## Provider authentication failure
 
-**Symptom:** Exit `6` reports a missing environment reference or authentication response.
+**Symptom:** Exit `6` reports an unavailable secret reference or authentication response.
 
-**Likely cause:** The workflow names a credential environment variable that is absent or the provider rejected it.
+**Likely cause:** The workflow names an absent environment value, unavailable
+or denied file/process source, or the provider rejected the resolved
+credential.
 
 **Diagnose:**
 
@@ -48,9 +50,13 @@ agentctl auth check workflow.yaml --output json --color never
 agentctl providers inspect workflow.yaml --output json --color never
 ```
 
-**Expected evidence:** The environment variable name and provider capability, never the secret value.
+**Expected evidence:** The safe source description and provider capability,
+never the secret value. Process references report `unchecked` and are not
+executed by diagnostics.
 
-**Resolve:** Inject the named secret through the shell, scheduler, or CI secret facility. Do not add a key to YAML or a command argument.
+**Resolve:** Inject the named environment value, mount the file under an allowed
+root, or repair the process policy/helper. Do not add a key to YAML or a command
+argument.
 
 ## Provider capability mismatch
 

@@ -57,10 +57,11 @@ agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task
 See [Retry a terminal workflow](docs/guides/TERMINAL_RETRY.md) and [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
 For retained pre-schema-5 history, use [Legacy run upgrade](docs/guides/LEGACY_RUN_UPGRADE.md). For ambiguous external outcomes, use [Effect reconciliation](docs/guides/EFFECT_RECONCILIATION.md).
 For confidential workflow history, use [Sensitive-state encryption](docs/guides/SENSITIVE_STATE_ENCRYPTION.md).
+For environment, mounted-file, and policy-gated process credentials, use [Secret references](docs/guides/SECRET_REFERENCES.md).
 
 ## Safety boundary
 
-- Secrets are environment references, never inline values or CLI flags.
+- Secrets are environment, mounted-file, or policy-gated process references, never inline values or CLI flags.
 - Files, processes, providers, MCP servers, and A2A peers require explicit policy grants.
 - Every non-pure operation is recorded before execution. A crash after an at-most-once effect starts is reported as uncertain and is never silently repeated.
 - Model turns, output tokens, tool calls, retries, and time are bounded.

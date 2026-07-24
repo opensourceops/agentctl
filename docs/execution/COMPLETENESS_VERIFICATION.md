@@ -73,13 +73,13 @@ cargo xtask acceptance-container
 | Reconciliation | immutable transition matrix, schema/tool/hook/policy, repair and resume tests | full composite rerun pending | verified |
 | Terminal retry | runtime/store identity, roots, acknowledgements, reconciliation, lineage, source immutability, and replay tests passed | packaged CLI scenario 30 and the 12-stage verification gate passed | verified |
 | Sensitive-state encryption | authenticated context, wrong-key, tamper, inventory, stale-writer trigger, rollback, rotation, checkpoint, and retained-schema tests passed | packaged CLI scenario 31 and the 12-stage verification gate passed | verified |
+| Secret references | environment compatibility, file bounds/missing/symlink containment, process allowlist/timeout/output/cancellation, zeroizing values, adapter redaction, and raw-database absence tests passed | packaged CLI scenario 32 and the 12-stage verification gate passed | verified |
 | Parallel/dynamic workflows | pending | pending | open |
 | Conditions/loops/sub-workflows | pending | pending | open |
 | Compensation/handoffs/streaming | pending | pending | open |
 | MCP/A2A resilience | pending | pending | open |
 | Packs/trust/extensions | pending | pending | open |
 | Semantic memory | pending | pending | open |
-| Encryption/secrets | pending | pending | open |
 | Network/isolation/budgets | pending | pending | open |
 | Container/cross-platform | baseline defect recorded | pending | in progress |
 | OpenAI live matrix | retained selective-repair evidence only | pending | open |

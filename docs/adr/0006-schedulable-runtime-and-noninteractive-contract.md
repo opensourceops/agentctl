@@ -8,7 +8,11 @@ Status: accepted
 
 Non-interactive execution never prompts or auto-approves. The default approval behavior persists the request, pauses the run, emits run/trace correlation, and exits `3`. An operator resolves the approval and invokes `resume`. `deny_approval` and `fail` are stricter explicit modes.
 
-Machine output is one `agentctl.dev/cli/v1` final envelope. Inputs come from JSON, an input file, or repeated `KEY=VALUE` arguments; provider secrets remain environment references. Separate runs can share a SQLite database, but external schedulers must prevent overlapping effects when the target resource requires serialization.
+Machine output is one `agentctl.dev/cli/v1` final envelope. Inputs come from
+JSON, an input file, or repeated `KEY=VALUE` arguments; provider secrets remain
+typed references rather than values. Separate runs can share a SQLite database,
+but external schedulers must prevent overlapping effects when the target
+resource requires serialization.
 
 ## Consequences
 

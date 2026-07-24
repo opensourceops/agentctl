@@ -10,7 +10,15 @@ The core defines provider-neutral messages, text/reasoning/tool content, strict 
 | `anthropic` | Messages API | native content/tool/thinking blocks, structured output instruction, usage and stop mapping | `ANTHROPIC_API_KEY` |
 | `google` | Gemini `generateContent` | native contents/function declarations/calls/results, thought-signature continuation, response schema, token usage | `GEMINI_API_KEY` |
 
-Endpoints must pass the workflow network allowlist. Redirects are disabled. Credentials and configured headers are resolved from environment references only when building an adapter; standard authentication headers override custom headers. Successful/error response JSON keys and values plus provider request IDs are scrubbed of configured secrets before parsing or persistence. Calls honor timeout and cancellation.
+Endpoints must pass the workflow network allowlist. Redirects are disabled.
+Credentials and configured headers accept environment, mounted-file, or
+policy-gated process references. Provider credentials in the fresh execution
+closure are preflighted before a new run record or effect; custom headers
+resolve while building a required adapter.
+Standard authentication headers override custom headers. Successful/error
+response JSON keys and values plus provider request IDs are scrubbed of
+configured secrets before parsing or persistence. Calls honor timeout and
+cancellation. See [Secret references](guides/SECRET_REFERENCES.md).
 
 `agentctl providers inspect <workflow>` reports declared capabilities without calling a service. OpenAI has the broadest mock request/response/tool/usage/error coverage. Azure OpenAI, Anthropic, and Google have native mapping and focused mock-protocol coverage at the maturity shown below; normal tests have no credentials. Live provider workflow examples end in `-live.yaml` and are opt-in.
 

@@ -8,7 +8,12 @@ Templates use only `${{ inputs.path }}`, `${{ vars.path }}`, `${{ memory.path }}
 
 Task output is JSON. Built-in actions own an object contract, agents can declare provider-enforced `structuredOutput`, and a task can override the complete contract with `outputSchema`. The compiler validates schemas; the runtime validates completed and selectively reused values.
 
-Providers, action environments, and protocol headers use `{ env: NAME }` secret references. Secret names are validated and values never become the workflow document.
+Providers, action environments, and protocol headers use secret references:
+`{ env: NAME }`, `{ file: PATH }`, or a bounded `{ process: ... }` reference.
+File references require `policy.secretFileRoots`; process references require
+`policy.secretProcessAllowlist`. Existing environment references remain
+compatible. Resolved values never become the workflow document, effect value,
+trace, or inspection output. See [Secret references](guides/SECRET_REFERENCES.md).
 
 `policy.workspaceRoot` is the default boundary for relative file paths. Each `writableRoots` entry may be workspace-relative or an explicit absolute mount such as `/artifacts`. Ordinary reads remain workspace-confined. After a successful authorized mutation, the runtime may read that exact output through its writable-root boundary to ingest the bounded regular file into durable CAS; this does not grant tasks general read access to the external root.
 

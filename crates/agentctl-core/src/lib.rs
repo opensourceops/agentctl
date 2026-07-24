@@ -7,6 +7,7 @@ pub mod effect;
 pub mod pack;
 pub mod policy;
 pub mod provider;
+pub mod secret;
 pub mod state;
 pub mod template;
 pub mod tool;

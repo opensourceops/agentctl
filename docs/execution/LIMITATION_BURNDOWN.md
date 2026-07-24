@@ -39,7 +39,7 @@ complete, every entry must have exactly one final disposition:
 | EFX-001 | Effect reconciliation | verified | implemented |
 | RET-001 | Terminal-run retry | verified | implemented |
 | ENC-001 | Sensitive-state encryption | verified | implemented |
-| SEC-001 | Secret providers | open | implemented |
+| SEC-001 | Secret providers | verified | implemented |
 | NET-001 | Network policy | open | implemented |
 | ISO-001 | Process isolation | open | redesigned |
 | BUD-001 | Resource and cost budgets | open | implemented |
@@ -508,23 +508,30 @@ complete, every entry must have exactly one final disposition:
 
 ### SEC-001: Stable secret-reference providers
 
-- Current behavior: environment references are supported; mounted file and
-  policy-gated command providers are absent.
-- User impact: container-native secret files require wrapper scripts.
-- Security or durability impact: wrappers may place resolved values in ordinary
-  inputs or arguments.
+- Current behavior: environment, bounded mounted-file, and policy-gated direct
+  process references work across provider credentials, provider/protocol
+  headers, and action environments.
+- User impact: container-native secret files and reviewed credential helpers
+  work without wrapper scripts or secret-valued workflow inputs.
+- Security or durability impact: resolved values stay in zeroizing memory,
+  while effect records retain only source descriptions and value digests.
 - Product decision: version secret references for environment, bounded mounted
   file, and optional direct process provider. Resolved values never persist.
-- Required implementation: policy allowlists, path containment, process argv,
-  timeout/output bound, redaction registration, and lifecycle zeroization where
-  practical.
+- Required implementation: canonical file-root containment, dedicated process
+  allowlists, direct argv, cleared environments, process groups,
+  timeout/output/cancellation bounds, redaction registration, and lifecycle
+  zeroization.
 - Migration impact: existing `{env: NAME}` remains valid.
 - Tests: missing/oversized/symlink files, denied commands, timeout, redaction,
   and database/trace absence.
-- Examples: environment and mounted-file container secrets.
+- Examples: environment and read-only mounted-file container contracts in the
+  secret-reference guide and container documentation.
 - Live evidence: OpenAI credential remains environment-only for task evidence.
 - Documentation: secret reference types and threat model.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified by DSL compatibility and policy
+  tests; missing, oversized, and symlink-escape file tests; denied, timed-out,
+  output-limited, and cancelled process tests; provider adapter redaction; raw
+  SQLite absence checks; and packaged CLI acceptance scenario 32.
 
 ### NET-001: Network destination enforcement
 

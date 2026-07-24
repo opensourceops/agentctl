@@ -1,13 +1,14 @@
 //! Native provider adapters for agentctl.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use agentctl_core::dsl::{ReasoningEffort, SecretReference};
 use agentctl_core::provider::{
     ContentBlock, ContinuationState, FinishReason, Message, ModelProvider, ProviderError,
     ProviderRequest, ProviderResponse, ToolCall, Usage,
 };
+use agentctl_core::secret::{SecretSourceResolver, SecretValue};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
@@ -21,10 +22,12 @@ const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub struct HttpProviderConfig {
     pub endpoint: String,
     pub credential: SecretReference,
+    pub resolved_credential: Option<SecretValue>,
+    pub credential_resolver: Option<Arc<dyn SecretSourceResolver>>,
     pub organization: Option<String>,
     pub project: Option<String>,
     pub api_version: Option<String>,
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, SecretValue>,
 }
 
 impl HttpProviderConfig {
@@ -32,9 +35,9 @@ impl HttpProviderConfig {
     pub fn openai(credential_env: impl Into<String>) -> Self {
         Self {
             endpoint: "https://api.openai.com/v1/responses".to_owned(),
-            credential: SecretReference {
-                env: credential_env.into(),
-            },
+            credential: SecretReference::environment(credential_env),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: None,
@@ -46,9 +49,9 @@ impl HttpProviderConfig {
     pub fn anthropic(credential_env: impl Into<String>) -> Self {
         Self {
             endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
-            credential: SecretReference {
-                env: credential_env.into(),
-            },
+            credential: SecretReference::environment(credential_env),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: None,
@@ -60,9 +63,9 @@ impl HttpProviderConfig {
     pub fn google(credential_env: impl Into<String>) -> Self {
         Self {
             endpoint: "https://generativelanguage.googleapis.com/v1beta/models".to_owned(),
-            credential: SecretReference {
-                env: credential_env.into(),
-            },
+            credential: SecretReference::environment(credential_env),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: None,
@@ -115,7 +118,7 @@ impl ModelProvider for OpenAiProvider {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError> {
-        let credential = load_credential(&self.config.credential)?;
+        let credential = load_credential(&self.config, cancellation).await?;
         let endpoint = if self.azure {
             let separator = if self.config.endpoint.contains('?') {
                 '&'
@@ -132,12 +135,12 @@ impl ModelProvider for OpenAiProvider {
         };
         let mut http = self.client.post(endpoint).json(&openai_request(request)?);
         for (name, value) in &self.config.headers {
-            http = http.header(name, value);
+            http = http.header(name, value.expose());
         }
         http = if self.azure {
-            http.header("api-key", &credential)
+            http.header("api-key", credential.expose())
         } else {
-            http.bearer_auth(&credential)
+            http.bearer_auth(credential.expose())
         };
         if let Some(organization) = &self.config.organization {
             http = http.header("OpenAI-Organization", organization);
@@ -458,7 +461,7 @@ impl ModelProvider for AnthropicProvider {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError> {
-        let credential = load_credential(&self.config.credential)?;
+        let credential = load_credential(&self.config, cancellation).await?;
         let http = self
             .client
             .post(&self.config.endpoint)
@@ -467,9 +470,11 @@ impl ModelProvider for AnthropicProvider {
             .config
             .headers
             .iter()
-            .fold(http, |request, (name, value)| request.header(name, value));
+            .fold(http, |request, (name, value)| {
+                request.header(name, value.expose())
+            });
         let http = http
-            .header("x-api-key", &credential)
+            .header("x-api-key", credential.expose())
             .header("anthropic-version", ANTHROPIC_VERSION);
         let secrets = configured_secrets(&credential, &self.config.headers);
         let response = send(http, cancellation, &secrets).await?;
@@ -664,7 +669,7 @@ impl ModelProvider for GoogleProvider {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError> {
-        let credential = load_credential(&self.config.credential)?;
+        let credential = load_credential(&self.config, cancellation).await?;
         let endpoint = format!(
             "{}/{}:generateContent",
             self.config.endpoint.trim_end_matches('/'),
@@ -675,8 +680,10 @@ impl ModelProvider for GoogleProvider {
             .config
             .headers
             .iter()
-            .fold(http, |request, (name, value)| request.header(name, value));
-        let http = http.header("x-goog-api-key", &credential);
+            .fold(http, |request, (name, value)| {
+                request.header(name, value.expose())
+            });
+        let http = http.header("x-goog-api-key", credential.expose());
         let secrets = configured_secrets(&credential, &self.config.headers);
         let response = send(http, cancellation, &secrets).await?;
         parse_google(response, request)
@@ -1064,11 +1071,11 @@ async fn send(
 }
 
 fn configured_secrets<'a>(
-    credential: &'a str,
-    headers: &'a BTreeMap<String, String>,
+    credential: &'a SecretValue,
+    headers: &'a BTreeMap<String, SecretValue>,
 ) -> Vec<&'a str> {
-    std::iter::once(credential)
-        .chain(headers.values().map(String::as_str))
+    std::iter::once(credential.expose())
+        .chain(headers.values().map(SecretValue::expose))
         .filter(|secret| !secret.is_empty())
         .collect()
 }
@@ -1114,12 +1121,35 @@ fn normalize_transport(error: reqwest::Error) -> ProviderError {
     }
 }
 
-fn load_credential(reference: &SecretReference) -> Result<String, ProviderError> {
-    #[cfg(test)]
-    if reference.env == "AGENTCTL_PROVIDER_TEST_KEY" {
-        return Ok("test-key".to_owned());
+async fn load_credential(
+    config: &HttpProviderConfig,
+    cancellation: &CancellationToken,
+) -> Result<SecretValue, ProviderError> {
+    if let Some(credential) = &config.resolved_credential {
+        return Ok(credential.clone());
     }
-    std::env::var(&reference.env).map_err(|_| ProviderError::Authentication(reference.env.clone()))
+    if let Some(resolver) = &config.credential_resolver {
+        return resolver
+            .resolve_secret(&config.credential, cancellation)
+            .await
+            .map_err(ProviderError::Authentication);
+    }
+    #[cfg(test)]
+    if matches!(
+        &config.credential,
+        SecretReference::Environment { env } if env == "AGENTCTL_PROVIDER_TEST_KEY"
+    ) {
+        return Ok(SecretValue::from("test-key"));
+    }
+    match &config.credential {
+        SecretReference::Environment { env } => std::env::var(env)
+            .map(SecretValue::new)
+            .map_err(|_| ProviderError::Authentication(env.clone())),
+        reference => Err(ProviderError::Authentication(format!(
+            "{} was not resolved by the runtime",
+            reference.source_description()
+        ))),
+    }
 }
 
 fn required_field(value: &Value, field: &str) -> Result<String, ProviderError> {
@@ -1440,9 +1470,9 @@ mod tests {
             .await;
         let config = HttpProviderConfig {
             endpoint: format!("{}/openai/v1/responses", server.uri()),
-            credential: SecretReference {
-                env: "AGENTCTL_PROVIDER_TEST_KEY".to_owned(),
-            },
+            credential: SecretReference::environment("AGENTCTL_PROVIDER_TEST_KEY"),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: Some("v1".to_owned()),
@@ -1474,7 +1504,7 @@ mod tests {
         config.endpoint = format!("{}/v1/responses", server.uri());
         config
             .headers
-            .insert("x-custom-auth".to_owned(), "header-secret".to_owned());
+            .insert("x-custom-auth".to_owned(), "header-secret".into());
         let error = OpenAiProvider::new(config)
             .expect("provider")
             .complete(&request(), &CancellationToken::new())
@@ -1516,7 +1546,7 @@ mod tests {
         config.endpoint = format!("{}/v1/responses", server.uri());
         config
             .headers
-            .insert("x-custom-auth".to_owned(), "header-secret".to_owned());
+            .insert("x-custom-auth".to_owned(), "header-secret".into());
         let response = OpenAiProvider::new(config)
             .expect("provider")
             .complete(&request(), &CancellationToken::new())
@@ -1526,6 +1556,54 @@ mod tests {
         assert!(!serialized.contains("header-secret"));
         assert!(!serialized.contains("test-key"));
         assert_eq!(response.text, "echo [REDACTED] and [REDACTED]");
+    }
+
+    #[tokio::test]
+    async fn runtime_resolved_non_environment_credential_is_used_and_redacted() {
+        #[derive(Debug)]
+        struct FixtureSecretResolver;
+
+        #[async_trait]
+        impl SecretSourceResolver for FixtureSecretResolver {
+            async fn resolve_secret(
+                &self,
+                _reference: &SecretReference,
+                _cancellation: &CancellationToken,
+            ) -> Result<SecretValue, String> {
+                Ok(SecretValue::from("resolved-file-secret"))
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(header("authorization", "Bearer resolved-file-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_resolved-file-secret",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "resolved-file-secret"}]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("unused");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        config.credential = SecretReference::File {
+            file: "/run/secrets/openai".to_owned(),
+        };
+        config.credential_resolver = Some(Arc::new(FixtureSecretResolver));
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete(&request(), &CancellationToken::new())
+            .await
+            .expect("response");
+        assert_eq!(response.text, "[REDACTED]");
+        assert!(
+            !serde_json::to_string(&response)
+                .expect("response json")
+                .contains("resolved-file-secret")
+        );
     }
 
     #[tokio::test]

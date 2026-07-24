@@ -2,7 +2,12 @@
 
 ## Assets and boundaries
 
-Assets are workspace files, content-addressed artifact bytes, allowed environment secrets, provider accounts, external systems reached by tools, workflow history, prompts/results, approvals, and the integrity of deterministic scheduling. Boundaries are the YAML/pack parser, filesystem/process/network executors, provider APIs, MCP servers, A2A peers, SQLite and its sibling artifact root, trace exporters, and dependencies.
+Assets are workspace files, content-addressed artifact bytes, referenced
+environment/file/process secrets, provider accounts, external systems reached
+by tools, workflow history, prompts/results, approvals, and the integrity of
+deterministic scheduling. Boundaries are the YAML/pack parser, secret resolver,
+filesystem/process/network executors, provider APIs, MCP servers, A2A peers,
+SQLite and its sibling artifact root, trace exporters, and dependencies.
 
 The local operator and reviewed binary are trusted. Workflow authors are only as trusted as policy grants. Models, file content, remote descriptions/results, pack content without independent provenance, and all network peers are untrusted. The host OS, CA store, and Rust dependency supply chain are assumed but monitored dependencies.
 
@@ -10,7 +15,7 @@ The local operator and reviewed binary are trusted. Workflow authors are only as
 | --- | --- | --- |
 | Malicious YAML/template causes code execution or resource exhaustion | strict fields, constrained paths/equality, 1 MiB bound, fuzzing | deeply nested valid data remains bounded mainly by parser behavior |
 | Path traversal or symlink escape | canonical roots and focused tests | TOCTOU is possible if another process swaps paths; isolate hostile workspaces |
-| Secret exfiltration through CLI/log/database/trace | env references, no key flags, allowlists, redaction, secret scan | authorized tools can deliberately transmit permitted data |
+| Secret exfiltration through CLI/log/database/trace | typed references, canonical file roots, bounded allowlisted process helpers, zeroizing values, no key flags, redaction, raw-database tests, secret scan | authorized recipients can deliberately transmit or transform permitted data |
 | SQLite disclosure reveals confidential run content | optional AES-256-GCM field envelopes, external key reference, authenticated context, fail-closed triggers, transactional rotation | metadata and artifact bytes remain visible; unencrypted and pre-migration backups remain sensitive |
 | Command injection | direct argv, no shell, cleared env, executable allowlist | an allowed executable may interpret malicious arguments |
 | SSRF/redirect bypass | URL parse, host allowlist, disabled redirects, tests | DNS/proxy behavior needs external network containment for hostile inputs |

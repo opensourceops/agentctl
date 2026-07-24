@@ -24,7 +24,16 @@ The `Containerfile` combines the secret with public roots on a tmpfs mount for t
 | `/state` | writable SQLite database, CAS blobs, and durable recovery state |
 | `/artifacts` | writable declared workflow output/export surface |
 
-Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or `--inputs` JSON. Prefer files for large or sensitive non-provider inputs. Provider credentials are environment references only; never put a key in CLI arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can write them. Successful bounded workflow files are copied into `/state/artifacts/sha256`; `/artifacts` remains the convenient CI collection surface. Durable state may contain prompts, outputs, and artifact bytes; protect it like a sensitive build artifact.
+Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or
+`--inputs` JSON. Prefer files for large or sensitive non-provider inputs.
+Provider credentials may reference a forwarded environment name or a read-only
+mounted file under an explicit `secretFileRoots` policy. Never put a key in CLI
+arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount
+run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can
+write them. Successful bounded workflow files are copied into
+`/state/artifacts/sha256`; `/artifacts` remains the convenient CI collection
+surface. Durable state may contain prompts, outputs, and artifact bytes;
+protect it like a sensitive build artifact.
 
 The image emits exactly one versioned JSON result on stdout with `--output json`; failures emit one versioned JSON error on stderr. The document includes exit status semantics, run/trace IDs, final state, and declared outputs. Progress is not mixed into stdout. Persist `/state` for later `inspect`, approval resolution, `resume`, `replay`, or `repair`.
 
@@ -45,6 +54,26 @@ docker run --rm --read-only --user 65532:65532 \
 ```
 
 The value form `--env OPENAI_API_KEY` forwards an already protected host variable without placing its value in the command. The credential-free container acceptance uses the same command with the fake provider and without that environment variable.
+
+For a container-native secret file, configure
+`credential: { file: /run/secrets/openai }` and
+`secretFileRoots: [/run/secrets]`, then replace the environment forwarding with
+a read-only mount:
+
+```console
+docker run --rm --read-only --user 65532:65532 \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --mount type=bind,src="$PWD/config",dst=/config,readonly \
+  --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
+  --mount type=bind,src="$PWD/state",dst=/state \
+  --mount type=bind,src="$PWD/openai.key",dst=/run/secrets/openai,readonly \
+  ghcr.io/OWNER/agentctl:0.2.0 \
+  run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
+  --output json --color never
+```
+
+The file is read at bounded credential preflight and its value is never copied
+to the state mount. See [Secret references](guides/SECRET_REFERENCES.md).
 
 For selective repair, mount the corrected workflow under `/config` and keep the source database plus its `/state/artifacts` CAS under `/state`. The original workspace output can be absent after successful ingestion. Plan without forwarding provider credentials:
 
@@ -201,7 +230,13 @@ The surrounding Harness stage must publish `/harness/.agentctl-state` and `/harn
 
 ### Kubernetes Job or CronJob
 
-Use ConfigMaps for reviewed configuration, a PVC for `/state` when recovery across Pods matters, a PVC or artifact uploader for `/artifacts`, and a Secret environment reference for credentials. The container security context should set `runAsNonRoot`, UID/GID 65532, no privilege escalation, dropped capabilities, and a read-only root filesystem. A CronJob should normally set `concurrencyPolicy: Forbid`; see [Operations](OPERATIONS.md).
+Use ConfigMaps for reviewed configuration, a PVC for `/state` when recovery
+across Pods matters, a PVC or artifact uploader for `/artifacts`, and either a
+Secret environment reference or a projected read-only Secret volume for
+credentials. The container security context should set `runAsNonRoot`, UID/GID
+65532, no privilege escalation, dropped capabilities, and a read-only root
+filesystem. A CronJob should normally set `concurrencyPolicy: Forbid`; see
+[Operations](OPERATIONS.md).
 
 ```yaml
 apiVersion: batch/v1

@@ -81,6 +81,7 @@ dependencies = [
  "thiserror",
  "tokio-util",
  "url",
+ "zeroize",
 ]
 
 [[package]]

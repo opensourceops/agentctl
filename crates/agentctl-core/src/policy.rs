@@ -16,6 +16,7 @@ pub struct PolicyEngine {
     policy: PolicyDefinition,
     workspace_root: PathBuf,
     writable_roots: Vec<PathBuf>,
+    secret_file_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +55,10 @@ pub enum PolicyError {
     EnvironmentDenied(String),
     #[error("process is not authorized: {0}")]
     ProcessDenied(String),
+    #[error("secret file is not authorized: {0}")]
+    SecretFileDenied(String),
+    #[error("secret process is not authorized: {0}")]
+    SecretProcessDenied(String),
 }
 
 impl PolicyEngine {
@@ -76,10 +81,23 @@ impl PolicyEngine {
                 canonicalize_existing_or_parent(&candidate)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let secret_file_roots = policy
+            .secret_file_roots
+            .iter()
+            .map(|root| {
+                let candidate = if Path::new(root).is_absolute() {
+                    PathBuf::from(root)
+                } else {
+                    workspace_root.join(root)
+                };
+                canonicalize_existing_or_parent(&candidate)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             policy,
             workspace_root,
             writable_roots,
+            secret_file_roots,
         })
     }
 
@@ -154,6 +172,11 @@ impl PolicyEngine {
                 reason: "request satisfies policy".to_owned(),
             }
         }
+    }
+
+    #[must_use]
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
     }
 
     #[must_use]
@@ -285,6 +308,38 @@ impl PolicyEngine {
         } else {
             Err(PolicyError::ProcessDenied(command.to_owned()))
         }
+    }
+
+    pub fn authorize_secret_process(&self, command: &str) -> Result<(), PolicyError> {
+        let basename = Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(command);
+        if self
+            .policy
+            .secret_process_allowlist
+            .iter()
+            .any(|allowed| allowed == basename)
+        {
+            Ok(())
+        } else {
+            Err(PolicyError::SecretProcessDenied(command.to_owned()))
+        }
+    }
+
+    pub fn resolve_secret_file(&self, requested: &str) -> Result<PathBuf, PolicyError> {
+        let candidate = self.join_workspace(requested)?;
+        let canonical = fs::canonicalize(&candidate)
+            .map_err(|_| PolicyError::SecretFileDenied(requested.to_owned()))?;
+        if !canonical.is_file()
+            || !self
+                .secret_file_roots
+                .iter()
+                .any(|root| canonical.starts_with(root))
+        {
+            return Err(PolicyError::SecretFileDenied(requested.to_owned()));
+        }
+        Ok(canonical)
     }
 
     #[must_use]

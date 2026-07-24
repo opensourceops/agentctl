@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::{Component, Path, PathBuf};
@@ -12,11 +12,13 @@ use agentctl_core::dsl::{ProviderKind, SecretReference, Workflow, parse_workflow
 use agentctl_core::pack::{PackManifest, verify_pack};
 use agentctl_core::policy::PolicyEngine;
 use agentctl_core::provider::{ContentBlock, Message, ModelProvider, ProviderRequest};
+use agentctl_core::secret::SecretValue;
 use agentctl_core::{MACHINE_OUTPUT_VERSION, compile};
 use agentctl_protocols::{A2aClient, McpClient, ProtocolActionHandler, ProtocolHttpConfig};
 use agentctl_providers::{
     AnthropicProvider, FakeProvider, GoogleProvider, HttpProviderConfig, OpenAiProvider,
 };
+use agentctl_runtime::secret::{SecretResolutionError, SecretResolver};
 use agentctl_runtime::{
     BuiltinToolExecutor, EffectReconciliationInput, RunOptions, Runtime, RuntimeRegistry,
 };
@@ -700,9 +702,9 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                     .as_deref()
                     .or_else(|| source.base_path.as_deref().map(Path::new)),
             )?;
-            let registry = build_registry(&workflow, &base)?;
-            let runtime = Runtime::new(store, &base).with_registry(registry);
             let cancellation = cancellation_token(args.timeout_seconds);
+            let registry = build_registry(&workflow, &base, &cancellation, None).await?;
+            let runtime = Runtime::new(store, &base).with_registry(registry);
             let outcome = runtime
                 .fork(
                     &args.run_id,
@@ -816,7 +818,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             print_value(output, "RunInspection", &value, Vec::new(), human)?;
             Ok(EXIT_OK)
         }
-        Command::Effects(args) => effect_command(output, args),
+        Command::Effects(args) => effect_command(output, args).await,
         Command::Approvals(args) => approval_command(output, args),
         Command::Providers(args) => provider_command(output, args).await,
         Command::Auth(args) => auth_command(output, args),
@@ -891,10 +893,10 @@ async fn run_workflow(output: OutputFormat, args: RunArgs) -> Result<u8, CliErro
         .parent()
         .filter(|path| !path.as_os_str().is_empty());
     let base = resolve_base_path(args.workspace.as_deref().or(default_base))?;
-    let registry = build_registry(&workflow, &base)?;
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let registry = build_registry(&workflow, &base, &cancellation, None).await?;
     let store = open_store(&args.db)?;
     let runtime = Runtime::new(store, &base).with_registry(registry);
-    let cancellation = cancellation_token(args.timeout_seconds);
     let outcome = runtime
         .start(
             &workflow,
@@ -931,9 +933,22 @@ async fn resume_run(output: OutputFormat, args: ResumeArgs) -> Result<u8, CliErr
             .as_deref()
             .or_else(|| run.base_path.as_deref().map(Path::new)),
     )?;
-    let registry = build_registry(&workflow, &base)?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
     let cancellation = cancellation_token(args.timeout_seconds);
+    let resume_tasks = store
+        .list_tasks(&args.run_id)
+        .map_err(CliError::persistence)?
+        .into_iter()
+        .filter(|task| {
+            !matches!(
+                task.state,
+                agentctl_core::state::TaskState::Succeeded
+                    | agentctl_core::state::TaskState::Skipped
+            )
+        })
+        .map(|task| task.task_id)
+        .collect::<BTreeSet<_>>();
+    let registry = build_registry(&workflow, &base, &cancellation, Some(&resume_tasks)).await?;
+    let runtime = Runtime::new(store, &base).with_registry(registry);
     let outcome = runtime
         .resume(
             &args.run_id,
@@ -994,9 +1009,10 @@ async fn repair_workflow(output: OutputFormat, args: RepairArgs) -> Result<u8, C
             EXIT_POLICY
         });
     }
-    let registry = build_registry(&workflow, &base)?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
     let cancellation = cancellation_token(args.timeout_seconds);
+    let repair_tasks = plan.rerun_tasks.iter().cloned().collect::<BTreeSet<_>>();
+    let registry = build_registry(&workflow, &base, &cancellation, Some(&repair_tasks)).await?;
+    let runtime = Runtime::new(store, &base).with_registry(registry);
     let outcome = runtime
         .repair(
             &workflow,
@@ -1087,9 +1103,10 @@ async fn retry_workflow(output: OutputFormat, args: RetryArgs) -> Result<u8, Cli
             EXIT_POLICY
         });
     }
-    let registry = build_registry(&workflow, &base)?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
     let cancellation = cancellation_token(args.timeout_seconds);
+    let retry_tasks = plan.rerun_tasks.iter().cloned().collect::<BTreeSet<_>>();
+    let registry = build_registry(&workflow, &base, &cancellation, Some(&retry_tasks)).await?;
+    let runtime = Runtime::new(store, &base).with_registry(registry);
     let outcome = runtime
         .retry(
             &workflow,
@@ -1213,7 +1230,7 @@ fn approval_command(output: OutputFormat, args: ApprovalArgs) -> Result<u8, CliE
     Ok(EXIT_OK)
 }
 
-fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError> {
+async fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError> {
     let store = open_store(&args.db)?;
     match args.command {
         EffectCommand::List { run_id, task } => {
@@ -1290,7 +1307,10 @@ fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError
             let workflow: Workflow = serde_json::from_value(run.workflow)
                 .map_err(|error| CliError::persistence(error.to_string()))?;
             let base = resolve_base_path(run.base_path.as_deref().map(Path::new))?;
-            let registry = build_registry(&workflow, &base)?;
+            let cancellation = cancellation_token(None);
+            let no_execution_tasks = BTreeSet::new();
+            let registry =
+                build_registry(&workflow, &base, &cancellation, Some(&no_execution_tasks)).await?;
             let evidence = evidence_file
                 .as_deref()
                 .map(read_json)
@@ -1341,11 +1361,31 @@ async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8
     match args.command {
         ProviderCommand::Inspect(args) => {
             let (workflow, _, diagnostics) = load_and_compile(&args.file)?;
+            let base = resolve_base_path(
+                args.file
+                    .parent()
+                    .filter(|path| !path.as_os_str().is_empty()),
+            )?;
+            let policy =
+                PolicyEngine::new(workflow.spec.policy.clone(), &base).map_err(|error| {
+                    CliError {
+                        code: EXIT_POLICY,
+                        message: error.to_string(),
+                        diagnostics: Vec::new(),
+                        run_id: None,
+                        trace_id: None,
+                    }
+                })?;
             let data = workflow
                 .spec
                 .providers
                 .iter()
                 .map(|(name, definition)| {
+                    let credential = definition.credential.clone().unwrap_or_else(|| {
+                        SecretReference::environment(default_credential_env(
+                            definition.kind.clone(),
+                        ))
+                    });
                     serde_json::json!({
                         "name": name,
                         "kind": definition.kind,
@@ -1353,7 +1393,7 @@ async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8
                             .into_iter()
                             .map(agentctl_core::compiler::ProviderCapability::as_str)
                             .collect::<Vec<_>>(),
-                        "credentialConfigured": definition.credential.as_ref().is_some_and(|secret| std::env::var_os(&secret.env).is_some()),
+                        "credential": secret_reference_status(&credential, &policy),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1450,17 +1490,31 @@ async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8
 fn auth_command(output: OutputFormat, args: AuthArgs) -> Result<u8, CliError> {
     let AuthCommand::Check(args) = args.command;
     let (workflow, _, diagnostics) = load_and_compile(&args.file)?;
+    let base = resolve_base_path(
+        args.file
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty()),
+    )?;
+    let policy =
+        PolicyEngine::new(workflow.spec.policy.clone(), &base).map_err(|error| CliError {
+            code: EXIT_POLICY,
+            message: error.to_string(),
+            diagnostics: Vec::new(),
+            run_id: None,
+            trace_id: None,
+        })?;
     let status = workflow
         .spec
         .providers
         .iter()
         .map(|(name, definition)| {
-            let env = definition
-                .credential
-                .as_ref()
-                .map(|secret| secret.env.clone())
-                .unwrap_or_else(|| default_credential_env(definition.kind.clone()).to_owned());
-            serde_json::json!({"provider": name, "environment": env, "present": std::env::var_os(&env).is_some()})
+            let reference = definition.credential.clone().unwrap_or_else(|| {
+                SecretReference::environment(default_credential_env(definition.kind.clone()))
+            });
+            serde_json::json!({
+                "provider": name,
+                "credential": secret_reference_status(&reference, &policy),
+            })
         })
         .collect::<Vec<_>>();
     print_value(
@@ -1469,11 +1523,31 @@ fn auth_command(output: OutputFormat, args: AuthArgs) -> Result<u8, CliError> {
         &status,
         diagnostics,
         format!(
-            "checked {} credential reference(s); values were not read",
+            "checked {} credential reference(s); values and secret processes were not read",
             status.len()
         ),
     )?;
     Ok(EXIT_OK)
+}
+
+fn secret_reference_status(reference: &SecretReference, policy: &PolicyEngine) -> Value {
+    match reference {
+        SecretReference::Environment { env } => serde_json::json!({
+            "kind": "environment",
+            "reference": env,
+            "availability": if std::env::var_os(env).is_some() { "present" } else { "missing" },
+        }),
+        SecretReference::File { file } => serde_json::json!({
+            "kind": "file",
+            "reference": file,
+            "availability": if policy.resolve_secret_file(file).is_ok() { "present" } else { "missing_or_denied" },
+        }),
+        SecretReference::Process { process } => serde_json::json!({
+            "kind": "process",
+            "reference": process.command,
+            "availability": "unchecked",
+        }),
+    }
 }
 
 fn schema_command(output: OutputFormat, args: SchemaArgs) -> Result<u8, CliError> {
@@ -2054,34 +2128,70 @@ fn insert_pack_item<T>(
     }
 }
 
-fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, CliError> {
+async fn build_registry(
+    workflow: &Workflow,
+    base: &Path,
+    cancellation: &CancellationToken,
+    execution_tasks: Option<&BTreeSet<String>>,
+) -> Result<RuntimeRegistry, CliError> {
     let mut registry = RuntimeRegistry::default();
+    let tool_policy =
+        PolicyEngine::new(workflow.spec.policy.clone(), base).map_err(|error| CliError {
+            code: EXIT_POLICY,
+            message: error.to_string(),
+            diagnostics: Vec::new(),
+            run_id: None,
+            trace_id: None,
+        })?;
+    let provider_secrets = SecretResolver::provider_credentials(tool_policy.clone());
+    let restricted_secrets = SecretResolver::restricted(tool_policy.clone());
+    let required_providers = workflow
+        .spec
+        .tasks
+        .iter()
+        .filter(|task| execution_tasks.is_none_or(|selected| selected.contains(&task.id)))
+        .filter_map(|task| task.uses.strip_prefix("agent:"))
+        .filter_map(|agent| workflow.spec.agents.get(agent))
+        .map(|agent| agent.provider.as_str())
+        .collect::<BTreeSet<_>>();
+    let selected_action_kinds = workflow
+        .spec
+        .tasks
+        .iter()
+        .filter(|task| execution_tasks.is_none_or(|selected| selected.contains(&task.id)))
+        .filter_map(|task| task.uses.strip_prefix("action:"))
+        .filter_map(|action| workflow.spec.actions.get(action))
+        .map(|action| action.kind)
+        .collect::<Vec<_>>();
     for (name, definition) in &workflow.spec.providers {
-        let credential = definition
-            .credential
-            .clone()
-            .unwrap_or_else(|| SecretReference {
-                env: default_credential_env(definition.kind.clone()).to_owned(),
-            });
-        if definition.kind != ProviderKind::Fake && std::env::var_os(&credential.env).is_none() {
-            return Err(CliError {
-                code: EXIT_REMOTE,
-                message: format!(
-                    "provider `{name}` requires environment variable `{}`; configure it or run `agentctl auth check`",
-                    credential.env
-                ),
-                diagnostics: Vec::new(),
-                run_id: None,
-                trace_id: None,
-            });
-        }
+        let credential = definition.credential.clone().unwrap_or_else(|| {
+            SecretReference::environment(default_credential_env(definition.kind.clone()))
+        });
         match definition.kind {
             ProviderKind::Fake => {
                 registry = registry.with_provider(name, Arc::new(FakeProvider::default()));
             }
             ProviderKind::Openai => {
-                let mut config = HttpProviderConfig::openai(credential.env);
-                config.headers = resolve_protocol_headers(&definition.headers, workflow)?;
+                let mut config =
+                    HttpProviderConfig::openai(default_credential_env(ProviderKind::Openai));
+                config.credential = credential.clone();
+                config.resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                config.credential_resolver = Some(Arc::new(provider_secrets.clone()));
+                if required_providers.contains(name.as_str()) {
+                    config.headers = resolve_protocol_headers(
+                        &definition.headers,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
                 }
@@ -2091,8 +2201,26 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
                 );
             }
             ProviderKind::Anthropic => {
-                let mut config = HttpProviderConfig::anthropic(credential.env);
-                config.headers = resolve_protocol_headers(&definition.headers, workflow)?;
+                let mut config =
+                    HttpProviderConfig::anthropic(default_credential_env(ProviderKind::Anthropic));
+                config.credential = credential.clone();
+                config.resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                config.credential_resolver = Some(Arc::new(provider_secrets.clone()));
+                if required_providers.contains(name.as_str()) {
+                    config.headers = resolve_protocol_headers(
+                        &definition.headers,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
                 }
@@ -2102,8 +2230,26 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
                 );
             }
             ProviderKind::Google => {
-                let mut config = HttpProviderConfig::google(credential.env);
-                config.headers = resolve_protocol_headers(&definition.headers, workflow)?;
+                let mut config =
+                    HttpProviderConfig::google(default_credential_env(ProviderKind::Google));
+                config.credential = credential.clone();
+                config.resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                config.credential_resolver = Some(Arc::new(provider_secrets.clone()));
+                if required_providers.contains(name.as_str()) {
+                    config.headers = resolve_protocol_headers(
+                        &definition.headers,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
                 }
@@ -2118,16 +2264,35 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
                         "Azure OpenAI provider `{name}` requires endpoint"
                     ))
                 })?;
+                let resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
                 let config = HttpProviderConfig {
                     endpoint,
                     credential,
+                    resolved_credential,
+                    credential_resolver: Some(Arc::new(provider_secrets.clone())),
                     organization: None,
                     project: None,
                     api_version: definition
                         .api_version
                         .clone()
                         .or_else(|| Some("v1".to_owned())),
-                    headers: resolve_protocol_headers(&definition.headers, workflow)?,
+                    headers: if required_providers.contains(name.as_str()) {
+                        resolve_protocol_headers(
+                            &definition.headers,
+                            &restricted_secrets,
+                            cancellation,
+                        )
+                        .await?
+                    } else {
+                        BTreeMap::new()
+                    },
                 };
                 registry = registry.with_provider(
                     name,
@@ -2137,14 +2302,6 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
         }
     }
 
-    let tool_policy =
-        PolicyEngine::new(workflow.spec.policy.clone(), base).map_err(|error| CliError {
-            code: EXIT_POLICY,
-            message: error.to_string(),
-            diagnostics: Vec::new(),
-            run_id: None,
-            trace_id: None,
-        })?;
     for (name, definition) in &workflow.spec.tools {
         registry = registry.with_tool(
             name,
@@ -2157,30 +2314,38 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
     }
 
     let mut mcp = BTreeMap::new();
-    for (name, definition) in &workflow.spec.mcp_servers {
-        let headers = resolve_protocol_headers(&definition.headers, workflow)?;
-        let client = McpClient::new(ProtocolHttpConfig {
-            url: Url::parse(&definition.url).map_err(|error| {
-                CliError::validation(format!("MCP server `{name}` URL: {error}"))
-            })?,
-            headers,
-            timeout: Duration::from_secs(definition.timeout_seconds),
-        })
-        .map_err(remote_error)?;
-        mcp.insert(name.clone(), Arc::new(client));
+    if selected_action_kinds.contains(&agentctl_core::dsl::ActionKind::McpCall) {
+        for (name, definition) in &workflow.spec.mcp_servers {
+            let headers =
+                resolve_protocol_headers(&definition.headers, &restricted_secrets, cancellation)
+                    .await?;
+            let client = McpClient::new(ProtocolHttpConfig {
+                url: Url::parse(&definition.url).map_err(|error| {
+                    CliError::validation(format!("MCP server `{name}` URL: {error}"))
+                })?,
+                headers,
+                timeout: Duration::from_secs(definition.timeout_seconds),
+            })
+            .map_err(remote_error)?;
+            mcp.insert(name.clone(), Arc::new(client));
+        }
     }
     let mut a2a = BTreeMap::new();
-    for (name, definition) in &workflow.spec.a2a_peers {
-        let headers = resolve_protocol_headers(&definition.headers, workflow)?;
-        let client = A2aClient::new(ProtocolHttpConfig {
-            url: Url::parse(&definition.card_url).map_err(|error| {
-                CliError::validation(format!("A2A peer `{name}` card URL: {error}"))
-            })?,
-            headers,
-            timeout: Duration::from_secs(definition.timeout_seconds),
-        })
-        .map_err(remote_error)?;
-        a2a.insert(name.clone(), Arc::new(client));
+    if selected_action_kinds.contains(&agentctl_core::dsl::ActionKind::A2aDelegate) {
+        for (name, definition) in &workflow.spec.a2a_peers {
+            let headers =
+                resolve_protocol_headers(&definition.headers, &restricted_secrets, cancellation)
+                    .await?;
+            let client = A2aClient::new(ProtocolHttpConfig {
+                url: Url::parse(&definition.card_url).map_err(|error| {
+                    CliError::validation(format!("A2A peer `{name}` card URL: {error}"))
+                })?,
+                headers,
+                timeout: Duration::from_secs(definition.timeout_seconds),
+            })
+            .map_err(remote_error)?;
+            a2a.insert(name.clone(), Arc::new(client));
+        }
     }
     if !mcp.is_empty() || !a2a.is_empty() {
         registry = registry.with_external_actions(Arc::new(ProtocolActionHandler::new(mcp, a2a)));
@@ -2188,35 +2353,52 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
     Ok(registry)
 }
 
-fn resolve_protocol_headers(
+async fn preflight_provider_credential(
+    name: &str,
+    reference: &SecretReference,
+    required_providers: &BTreeSet<&str>,
+    resolver: &SecretResolver,
+    cancellation: &CancellationToken,
+) -> Result<Option<SecretValue>, CliError> {
+    if !required_providers.contains(name) {
+        return Ok(None);
+    }
+    resolver
+        .resolve(reference, cancellation)
+        .await
+        .map(Some)
+        .map_err(|error| secret_cli_error(name, error, EXIT_REMOTE))
+}
+
+async fn resolve_protocol_headers(
     headers: &BTreeMap<String, SecretReference>,
-    workflow: &Workflow,
-) -> Result<BTreeMap<String, String>, CliError> {
-    headers
-        .iter()
-        .map(|(name, reference)| {
-            if !workflow.spec.policy.environment_allowlist.contains(&reference.env) {
-                return Err(CliError {
-                    code: EXIT_POLICY,
-                    message: format!(
-                        "header `{name}` secret environment `{}` is not in policy.environmentAllowlist",
-                        reference.env
-                    ),
-                    diagnostics: Vec::new(),
-                    run_id: None,
-                    trace_id: None,
-                });
-            }
-            let value = std::env::var(&reference.env).map_err(|_| CliError {
-                code: EXIT_POLICY,
-                message: format!("required environment variable `{}` is unavailable", reference.env),
-                diagnostics: Vec::new(),
-                run_id: None,
-                trace_id: None,
-            })?;
-            Ok((name.clone(), value))
-        })
-        .collect()
+    resolver: &SecretResolver,
+    cancellation: &CancellationToken,
+) -> Result<BTreeMap<String, SecretValue>, CliError> {
+    let mut resolved = BTreeMap::new();
+    for (name, reference) in headers {
+        let value = resolver
+            .resolve(reference, cancellation)
+            .await
+            .map_err(|error| secret_cli_error(name, error, EXIT_POLICY))?;
+        resolved.insert(name.clone(), value);
+    }
+    Ok(resolved)
+}
+
+fn secret_cli_error(owner: &str, error: SecretResolutionError, fallback_code: u8) -> CliError {
+    let code = if matches!(error, SecretResolutionError::Policy(_)) {
+        EXIT_POLICY
+    } else {
+        fallback_code
+    };
+    CliError {
+        code,
+        message: format!("secret for `{owner}` could not be resolved: {error}"),
+        diagnostics: Vec::new(),
+        run_id: None,
+        trace_id: None,
+    }
 }
 
 fn default_credential_env(kind: ProviderKind) -> &'static str {
@@ -2557,5 +2739,96 @@ mod tests {
         let error = read_text(&path).expect_err("oversized input must fail");
         assert_eq!(error.code, EXIT_VALIDATION);
         assert!(error.message.contains("exceeds 1048576 bytes"));
+    }
+
+    #[tokio::test]
+    async fn registry_preflights_only_reachable_provider_file_credentials() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(directory.path().join("secrets")).expect("secret directory");
+        std::fs::write(directory.path().join("secrets/openai"), "file-secret\n")
+            .expect("secret file");
+        let reachable = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: reachable-secret }
+spec:
+  policy:
+    secretFileRoots: [secrets]
+    networkAllowlist: [api.openai.com]
+  providers:
+    openai:
+      kind: openai
+      credential: { file: secrets/openai }
+  agents:
+    answer:
+      provider: openai
+      model: gpt-5.6
+      instructions: answer
+  tasks:
+    - id: answer
+      uses: agent:answer
+      with: { prompt: hello }
+"#,
+            "reachable.yaml",
+        )
+        .expect("reachable workflow")
+        .workflow;
+        build_registry(
+            &reachable,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("file credential preflight");
+
+        std::fs::remove_file(directory.path().join("secrets/openai")).expect("remove secret");
+        let error = build_registry(
+            &reachable,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .err()
+        .expect("reachable provider requires its credential");
+        assert_eq!(error.code, EXIT_POLICY);
+        assert!(error.message.contains("secret file"));
+
+        let no_tasks = BTreeSet::new();
+        build_registry(
+            &reachable,
+            directory.path(),
+            &CancellationToken::new(),
+            Some(&no_tasks),
+        )
+        .await
+        .expect("reused provider task does not require its credential");
+
+        let unused = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: unused-secret }
+spec:
+  providers:
+    unused:
+      kind: openai
+      credential: { env: AGENTCTL_INTENTIONALLY_MISSING_UNUSED_KEY }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: local
+      uses: action:assign
+      with: { value: local }
+"#,
+            "unused.yaml",
+        )
+        .expect("unused workflow")
+        .workflow;
+        build_registry(&unused, directory.path(), &CancellationToken::new(), None)
+            .await
+            .expect("unused provider does not require a credential");
     }
 }
