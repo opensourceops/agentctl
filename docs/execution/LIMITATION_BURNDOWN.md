@@ -37,7 +37,7 @@ complete, every entry must have exactly one final disposition:
 | ART-001 | Durable artifacts | verified | implemented |
 | MIG-001 | Legacy selective repair | verified | implemented |
 | EFX-001 | Effect reconciliation | verified | implemented |
-| RET-001 | Terminal-run retry | open | implemented |
+| RET-001 | Terminal-run retry | verified | implemented |
 | ENC-001 | Sensitive-state encryption | open | implemented |
 | SEC-001 | Secret providers | open | implemented |
 | NET-001 | Network policy | open | implemented |
@@ -154,8 +154,8 @@ complete, every entry must have exactly one final disposition:
 
 ### RET-001: Terminal-run retry
 
-- Current behavior: task retry is same-run and bounded; terminal rerun requires
-  repair or a broad fork.
+- Current behavior: task retry is same-run and bounded; `agentctl retry`
+  creates a distinct source-linked run for an unchanged terminal workflow.
 - User impact: operational retry of a failed unchanged workflow is obscure.
 - Security or durability impact: a fork can repeat successful external effects.
 - Product decision: add a distinct source-linked retry plan and run mode. It
@@ -170,7 +170,11 @@ complete, every entry must have exactly one final disposition:
 - Examples: durable pipeline retry after deterministic downstream failure.
 - Live evidence: bounded deterministic provider failure followed by live retry.
 - Documentation: retry versus resume, repair, replay, and fork.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified by failed-only and selected-root
+  planning, multiple-root and successful-root acknowledgement tests, exact
+  workflow identity enforcement, reuse and source-immutability checks,
+  uncertain-effect reconciliation coverage, schema-9 lineage persistence,
+  offline replay, and packaged CLI acceptance.
 
 ### ENC-001: Envelope encryption for sensitive persisted fields
 

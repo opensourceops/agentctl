@@ -15,7 +15,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 29;
+const ACCEPTANCE_SCENARIOS: usize = 30;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -566,7 +566,7 @@ pub fn run(root: &Path) -> Result<()> {
 
     scenario(
         16,
-        "explicit retry recovers a definitive transient provider failure",
+        "bounded same-run retry recovers a definitive transient provider failure",
     );
     let retry_workflow = workspace.join("retry.yaml");
     write(&retry_workflow, RETRY_WORKFLOW)?;
@@ -979,6 +979,100 @@ pub fn run(root: &Path) -> Result<()> {
         "/data/analysisAfter/recommendedRepairRoots/0",
         "second",
     )?;
+
+    scenario(
+        30,
+        "terminal retry reuses the successful prefix and creates distinct lineage",
+    );
+    let terminal_retry_workflow = workspace.join("terminal-retry.yaml");
+    write(&terminal_retry_workflow, TERMINAL_RETRY_WORKFLOW)?;
+    let terminal_retry_db = directory.path().join("terminal-retry.db");
+    let source = json_with_code(
+        &binary,
+        &workspace,
+        &run_args(
+            &terminal_retry_workflow,
+            &terminal_retry_db,
+            &workspace,
+            &[],
+        ),
+        4,
+    )?;
+    let source_id = string_at(&source, "/error/runId")?;
+    let retry_plan = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "retry",
+            path(&terminal_retry_workflow)?,
+            source_id,
+            "--failed",
+            "--plan",
+            "--db",
+            path(&terminal_retry_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&retry_plan, "/data/compatible", true)?;
+    ensure_eq(&retry_plan, "/data/failedOnly", true)?;
+    ensure_eq(&retry_plan, "/data/retryRoots/0", "work")?;
+    ensure_eq(&retry_plan, "/data/reusedTasks/0", "first")?;
+    ensure_eq(&retry_plan, "/data/rerunTasks/0", "work")?;
+    ensure_eq(&retry_plan, "/data/rerunTasks/1", "third")?;
+    let retried = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "retry",
+            path(&terminal_retry_workflow)?,
+            source_id,
+            "--failed",
+            "--reason",
+            "acceptance terminal retry",
+            "--db",
+            path(&terminal_retry_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&retried, "/data/state", "succeeded")?;
+    ensure_eq(&retried, "/data/sourceRunId", source_id)?;
+    ensure_eq(&retried, "/data/reusedTasks/0", "first")?;
+    ensure_eq(&retried, "/data/executedTasks/0", "work")?;
+    ensure_eq(&retried, "/data/executedTasks/1", "third")?;
+    let retry_run_id = string_at(&retried, "/data/runId")?;
+    let retry_inspect = inspect(&binary, &workspace, &terminal_retry_db, retry_run_id)?;
+    ensure_eq(&retry_inspect, "/data/run/mode", "retry")?;
+    ensure_eq(&retry_inspect, "/data/run/sourceRunId", source_id)?;
+    ensure_eq(&retry_inspect, "/data/run/retryFailedOnly", true)?;
+    ensure_eq(&retry_inspect, "/data/run/retryRoots/0", "work")?;
+    ensure_eq(&retry_inspect, "/data/tasks/0/disposition", "reused")?;
+    ensure_eq(&retry_inspect, "/data/tasks/1/disposition", "executed")?;
+    ensure_eq(&retry_inspect, "/data/tasks/2/disposition", "executed")?;
+    let source_inspect = inspect(&binary, &workspace, &terminal_retry_db, source_id)?;
+    ensure_eq(&source_inspect, "/data/run/state", "failed")?;
+    let replay = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "replay",
+            retry_run_id,
+            "--db",
+            path(&terminal_retry_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let replay_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = inspect(&binary, &workspace, &terminal_retry_db, replay_id)?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
@@ -2763,6 +2857,33 @@ spec:
       uses: agent:worker
       retry: { maxAttempts: 2, backoffMs: 1 }
       with: { prompt: hello }
+"#;
+
+const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: terminal-retry }
+spec:
+  policy:
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    assign: { kind: builtin.assign }
+    recover:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, "if [ -f .terminal-retry-ready ]; then printf recovered; else touch .terminal-retry-ready; exit 1; fi"]
+      timeoutSeconds: 5
+  tasks:
+    - id: first
+      uses: action:assign
+      with: { value: durable }
+    - id: work
+      uses: action:recover
+      needs: [first]
+    - id: third
+      uses: action:assign
+      needs: [work]
+      with: { value: recovered }
 "#;
 
 const OPENAI_AUTH_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

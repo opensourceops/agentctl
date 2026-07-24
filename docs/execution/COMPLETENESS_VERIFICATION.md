@@ -71,7 +71,7 @@ cargo xtask acceptance-container
 | Artifact CAS | 19 store tests and 38 runtime tests | CLI acceptance and hardened OCI acceptance passed | verified |
 | Legacy upgrades | all retained schema fixtures, dry-run, rollback, import, boundary, repair/replay tests | migration verification command added; full composite rerun pending | verified |
 | Reconciliation | immutable transition matrix, schema/tool/hook/policy, repair and resume tests | full composite rerun pending | verified |
-| Terminal retry | pending | pending | open |
+| Terminal retry | runtime/store identity, roots, acknowledgements, reconciliation, lineage, source immutability, and replay tests passed | packaged CLI scenario 30 and the 12-stage verification gate passed | verified |
 | Parallel/dynamic workflows | pending | pending | open |
 | Conditions/loops/sub-workflows | pending | pending | open |
 | Compensation/handoffs/streaming | pending | pending | open |

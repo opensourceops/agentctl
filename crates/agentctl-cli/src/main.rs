@@ -89,6 +89,8 @@ enum Command {
     Fork(ForkArgs),
     /// Create a new run that reuses compatible upstream results and executes a repaired suffix.
     Repair(RepairArgs),
+    /// Retry failed or selected boundaries of an identical terminal workflow.
+    Retry(RetryArgs),
     /// Analyze or upgrade retained legacy run records for selective reuse.
     Runs(RunsArgs),
     /// Durably request cancellation.
@@ -195,6 +197,36 @@ struct RepairArgs {
     file: PathBuf,
     source_run_id: String,
     #[arg(long = "from", required = true)]
+    from: Vec<String>,
+    #[arg(long)]
+    plan: bool,
+    #[arg(long)]
+    restart_successful: bool,
+    #[arg(long)]
+    reason: Option<String>,
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct RetryArgs {
+    file: PathBuf,
+    source_run_id: String,
+    #[arg(long, conflicts_with = "from", required_unless_present = "from")]
+    failed: bool,
+    #[arg(
+        long = "from",
+        conflicts_with = "failed",
+        required_unless_present = "failed"
+    )]
     from: Vec<String>,
     #[arg(long)]
     plan: bool,
@@ -656,6 +688,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             print_outcome(output, &outcome)
         }
         Command::Repair(args) => repair_workflow(output, args).await,
+        Command::Retry(args) => retry_workflow(output, args).await,
         Command::Runs(args) => runs_command(output, args),
         Command::Cancel(args) => {
             let store = open_store(&args.db)?;
@@ -717,7 +750,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 audit.len(),
                 traces.len(),
             );
-            let human = if run.mode == RunMode::Repair {
+            let human = if matches!(run.mode, RunMode::Repair | RunMode::Retry) {
                 let reused = tasks
                     .iter()
                     .filter(|task| task.disposition == TaskDisposition::Reused)
@@ -959,6 +992,100 @@ async fn repair_workflow(output: OutputFormat, args: RepairArgs) -> Result<u8, C
             outcome.run_id,
             outcome.state,
             outcome.source_run_id,
+            outcome.reused_tasks.join(","),
+            outcome.executed_tasks.join(","),
+            outcome
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.path.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            outcome.trace_id,
+        ),
+    )?;
+    Ok(outcome_exit_code(outcome.state))
+}
+
+async fn retry_workflow(output: OutputFormat, args: RetryArgs) -> Result<u8, CliError> {
+    if !args.plan {
+        validate_interactive(args.interactive)?;
+    }
+    let (workflow, compiled, diagnostics) = load_and_compile(&args.file)?;
+    let default_base = args
+        .file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    let base = resolve_base_path(args.workspace.as_deref().or(default_base))?;
+    let store = open_store(&args.db)?;
+    let planner = Runtime::new(store.clone(), &base);
+    let plan = planner
+        .plan_retry(
+            &args.source_run_id,
+            &workflow,
+            &compiled,
+            &args.from,
+            args.failed,
+            args.restart_successful,
+        )
+        .map_err(map_runtime_error)?;
+    if args.plan || !plan.compatible {
+        let human = format!(
+            "retry plan: {}\nsource: {}\nselection: {}\nreuse: {}\nexecute: {}\nblocked: {}",
+            if plan.compatible {
+                "compatible"
+            } else {
+                "blocked"
+            },
+            plan.source_run_id,
+            if plan.failed_only {
+                "failed tasks".to_owned()
+            } else {
+                plan.retry_roots.join(", ")
+            },
+            plan.reused_tasks.join(", "),
+            plan.rerun_tasks.join(", "),
+            plan.blocked_reuse
+                .iter()
+                .map(|block| format!("{}: {}", block.task_id, block.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        print_value(output, "RetryPlan", &plan, diagnostics, human)?;
+        return Ok(if plan.compatible {
+            EXIT_OK
+        } else {
+            EXIT_POLICY
+        });
+    }
+    let registry = build_registry(&workflow, &base)?;
+    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let outcome = runtime
+        .retry(
+            &workflow,
+            &compiled,
+            plan,
+            args.reason.as_deref(),
+            RunOptions {
+                check: false,
+                diff: args.diff,
+                interactive: args.interactive,
+            },
+            &cancellation,
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    print_value(
+        output,
+        "RetryOutcome",
+        &outcome,
+        diagnostics,
+        format!(
+            "{} {:?} source={} roots={} reused={} executed={} artifacts={} trace={}",
+            outcome.run_id,
+            outcome.state,
+            outcome.source_run_id,
+            outcome.retry_roots.join(","),
             outcome.reused_tasks.join(","),
             outcome.executed_tasks.join(","),
             outcome
@@ -2197,7 +2324,8 @@ fn map_runtime_error(error: agentctl_runtime::RuntimeError) -> CliError {
         agentctl_runtime::RuntimeError::Provider(_) => EXIT_REMOTE,
         agentctl_runtime::RuntimeError::Cancelled => EXIT_CANCELLED,
         agentctl_runtime::RuntimeError::UncertainEffect { .. } => EXIT_POLICY,
-        agentctl_runtime::RuntimeError::RepairBlocked { .. } => EXIT_POLICY,
+        agentctl_runtime::RuntimeError::RepairBlocked { .. }
+        | agentctl_runtime::RuntimeError::RetryBlocked { .. } => EXIT_POLICY,
         _ => EXIT_RUN_FAILED,
     };
     CliError {
@@ -2230,6 +2358,7 @@ mod tests {
             "replay",
             "fork",
             "repair",
+            "retry",
             "runs",
             "cancel",
             "inspect",

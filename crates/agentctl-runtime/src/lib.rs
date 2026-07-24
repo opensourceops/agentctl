@@ -332,6 +332,45 @@ pub struct RepairOutcome {
     pub output: Option<Value>,
 }
 
+pub const RETRY_PLAN_VERSION: &str = "agentctl.dev/retry-plan/v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryPlan {
+    pub api_version: String,
+    pub compatible: bool,
+    pub source_run_id: String,
+    pub workflow_digest: String,
+    pub failed_only: bool,
+    pub retry_roots: Vec<String>,
+    pub restart_successful: bool,
+    pub reused_tasks: Vec<String>,
+    pub rerun_tasks: Vec<String>,
+    pub blocked_reuse: Vec<RepairBlock>,
+    pub fresh_effect_summary: FreshEffectSummary,
+    pub approval_summary: Vec<String>,
+    pub estimated_provider_tasks: usize,
+    pub warnings: Vec<String>,
+    pub tasks: Vec<RepairTaskPlan>,
+    #[serde(skip_serializing)]
+    repair_plan: RepairPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryOutcome {
+    pub run_id: String,
+    pub source_run_id: String,
+    pub trace_id: String,
+    pub state: RunState,
+    pub failed_only: bool,
+    pub retry_roots: Vec<String>,
+    pub reused_tasks: Vec<String>,
+    pub executed_tasks: Vec<String>,
+    pub artifacts: Vec<ArtifactRecord>,
+    pub output: Option<Value>,
+}
+
 pub const LEGACY_UPGRADE_ANALYSIS_VERSION: &str = "agentctl.dev/legacy-upgrade/v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -427,6 +466,8 @@ pub enum RuntimeError {
     Json(#[from] serde_json::Error),
     #[error("repair from run `{source_run_id}` is blocked by {count} compatibility rule(s)")]
     RepairBlocked { source_run_id: String, count: usize },
+    #[error("retry from run `{source_run_id}` is blocked by {count} compatibility rule(s)")]
+    RetryBlocked { source_run_id: String, count: usize },
 }
 
 pub struct Runtime {
@@ -1941,6 +1982,227 @@ impl Runtime {
             tasks: task_plans,
             materialized_tasks: reused,
             reconstructed_memory: memory,
+        })
+    }
+
+    pub fn plan_retry(
+        &self,
+        source_run_id: &str,
+        workflow: &Workflow,
+        compiled: &CompiledPlan,
+        selected_roots: &[String],
+        failed_only: bool,
+        restart_successful: bool,
+    ) -> Result<RetryPlan, RuntimeError> {
+        if failed_only && !selected_roots.is_empty() {
+            return Err(RuntimeError::InvalidState(
+                "retry accepts either --failed or --from, not both".to_owned(),
+            ));
+        }
+        if !failed_only && selected_roots.is_empty() {
+            return Err(RuntimeError::InvalidState(
+                "retry requires --failed or at least one --from task".to_owned(),
+            ));
+        }
+        let source = self.store.load_run(source_run_id)?;
+        if !source.state.is_terminal() {
+            return Err(RuntimeError::InvalidState(format!(
+                "retry source run `{source_run_id}` is not terminal ({:?})",
+                source.state
+            )));
+        }
+        let roots = if failed_only {
+            let roots = self
+                .store
+                .list_tasks(source_run_id)?
+                .into_iter()
+                .filter(|task| task.state == TaskState::Failed)
+                .map(|task| task.task_id)
+                .collect::<Vec<_>>();
+            if roots.is_empty() {
+                return Err(RuntimeError::InvalidState(format!(
+                    "source run `{source_run_id}` has no failed tasks"
+                )));
+            }
+            roots
+        } else {
+            selected_roots.to_vec()
+        };
+        let mut repair_plan = self.plan_repair(
+            source_run_id,
+            workflow,
+            compiled,
+            &roots,
+            restart_successful,
+        )?;
+        if source.workflow_digest != compiled.workflow_digest {
+            repair_plan.blocked_reuse.push(repair_block(
+                "$workflow",
+                "retry_workflow_definition_mismatch",
+                format!(
+                    "retry requires workflow digest `{}`, found `{}`; use repair for a changed workflow",
+                    source.workflow_digest, compiled.workflow_digest
+                ),
+                Some(source.workflow_digest.clone()),
+                Some(compiled.workflow_digest.clone()),
+                Vec::new(),
+                false,
+            ));
+            repair_plan.compatible = false;
+        }
+        let warnings = vec![
+            "retry requires the identical workflow definition and preserves the terminal source"
+                .to_owned(),
+            "retry roots and descendants start fresh task and effect attempts".to_owned(),
+            "compatible successful tasks are materialized without dispatch".to_owned(),
+        ];
+        Ok(RetryPlan {
+            api_version: RETRY_PLAN_VERSION.to_owned(),
+            compatible: repair_plan.compatible,
+            source_run_id: repair_plan.source_run_id.clone(),
+            workflow_digest: compiled.workflow_digest.clone(),
+            failed_only,
+            retry_roots: repair_plan.repair_roots.clone(),
+            restart_successful,
+            reused_tasks: repair_plan.reused_tasks.clone(),
+            rerun_tasks: repair_plan.rerun_tasks.clone(),
+            blocked_reuse: repair_plan.blocked_reuse.clone(),
+            fresh_effect_summary: repair_plan.fresh_effect_summary.clone(),
+            approval_summary: repair_plan.approval_summary.clone(),
+            estimated_provider_tasks: repair_plan.estimated_provider_tasks,
+            warnings,
+            tasks: repair_plan.tasks.clone(),
+            repair_plan,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn retry(
+        &self,
+        workflow: &Workflow,
+        compiled: &CompiledPlan,
+        plan: RetryPlan,
+        reason: Option<&str>,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<RetryOutcome, RuntimeError> {
+        if !plan.compatible {
+            return Err(RuntimeError::RetryBlocked {
+                source_run_id: plan.source_run_id,
+                count: plan.blocked_reuse.len(),
+            });
+        }
+        if compiled.workflow_digest != plan.workflow_digest {
+            return Err(RuntimeError::InvalidState(
+                "workflow changed after retry planning; create a new retry plan".to_owned(),
+            ));
+        }
+        let selected_roots = if plan.failed_only {
+            Vec::new()
+        } else {
+            plan.retry_roots.clone()
+        };
+        let plan = self.plan_retry(
+            &plan.source_run_id,
+            workflow,
+            compiled,
+            &selected_roots,
+            plan.failed_only,
+            plan.restart_successful,
+        )?;
+        if !plan.compatible {
+            return Err(RuntimeError::RetryBlocked {
+                source_run_id: plan.source_run_id,
+                count: plan.blocked_reuse.len(),
+            });
+        }
+        let source = self.store.load_run(&plan.source_run_id)?;
+        let run_id = self.ids.next_id("retry");
+        let trace_id = self.ids.next_id("trace");
+        self.store.create_retry_run(
+            &run_id,
+            &plan.source_run_id,
+            &source.workflow_digest,
+            API_VERSION,
+            &serde_json::to_value(workflow)?,
+            compiled,
+            &source.inputs,
+            &plan.repair_plan.reconstructed_memory,
+            &plan.retry_roots,
+            plan.failed_only,
+            reason,
+            &plan.repair_plan.materialized_tasks,
+            &serde_json::to_value(&plan.tasks)?,
+            &self.base_path,
+            self.clock.now(),
+            &trace_id,
+        )?;
+        self.trace(
+            TraceEvent::new(
+                SpanKind::Run,
+                TracePhase::Started,
+                "run.retry",
+                &trace_id,
+                &run_id,
+                self.clock.now(),
+            )
+            .attributes(
+                serde_json::json!({
+                    "sourceRunId": plan.source_run_id,
+                    "failedOnly": plan.failed_only,
+                    "retryRoots": plan.retry_roots,
+                    "reusedTasks": plan.reused_tasks,
+                    "executedTasks": plan.rerun_tasks,
+                }),
+                &[],
+            ),
+        )?;
+        for task in &plan.repair_plan.materialized_tasks {
+            self.trace(
+                TraceEvent::new(
+                    SpanKind::Task,
+                    TracePhase::Completed,
+                    "task.reused",
+                    &trace_id,
+                    &run_id,
+                    self.clock.now(),
+                )
+                .task(&task.task_id)
+                .attributes(
+                    serde_json::json!({
+                        "disposition": "reused",
+                        "sourceRunId": task.source_run_id,
+                        "sourceTaskId": task.source_task_id,
+                        "sourceAttempt": task.source_attempt,
+                        "outputDigest": task.metadata.output_digest,
+                    }),
+                    &[],
+                ),
+            )?;
+        }
+        let outcome = self
+            .drive(&run_id, &trace_id, options, cancellation)
+            .await?;
+        let artifacts = self
+            .store
+            .list_tasks(&outcome.run_id)?
+            .into_iter()
+            .flat_map(|task| task.artifact_manifest)
+            .map(|artifact| (artifact.path.clone(), artifact))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+        Ok(RetryOutcome {
+            run_id: outcome.run_id,
+            source_run_id: source.run_id,
+            trace_id: outcome.trace_id,
+            state: outcome.state,
+            failed_only: plan.failed_only,
+            retry_roots: plan.retry_roots,
+            reused_tasks: plan.reused_tasks,
+            executed_tasks: plan.rerun_tasks,
+            artifacts,
+            output: outcome.output,
         })
     }
 
@@ -4866,7 +5128,8 @@ const fn retryable_error(error: &RuntimeError) -> bool {
         | RuntimeError::ExternalEffectUncertain(_)
         | RuntimeError::Cancelled
         | RuntimeError::Json(_)
-        | RuntimeError::RepairBlocked { .. } => false,
+        | RuntimeError::RepairBlocked { .. }
+        | RuntimeError::RetryBlocked { .. } => false,
     }
 }
 
@@ -5020,6 +5283,38 @@ mod tests {
             };
             Ok(ProviderResponse {
                 response_id: Some("prompt-echo".to_owned()),
+                text: text.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text { text }],
+                continuation: None,
+                usage: Usage::default(),
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct TerminalRetryProvider(AtomicU64);
+
+    #[async_trait]
+    impl ModelProvider for TerminalRetryProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ProviderError::Malformed(
+                    "transient terminal retry fixture".to_owned(),
+                ));
+            }
+            let text = r#"{"value":"recovered"}"#.to_owned();
+            Ok(ProviderResponse {
+                response_id: Some("retry-recovered".to_owned()),
                 text: text.clone(),
                 tool_calls: Vec::new(),
                 assistant_content: vec![ContentBlock::Text { text }],
@@ -7021,6 +7316,238 @@ spec:
                     .iter()
                     .any(|reason| reason.contains("checksummed checkpoints"))
         }));
+    }
+
+    #[tokio::test]
+    async fn terminal_failed_only_retry_reuses_success_and_replays_offline() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(TerminalRetryProvider::default());
+        let runtime = Runtime::new(store.clone(), directory.path())
+            .with_clock(Arc::new(FixedClock))
+            .with_ids(Arc::new(SequenceIds::default()))
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: terminal-retry }
+spec:
+  providers:
+    fake: { kind: fake }
+  agents:
+    recover:
+      provider: fake
+      model: fake
+      instructions: return a recovery object
+      structuredOutput:
+        type: object
+        required: [value]
+        additionalProperties: false
+        properties:
+          value: { type: string }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: first, uses: "action:assign", with: { value: durable } }
+    - { id: second, uses: "agent:recover", needs: [first], with: { prompt: recover } }
+    - { id: third, uses: "action:assign", needs: [second], with: { value: "${{ tasks.second.output.value }}" } }
+"#;
+        let (workflow, compiled) = compile_fixture(source);
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &compiled,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected terminal source failure, got {other:?}"),
+        };
+        let source_before = store.load_run(&source_run_id).expect("source");
+        let plan = runtime
+            .plan_retry(&source_run_id, &workflow, &compiled, &[], true, false)
+            .expect("retry plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        assert_eq!(plan.retry_roots, ["second"]);
+        assert_eq!(plan.reused_tasks, ["first"]);
+        assert_eq!(plan.rerun_tasks, ["second", "third"]);
+        assert_eq!(
+            serde_json::to_value(&plan).expect("json")["failedOnly"],
+            true
+        );
+
+        let outcome = runtime
+            .retry(
+                &workflow,
+                &compiled,
+                plan,
+                Some("retry transient provider failure"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("retry");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(outcome.reused_tasks, ["first"]);
+        assert_eq!(outcome.executed_tasks, ["second", "third"]);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 2);
+        let retry = store.load_run(&outcome.run_id).expect("retry run");
+        assert_eq!(retry.mode, RunMode::Retry);
+        assert_eq!(retry.source_run_id.as_deref(), Some(source_run_id.as_str()));
+        assert_eq!(retry.retry_roots, ["second"]);
+        assert!(retry.retry_failed_only);
+        assert_eq!(
+            store.load_run(&source_run_id).expect("source unchanged"),
+            source_before
+        );
+        let tasks = store.list_tasks(&outcome.run_id).expect("retry tasks");
+        assert_eq!(tasks[0].disposition, TaskDisposition::Reused);
+        assert_eq!(tasks[1].disposition, TaskDisposition::Executed);
+        assert_eq!(tasks[1].attempt, 1);
+
+        let replay = runtime
+            .replay(&outcome.run_id)
+            .await
+            .expect("offline replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("effects")
+                .is_empty()
+        );
+        assert_eq!(replay.output, outcome.output);
+    }
+
+    #[tokio::test]
+    async fn retry_planning_enforces_identity_roots_acknowledgement_and_reconciliation() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: retry-planning }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - { id: first, uses: "action:assign", with: { value: durable } }
+    - { id: second, uses: "action:assert", needs: [first], with: { that: false } }
+    - { id: third, uses: "action:assign", needs: [second], with: { value: done } }
+"#;
+        let (workflow, compiled) = compile_fixture(source);
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &compiled,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let successful_without_ack = runtime
+            .plan_retry(
+                &source_run_id,
+                &workflow,
+                &compiled,
+                &["first".to_owned()],
+                false,
+                false,
+            )
+            .expect("blocked successful root");
+        assert!(!successful_without_ack.compatible);
+        assert!(
+            successful_without_ack
+                .blocked_reuse
+                .iter()
+                .any(|block| { block.rule == "successful_root_requires_acknowledgement" })
+        );
+        let multiple = runtime
+            .plan_retry(
+                &source_run_id,
+                &workflow,
+                &compiled,
+                &["first".to_owned(), "second".to_owned()],
+                false,
+                true,
+            )
+            .expect("multiple roots");
+        assert!(multiple.compatible, "{:?}", multiple.blocked_reuse);
+        assert_eq!(multiple.retry_roots, ["first", "second"]);
+
+        let changed = source.replace("value: durable", "value: changed");
+        let (changed_workflow, changed_plan) = compile_fixture(&changed);
+        let mismatch = runtime
+            .plan_retry(
+                &source_run_id,
+                &changed_workflow,
+                &changed_plan,
+                &[],
+                true,
+                false,
+            )
+            .expect("mismatch plan");
+        assert!(!mismatch.compatible);
+        assert!(
+            mismatch
+                .blocked_reuse
+                .iter()
+                .any(|block| { block.rule == "retry_workflow_definition_mismatch" })
+        );
+
+        let uncertain = EffectRequest::new(
+            &source_run_id,
+            "second",
+            1,
+            99,
+            "external.publish",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"record": "x"}),
+            "publish record",
+            "trace-retry",
+        );
+        store
+            .record_effect_request(&uncertain, FixedClock.now())
+            .expect("effect");
+        store
+            .mark_effect_started(&uncertain.id, FixedClock.now())
+            .expect("started");
+        store
+            .mark_effect_uncertain(&uncertain.id, "unknown", FixedClock.now())
+            .expect("uncertain");
+        let blocked = runtime
+            .plan_retry(&source_run_id, &workflow, &compiled, &[], true, false)
+            .expect("blocked effect");
+        assert!(!blocked.compatible);
+        assert!(
+            blocked
+                .blocked_reuse
+                .iter()
+                .any(|block| block.rule == "unreconciled_effect")
+        );
+        store
+            .reconcile_effect_not_applied(
+                &uncertain.id,
+                "operator",
+                "remote lookup found no record",
+                FixedClock.now(),
+            )
+            .expect("reconcile");
+        let compatible = runtime
+            .plan_retry(&source_run_id, &workflow, &compiled, &[], true, false)
+            .expect("compatible after reconciliation");
+        assert!(compatible.compatible, "{:?}", compatible.blocked_reuse);
     }
 
     #[tokio::test]

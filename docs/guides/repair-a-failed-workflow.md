@@ -189,4 +189,4 @@ Recorded replay has a new replay run ID but the same semantic outputs. It dispat
 | `new_task_outside_repair_closure` | A new unrelated task has no result. | Add it as a root or choose an earlier common boundary. |
 | `unreconciled_effect` | Fresh execution may duplicate a mutation. | Inspect and reconcile external reality first. |
 
-`retry` remains a task's bounded same-definition attempt policy in v1alpha1; there is no separate terminal-run `retry` command yet. Use repair for a changed target definition and fork for a broader intentionally fresh execution.
+Use [`agentctl retry`](TERMINAL_RETRY.md) instead when the workflow definition is unchanged and the intent is to rerun failed or explicitly selected boundaries of a terminal source. Use repair for a corrected definition and fork for a broader intentionally fresh execution.

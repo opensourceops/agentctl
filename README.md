@@ -43,16 +43,18 @@ spec:
         message: hello from agentctl
 ```
 
-Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, `repair` to reuse compatible successful task boundaries with a corrected workflow, and `fork` when a broader fresh execution is intentional.
+Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, `retry` to rerun failed boundaries of an identical terminal workflow, `repair` to reuse compatible successful task boundaries with a corrected workflow, and `fork` when a broader fresh execution is intentional.
 
-Selective repair is planned before execution:
+Terminal retry and selective repair are planned before execution:
 
 ```text
+agentctl retry workflow.yaml SOURCE_RUN_ID --failed --plan
+agentctl retry workflow.yaml SOURCE_RUN_ID --failed
 agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task --plan
 agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task
 ```
 
-See [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
+See [Retry a terminal workflow](docs/guides/TERMINAL_RETRY.md) and [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
 For retained pre-schema-5 history, use [Legacy run upgrade](docs/guides/LEGACY_RUN_UPGRADE.md). For ambiguous external outcomes, use [Effect reconciliation](docs/guides/EFFECT_RECONCILIATION.md).
 
 ## Safety boundary

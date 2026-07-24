@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 8;
+pub const DATABASE_SCHEMA_VERSION: u32 = 9;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -293,6 +293,13 @@ CREATE INDEX idx_effect_reconciliations_run_created
   ON effect_reconciliations(run_id, created_at, reconciliation_id);
 "#;
 
+const MIGRATION_9: &str = r#"
+ALTER TABLE runs ADD COLUMN retry_roots_json TEXT;
+ALTER TABLE runs ADD COLUMN retry_reason TEXT;
+ALTER TABLE runs ADD COLUMN retry_format_version INTEGER;
+ALTER TABLE runs ADD COLUMN retry_failed_only INTEGER NOT NULL DEFAULT 0;
+"#;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
@@ -348,6 +355,10 @@ pub struct RunRecord {
     pub repair_roots: Vec<String>,
     pub repair_reason: Option<String>,
     pub repair_format_version: Option<u32>,
+    pub retry_roots: Vec<String>,
+    pub retry_reason: Option<String>,
+    pub retry_format_version: Option<u32>,
+    pub retry_failed_only: bool,
     pub base_path: Option<String>,
     pub cancellation_requested: bool,
     pub created_at: DateTime<Utc>,
@@ -362,6 +373,7 @@ pub enum RunMode {
     Replay,
     Fork,
     Repair,
+    Retry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -965,11 +977,159 @@ impl SqliteStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_retry_run(
+        &self,
+        run_id: &str,
+        source_run_id: &str,
+        source_workflow_digest: &str,
+        workflow_schema_version: &str,
+        workflow: &Value,
+        plan: &CompiledPlan,
+        inputs: &Value,
+        working_memory: &Value,
+        retry_roots: &[String],
+        failed_only: bool,
+        reason: Option<&str>,
+        reused_tasks: &[ReusedTaskMaterialization],
+        task_decisions: &Value,
+        base_path: &Path,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
+        let reused = reused_tasks
+            .iter()
+            .map(|task| (task.task_id.as_str(), task))
+            .collect::<BTreeMap<_, _>>();
+        let _artifact_guard = self.artifact_lock.lock();
+        let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
+        for task in reused_tasks {
+            verify_artifact_manifest(
+                self.artifact_store.as_ref(),
+                &task.metadata.artifact_manifest,
+            )?;
+        }
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO runs (run_id, runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, state, mode, source_run_id, source_workflow_digest, retry_roots_json, retry_reason, retry_format_version, retry_failed_only, base_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?18, ?19, ?19)",
+            params![
+                run_id,
+                RUNTIME_STATE_VERSION,
+                plan.workflow_digest,
+                workflow_schema_version,
+                plan.plan_digest,
+                plan.format_version,
+                encode(workflow)?,
+                encode(plan)?,
+                encode(inputs)?,
+                encode(working_memory)?,
+                encode_enum(RunState::Running)?,
+                encode_enum(RunMode::Retry)?,
+                source_run_id,
+                source_workflow_digest,
+                encode(retry_roots)?,
+                reason,
+                failed_only,
+                base_path.display().to_string(),
+                now.to_rfc3339(),
+            ],
+        )?;
+        for (position, task_id) in plan.order.iter().enumerate() {
+            let position = i64::try_from(position).map_err(|_| {
+                StoreError::Incompatible("task position exceeds SQLite integer range".to_owned())
+            })?;
+            if let Some(task) = reused.get(task_id.as_str()) {
+                transaction.execute(
+                    "INSERT INTO task_states (run_id, task_id, position, state, attempt, output_json, disposition, metadata_version, source_run_id, source_task_id, source_attempt, definition_fingerprint, input_digest, output_contract_fingerprint, output_digest, state_delta_json, state_delta_digest, artifact_manifest_json, reuse_decision_json, updated_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                    params![
+                        run_id,
+                        task_id,
+                        position,
+                        encode_enum(TaskState::Succeeded)?,
+                        encode(&task.output)?,
+                        encode_enum(TaskDisposition::Reused)?,
+                        task.metadata.execution.metadata_version,
+                        task.source_run_id,
+                        task.source_task_id,
+                        task.source_attempt,
+                        task.metadata.execution.definition_fingerprint,
+                        task.metadata.execution.input_digest,
+                        task.metadata.execution.output_contract_fingerprint,
+                        task.metadata.output_digest,
+                        encode(&task.metadata.state_delta)?,
+                        task.metadata.state_delta_digest,
+                        encode(&task.metadata.artifact_manifest)?,
+                        encode(&task.reuse_decision)?,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+                append_audit_tx(
+                    &transaction,
+                    run_id,
+                    "retry.task_reused",
+                    Some(task_id),
+                    trace_id,
+                    &serde_json::json!({
+                        "sourceRunId": task.source_run_id,
+                        "sourceTaskId": task.source_task_id,
+                        "sourceAttempt": task.source_attempt,
+                        "outputDigest": task.metadata.output_digest,
+                        "decision": task.reuse_decision,
+                    }),
+                    now,
+                )?;
+                record_artifact_references_tx(
+                    &transaction,
+                    run_id,
+                    task_id,
+                    &task.metadata.artifact_manifest,
+                    Some(&task.source_run_id),
+                    Some(&task.source_task_id),
+                    now,
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO task_states (run_id, task_id, position, state, disposition, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        run_id,
+                        task_id,
+                        position,
+                        encode_enum(TaskState::Pending)?,
+                        encode_enum(TaskDisposition::Executed)?,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+            }
+        }
+        append_audit_tx(
+            &transaction,
+            run_id,
+            "retry.created",
+            None,
+            trace_id,
+            &serde_json::json!({
+                "sourceRunId": source_run_id,
+                "sourceWorkflowDigest": source_workflow_digest,
+                "workflowDigest": plan.workflow_digest,
+                "retryRoots": retry_roots,
+                "failedOnly": failed_only,
+                "reason": reason,
+                "reusedTasks": reused_tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
+                "taskDecisions": task_decisions,
+            }),
+            now,
+        )?;
+        checkpoint_tx(&transaction, run_id, now)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn load_run(&self, run_id: &str) -> Result<RunRecord, StoreError> {
         let connection = self.connection.lock();
         connection
             .query_row(
-                "SELECT runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, output_json, state, mode, parent_run_id, cancellation_requested, created_at, updated_at, base_path, source_run_id, source_workflow_digest, repair_roots_json, repair_reason, repair_format_version FROM runs WHERE run_id = ?1",
+                "SELECT runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, output_json, state, mode, parent_run_id, cancellation_requested, created_at, updated_at, base_path, source_run_id, source_workflow_digest, repair_roots_json, repair_reason, repair_format_version, retry_roots_json, retry_reason, retry_format_version, retry_failed_only FROM runs WHERE run_id = ?1",
                 [run_id],
                 |row| {
                     let state_version: u32 = row.get(0)?;
@@ -997,6 +1157,10 @@ impl SqliteStore {
                         row.get::<_, Option<String>>(19)?,
                         row.get::<_, Option<String>>(20)?,
                         row.get::<_, Option<u32>>(21)?,
+                        row.get::<_, Option<String>>(22)?,
+                        row.get::<_, Option<String>>(23)?,
+                        row.get::<_, Option<u32>>(24)?,
+                        row.get::<_, bool>(25)?,
                     ))
                 },
             )
@@ -1037,6 +1201,14 @@ impl SqliteStore {
                         .unwrap_or_default(),
                     repair_reason: row.20,
                     repair_format_version: row.21,
+                    retry_roots: row
+                        .22
+                        .map(|value| decode(&value, "run.retry_roots"))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    retry_reason: row.23,
+                    retry_format_version: row.24,
+                    retry_failed_only: row.25,
                     base_path: row.16,
                     cancellation_requested: row.13,
                     created_at: parse_time(&row.14, "created_at")?,
@@ -2938,6 +3110,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (6_u32, MIGRATION_6),
         (7_u32, MIGRATION_7),
         (8_u32, MIGRATION_8),
+        (9_u32, MIGRATION_9),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -3408,6 +3581,7 @@ spec:
             MIGRATION_5,
             MIGRATION_6,
             MIGRATION_7,
+            MIGRATION_8,
         ]
         .into_iter()
         .enumerate()
@@ -3977,6 +4151,53 @@ spec:
         assert_eq!(
             store.list_tasks("repair").expect("repair tasks")[0].disposition,
             TaskDisposition::Executed
+        );
+    }
+
+    #[test]
+    fn creates_retry_lineage_separately_from_repair_metadata() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "source");
+        let (workflow, plan) = fixture();
+        store
+            .create_retry_run(
+                "retry",
+                "source",
+                &plan.workflow_digest,
+                API_VERSION,
+                &workflow,
+                &plan,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                &["one".to_owned()],
+                true,
+                Some("retry failed tasks"),
+                &[],
+                &serde_json::json!([]),
+                Path::new("."),
+                Utc::now(),
+                "trace-retry",
+            )
+            .expect("create retry");
+
+        let retry = store.load_run("retry").expect("retry run");
+        assert_eq!(retry.mode, RunMode::Retry);
+        assert_eq!(retry.source_run_id.as_deref(), Some("source"));
+        assert_eq!(retry.retry_roots, ["one"]);
+        assert_eq!(retry.retry_reason.as_deref(), Some("retry failed tasks"));
+        assert_eq!(retry.retry_format_version, Some(1));
+        assert!(retry.retry_failed_only);
+        assert!(retry.repair_roots.is_empty());
+        assert_eq!(
+            store.list_tasks("retry").expect("tasks")[0].disposition,
+            TaskDisposition::Executed
+        );
+        assert!(
+            store
+                .audit_events("retry")
+                .expect("audit")
+                .iter()
+                .any(|event| event.event_type == "retry.created")
         );
     }
 

@@ -17,6 +17,7 @@ Commands:
   replay      Reconstruct a terminal run only from recorded state and results
   fork        Create a new run from a prior workflow with fresh effects
   repair      Create a new run that reuses compatible upstream results and executes a repaired suffix
+  retry       Retry failed or selected boundaries of an identical terminal workflow
   runs        Analyze or upgrade retained legacy run records for selective reuse
   cancel      Durably request cancellation
   inspect     Inspect durable run, task, and audit state
@@ -183,6 +184,34 @@ Options:
       --plan
       --restart-successful
       --verbose
+      --reason <REASON>
+      --db <DB>                            [default: .agentctl/runtime.db]
+      --interactive
+      --diff
+      --workspace <WORKSPACE>
+      --timeout-seconds <TIMEOUT_SECONDS>
+  -h, --help                               Print help
+```
+
+## `agentctl retry`
+
+```text
+Retry failed or selected boundaries of an identical terminal workflow
+
+Usage: agentctl retry [OPTIONS] <FILE> <SOURCE_RUN_ID>
+
+Arguments:
+  <FILE>
+  <SOURCE_RUN_ID>
+
+Options:
+      --failed
+      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --from <FROM>
+      --plan
+      --verbose
+      --restart-successful
       --reason <REASON>
       --db <DB>                            [default: .agentctl/runtime.db]
       --interactive
