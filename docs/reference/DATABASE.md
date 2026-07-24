@@ -1,22 +1,24 @@
 # Runtime database and migrations
 
-The local SQLite database and its sibling artifact root are history and part of the correctness boundary. The current database schema version is `6`.
+The local SQLite database and its sibling artifact root are history and part of the correctness boundary. The current database schema version is `8`.
 
 ## Stored records
 
 - runs, source workflow, compiled plan, inputs, output, mode, state, parent linkage, and repair source/root metadata
 - task states, attempts, output, errors, disposition, source attempt, versioned fingerprints/digests, state delta, artifact manifest, and reuse decision
 - effects, request/result/error, confirmation, and uncertainty
+- immutable effect reconciliation history, operator authorization, evidence, validated results, supersession, and compensation linkage
 - approvals and resolutions
 - checksummed checkpoints
 - ordered audit and trace events
 - provider sessions and tool calls
 - namespaced long-term memory with optional expiry
 - content-addressed blob metadata, logical run/task references, provenance, verification time, and bounded ingestion leases
+- legacy-run upgrade analysis and the exact task metadata applied by each upgrade
 
 Working memory is stored on the run and in checkpoints. Provider credentials are not stored. Other confidential content may be stored, including prompts, tool output, and remote artifacts.
 
-Migration 5 adds `source_run_id`, `source_workflow_digest`, repair roots/reason/version, and task-boundary metadata used by repair. Migration 6 adds artifact blob, reference, and ingestion-lease tables. A repair transaction creates the run, materializes every reused task and artifact reference, creates pending fresh tasks, records provenance audit events, and writes its first checkpoint atomically. The source identifier is durable lineage rather than a foreign-key dependency, so source garbage collection does not delete a repair run.
+Migration 5 adds `source_run_id`, `source_workflow_digest`, repair roots/reason/version, and task-boundary metadata used by repair. Migration 6 adds artifact blob, reference, and ingestion-lease tables. Migration 7 records transactional legacy-run upgrades. Migration 8 adds immutable effect reconciliation records. A repair transaction creates the run, materializes every reused task and artifact reference, creates pending fresh tasks, records provenance audit events, and writes its first checkpoint atomically. The source identifier is durable lineage rather than a foreign-key dependency, so source garbage collection does not delete a repair run.
 
 Artifact manifests contain logical path/name, media type, byte size, SHA-256 digest, and CAS-relative path. Blob bytes live under `<database-parent>/artifacts/sha256/`; identical content is stored once. A completed repair/replay receives its own references, so source-row and workspace deletion do not break it.
 
@@ -27,6 +29,10 @@ The store reads SQLite `user_version` and applies forward migrations in order in
 ```text
 agentctl db stats --db .agentctl/runtime.db --output json --color never
 agentctl db migrate --db .agentctl/runtime.db --output json --color never
+agentctl runs --db .agentctl/runtime.db analyze RUN_ID --output json
+agentctl runs --db .agentctl/runtime.db upgrade RUN_ID --dry-run --output json
+agentctl runs --db .agentctl/runtime.db upgrade RUN_ID --output json
+agentctl effects --db .agentctl/runtime.db list RUN_ID --output json
 agentctl artifacts --db .agentctl/runtime.db list --run RUN_ID --output json
 agentctl artifacts --db .agentctl/runtime.db verify --all --output json
 agentctl artifacts --db .agentctl/runtime.db export SHA256_DIGEST ./report.bin

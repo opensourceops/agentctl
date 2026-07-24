@@ -2660,6 +2660,7 @@ dependencies = [
  "anyhow",
  "hex",
  "nix",
+ "rusqlite",
  "serde_json",
  "sha2",
  "tempfile",

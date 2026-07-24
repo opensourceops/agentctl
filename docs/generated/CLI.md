@@ -17,6 +17,7 @@ Commands:
   replay      Reconstruct a terminal run only from recorded state and results
   fork        Create a new run from a prior workflow with fresh effects
   repair      Create a new run that reuses compatible upstream results and executes a repaired suffix
+  runs        Analyze or upgrade retained legacy run records for selective reuse
   cancel      Durably request cancellation
   inspect     Inspect durable run, task, and audit state
   effects     Inspect or narrowly reconcile uncertain effects
@@ -191,6 +192,60 @@ Options:
   -h, --help                               Print help
 ```
 
+## `agentctl runs`
+
+```text
+Analyze or upgrade retained legacy run records for selective reuse
+
+Usage: agentctl runs [OPTIONS] <COMMAND>
+
+Commands:
+  analyze  Prove reusable legacy metadata without changing the source run
+  upgrade  Transactionally persist every legacy field that can be proven
+
+Options:
+      --db <DB>          [default: .agentctl/runtime.db]
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl runs analyze`
+
+```text
+Prove reusable legacy metadata without changing the source run
+
+Usage: agentctl runs analyze [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl runs upgrade`
+
+```text
+Transactionally persist every legacy field that can be proven
+
+Usage: agentctl runs upgrade [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+
+Options:
+      --dry-run
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
 ## `agentctl cancel`
 
 ```text
@@ -235,6 +290,7 @@ Inspect or narrowly reconcile uncertain effects
 Usage: agentctl effects [OPTIONS] <COMMAND>
 
 Commands:
+  list
   inspect
   reconcile
 
@@ -246,10 +302,10 @@ Options:
   -h, --help             Print help
 ```
 
-## `agentctl effects inspect`
+## `agentctl effects list`
 
 ```text
-Usage: agentctl effects inspect [OPTIONS] <RUN_ID>
+Usage: agentctl effects list [OPTIONS] <RUN_ID>
 
 Arguments:
   <RUN_ID>
@@ -262,22 +318,54 @@ Options:
   -h, --help             Print help
 ```
 
-## `agentctl effects reconcile`
+## `agentctl effects inspect`
 
 ```text
-Usage: agentctl effects reconcile [OPTIONS] --outcome <OUTCOME> --reason <REASON> <EFFECT_ID>
+Usage: agentctl effects inspect [OPTIONS] <EFFECT_ID>
 
 Arguments:
   <EFFECT_ID>
 
 Options:
-      --outcome <OUTCOME>  [possible values: not-applied]
-      --output <OUTPUT>    [default: human] [possible values: human, json]
-      --actor <ACTOR>      [default: cli-user]
-      --color <COLOR>      [default: auto] [possible values: auto, always, never]
-      --reason <REASON>
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
-  -h, --help               Print help
+  -h, --help             Print help
+```
+
+## `agentctl effects reconcile`
+
+```text
+Usage: agentctl effects reconcile [OPTIONS] --status <STATUS> --reason <REASON> <EFFECT_ID>
+
+Arguments:
+  <EFFECT_ID>
+
+Options:
+      --output <OUTPUT>
+          [default: human] [possible values: human, json]
+      --status <STATUS>
+          [possible values: applied, not-applied, compensated]
+      --actor <ACTOR>
+          [default: cli-user]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
+      --reason <REASON>
+
+      --verbose
+
+      --evidence-file <EVIDENCE_FILE>
+
+      --result-file <RESULT_FILE>
+
+      --result-schema-file <RESULT_SCHEMA_FILE>
+
+      --compensation-effect <COMPENSATION_EFFECT>
+
+      --approved
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl approvals`
@@ -462,6 +550,104 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
+```
+
+## `agentctl artifacts`
+
+```text
+Inspect, verify, export, or collect durable artifacts
+
+Usage: agentctl artifacts [OPTIONS] <COMMAND>
+
+Commands:
+  list
+  inspect
+  verify
+  export
+  gc
+
+Options:
+      --db <DB>          [default: .agentctl/runtime.db]
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl artifacts list`
+
+```text
+Usage: agentctl artifacts list [OPTIONS]
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --run <RUN>
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --task <TASK>
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl artifacts inspect`
+
+```text
+Usage: agentctl artifacts inspect [OPTIONS] <DIGEST>
+
+Arguments:
+  <DIGEST>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl artifacts verify`
+
+```text
+Usage: agentctl artifacts verify [OPTIONS] [DIGEST]
+
+Arguments:
+  [DIGEST]
+
+Options:
+      --all
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl artifacts export`
+
+```text
+Usage: agentctl artifacts export [OPTIONS] <DIGEST> <DESTINATION>
+
+Arguments:
+  <DIGEST>
+  <DESTINATION>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --overwrite
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+  -h, --help             Print help
+```
+
+## `agentctl artifacts gc`
+
+```text
+Usage: agentctl artifacts gc [OPTIONS]
+
+Options:
+      --older-than-days <OLDER_THAN_DAYS>  [default: 30]
+      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --dry-run
+      --verbose
+  -h, --help                               Print help
 ```
 
 ## `agentctl db`

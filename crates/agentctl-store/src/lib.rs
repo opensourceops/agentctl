@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 6;
+pub const DATABASE_SCHEMA_VERSION: u32 = 8;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -256,6 +256,43 @@ CREATE TABLE artifact_ingests (
 CREATE INDEX idx_artifact_ingests_expiry ON artifact_ingests(expires_at);
 "#;
 
+const MIGRATION_7: &str = r#"
+CREATE TABLE run_upgrades (
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  upgrade_id TEXT NOT NULL,
+  format_version INTEGER NOT NULL,
+  analysis_json TEXT NOT NULL,
+  upgraded_tasks_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, upgrade_id)
+);
+CREATE INDEX idx_run_upgrades_created ON run_upgrades(run_id, created_at);
+"#;
+
+const MIGRATION_8: &str = r#"
+CREATE TABLE effect_reconciliations (
+  reconciliation_id TEXT PRIMARY KEY,
+  effect_id TEXT NOT NULL REFERENCES effects(effect_id),
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  format_version INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  result_json TEXT,
+  result_schema_json TEXT,
+  authorization_json TEXT NOT NULL,
+  compensation_effect_id TEXT REFERENCES effects(effect_id),
+  supersedes_id TEXT REFERENCES effect_reconciliations(reconciliation_id),
+  trace_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_effect_reconciliations_effect_created
+  ON effect_reconciliations(effect_id, created_at, reconciliation_id);
+CREATE INDEX idx_effect_reconciliations_run_created
+  ON effect_reconciliations(run_id, created_at, reconciliation_id);
+"#;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
@@ -444,6 +481,58 @@ pub struct ReusedTaskMaterialization {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LegacyTaskUpgrade {
+    pub task_id: String,
+    pub metadata: TaskCompletionMetadata,
+    pub provenance: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationStatus {
+    Applied,
+    NotApplied,
+    Compensated,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectReconciliationRequest {
+    pub reconciliation_id: String,
+    pub effect_id: String,
+    pub status: ReconciliationStatus,
+    pub actor: String,
+    pub reason: String,
+    pub evidence: Value,
+    pub result: Option<Value>,
+    pub result_schema: Option<Value>,
+    pub authorization: Value,
+    pub compensation_effect_id: Option<String>,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectReconciliationRecord {
+    pub reconciliation_id: String,
+    pub effect_id: String,
+    pub run_id: String,
+    pub format_version: u32,
+    pub status: ReconciliationStatus,
+    pub actor: String,
+    pub reason: String,
+    pub evidence: Value,
+    pub result: Option<Value>,
+    pub result_schema: Option<Value>,
+    pub authorization: Value,
+    pub compensation_effect_id: Option<String>,
+    pub supersedes_id: Option<String>,
+    pub trace_id: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApprovalRequest {
     pub approval_id: String,
     pub run_id: String,
@@ -537,6 +626,8 @@ pub struct DatabaseStats {
     pub artifact_blobs: i64,
     pub artifact_references: i64,
     pub artifact_ingests: i64,
+    pub run_upgrades: i64,
+    pub effect_reconciliations: i64,
 }
 
 impl SqliteStore {
@@ -1327,6 +1418,111 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn apply_legacy_run_upgrade(
+        &self,
+        upgrade_id: &str,
+        run_id: &str,
+        analysis: &Value,
+        updates: &[LegacyTaskUpgrade],
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
+        let _artifact_guard = self.artifact_lock.lock();
+        let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
+        for update in updates {
+            verify_artifact_manifest(
+                self.artifact_store.as_ref(),
+                &update.metadata.artifact_manifest,
+            )?;
+        }
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let run_state: String = transaction
+            .query_row(
+                "SELECT state FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::RunNotFound(run_id.to_owned()))?;
+        let run_state: RunState = decode_enum(&run_state, "run.state")?;
+        if !run_state.is_terminal() {
+            return Err(StoreError::Incompatible(format!(
+                "legacy run upgrade requires a terminal run, found {run_state:?}"
+            )));
+        }
+        for update in updates {
+            let changed = transaction.execute(
+                "UPDATE task_states SET metadata_version = ?3, definition_fingerprint = ?4, input_digest = ?5, output_contract_fingerprint = ?6, output_digest = ?7, state_delta_json = ?8, state_delta_digest = ?9, artifact_manifest_json = ?10, reuse_decision_json = ?11, updated_at = ?12 WHERE run_id = ?1 AND task_id = ?2 AND state = ?13 AND metadata_version IS NULL",
+                params![
+                    run_id,
+                    update.task_id,
+                    update.metadata.execution.metadata_version,
+                    update.metadata.execution.definition_fingerprint,
+                    update.metadata.execution.input_digest,
+                    update.metadata.execution.output_contract_fingerprint,
+                    update.metadata.output_digest,
+                    encode(&update.metadata.state_delta)?,
+                    update.metadata.state_delta_digest,
+                    encode(&update.metadata.artifact_manifest)?,
+                    encode(&serde_json::json!({"legacyUpgrade": update.provenance}))?,
+                    now.to_rfc3339(),
+                    encode_enum(TaskState::Succeeded)?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::Incompatible(format!(
+                    "legacy task `{}` is missing, not successful, or already upgraded",
+                    update.task_id
+                )));
+            }
+            record_artifact_references_tx(
+                &transaction,
+                run_id,
+                &update.task_id,
+                &update.metadata.artifact_manifest,
+                None,
+                None,
+                now,
+            )?;
+            transaction.execute(
+                "DELETE FROM artifact_ingests WHERE run_id = ?1 AND task_id = ?2",
+                params![run_id, update.task_id],
+            )?;
+        }
+        let upgraded_tasks = updates
+            .iter()
+            .map(|update| update.task_id.as_str())
+            .collect::<Vec<_>>();
+        transaction.execute(
+            "INSERT INTO run_upgrades (run_id, upgrade_id, format_version, analysis_json, upgraded_tasks_json, created_at) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
+            params![
+                run_id,
+                upgrade_id,
+                encode(analysis)?,
+                encode(&upgraded_tasks)?,
+                now.to_rfc3339(),
+            ],
+        )?;
+        append_audit_tx(
+            &transaction,
+            run_id,
+            "run.legacy_upgraded",
+            None,
+            trace_id,
+            &serde_json::json!({
+                "upgradeId": upgrade_id,
+                "formatVersion": 1,
+                "upgradedTasks": upgraded_tasks,
+                "analysis": analysis,
+            }),
+            now,
+        )?;
+        checkpoint_tx(&transaction, run_id, now)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn update_run_state(
         &self,
         run_id: &str,
@@ -1549,12 +1745,215 @@ impl SqliteStore {
     pub fn unresolved_effects(&self, run_id: &str) -> Result<Vec<String>, StoreError> {
         let connection = self.connection.lock();
         let mut statement = connection.prepare(
-            "SELECT effect_id FROM effects WHERE run_id = ?1 AND status IN ('started', 'uncertain') ORDER BY rowid",
+            "SELECT e.effect_id FROM effects e
+             WHERE e.run_id = ?1
+               AND e.status IN ('started', 'uncertain')
+               AND NOT EXISTS (
+                 SELECT 1 FROM effect_reconciliations r WHERE r.effect_id = e.effect_id
+               )
+             ORDER BY e.rowid",
         )?;
         statement
             .query_map([run_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    pub fn reconcile_effect(
+        &self,
+        request: &EffectReconciliationRequest,
+        now: DateTime<Utc>,
+    ) -> Result<EffectReconciliationRecord, StoreError> {
+        if request.actor.trim().is_empty() || request.reason.trim().is_empty() {
+            return Err(StoreError::Incompatible(
+                "effect reconciliation requires a non-empty actor and reason".to_owned(),
+            ));
+        }
+        if request.status == ReconciliationStatus::Applied && request.result.is_none() {
+            return Err(StoreError::Incompatible(
+                "an applied reconciliation requires an externally confirmed result".to_owned(),
+            ));
+        }
+        if request.status == ReconciliationStatus::Compensated
+            && request.compensation_effect_id.is_none()
+        {
+            return Err(StoreError::Incompatible(
+                "a compensated reconciliation requires a linked compensation effect".to_owned(),
+            ));
+        }
+
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source: (String, String, bool) = transaction
+            .query_row(
+                "SELECT run_id, status, confirmed FROM effects WHERE effect_id = ?1",
+                [&request.effect_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::EffectNotFound(request.effect_id.clone()))?;
+        let source_status: EffectStatus = decode_enum(&source.1, "effect.status")?;
+        let previous = transaction
+            .query_row(
+                "SELECT reconciliation_id, effect_id, run_id, format_version, status, actor, reason, evidence_json, result_json, result_schema_json, authorization_json, compensation_effect_id, supersedes_id, trace_id, created_at
+                 FROM effect_reconciliations
+                 WHERE effect_id = ?1
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT 1",
+                [&request.effect_id],
+                decode_reconciliation_row,
+            )
+            .optional()?
+            .map(reconciliation_from_row)
+            .transpose()?;
+
+        if let Some(previous) = &previous {
+            let allowed = previous.status == request.status
+                || (previous.status == ReconciliationStatus::Applied
+                    && request.status == ReconciliationStatus::Compensated);
+            if !allowed {
+                return Err(StoreError::Incompatible(format!(
+                    "effect `{}` is already reconciled as {:?}; contradictory {:?} reconciliation is forbidden",
+                    request.effect_id, previous.status, request.status
+                )));
+            }
+        } else {
+            let uncertain_source = matches!(
+                source_status,
+                EffectStatus::Started | EffectStatus::Uncertain
+            );
+            let confirmed_source = source_status == EffectStatus::Succeeded && source.2;
+            let allowed = match request.status {
+                ReconciliationStatus::Applied | ReconciliationStatus::NotApplied => {
+                    uncertain_source
+                }
+                ReconciliationStatus::Compensated => confirmed_source,
+            };
+            if !allowed {
+                return Err(StoreError::Incompatible(format!(
+                    "effect `{}` in state {:?} cannot be reconciled as {:?}",
+                    request.effect_id, source_status, request.status
+                )));
+            }
+        }
+
+        if let Some(compensation_effect_id) = &request.compensation_effect_id {
+            if compensation_effect_id == &request.effect_id {
+                return Err(StoreError::Incompatible(
+                    "an effect cannot compensate itself".to_owned(),
+                ));
+            }
+            let compensation: (String, String, bool) = transaction
+                .query_row(
+                    "SELECT run_id, status, confirmed FROM effects WHERE effect_id = ?1",
+                    [compensation_effect_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+                .ok_or_else(|| StoreError::EffectNotFound(compensation_effect_id.clone()))?;
+            if compensation.0 != source.0 {
+                return Err(StoreError::Incompatible(
+                    "compensation effect must belong to the same run".to_owned(),
+                ));
+            }
+            let compensation_status: EffectStatus =
+                decode_enum(&compensation.1, "compensation_effect.status")?;
+            let reconciled_applied = transaction
+                .query_row(
+                    "SELECT status FROM effect_reconciliations WHERE effect_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    [compensation_effect_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|status| decode_enum::<ReconciliationStatus>(&status, "compensation_reconciliation.status"))
+                .transpose()?
+                == Some(ReconciliationStatus::Applied);
+            if !(compensation_status == EffectStatus::Succeeded && compensation.2
+                || reconciled_applied)
+            {
+                return Err(StoreError::Incompatible(format!(
+                    "compensation effect `{compensation_effect_id}` is not confirmed applied"
+                )));
+            }
+        }
+
+        let supersedes_id = previous
+            .as_ref()
+            .map(|record| record.reconciliation_id.as_str());
+        transaction.execute(
+            "INSERT INTO effect_reconciliations (reconciliation_id, effect_id, run_id, format_version, status, actor, reason, evidence_json, result_json, result_schema_json, authorization_json, compensation_effect_id, supersedes_id, trace_id, created_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                request.reconciliation_id,
+                request.effect_id,
+                source.0,
+                encode_enum(request.status)?,
+                request.actor,
+                request.reason,
+                encode(&request.evidence)?,
+                request.result.as_ref().map(encode).transpose()?,
+                request.result_schema.as_ref().map(encode).transpose()?,
+                encode(&request.authorization)?,
+                request.compensation_effect_id,
+                supersedes_id,
+                request.trace_id,
+                now.to_rfc3339(),
+            ],
+        )?;
+        let payload = serde_json::json!({
+            "reconciliationId": request.reconciliation_id,
+            "effectId": request.effect_id,
+            "status": request.status,
+            "actor": request.actor,
+            "reason": request.reason,
+            "hasEvidence": !request.evidence.is_null(),
+            "hasResult": request.result.is_some(),
+            "compensationEffectId": request.compensation_effect_id,
+            "supersedesId": supersedes_id,
+        });
+        append_audit_tx(
+            &transaction,
+            &source.0,
+            "effect.reconciled",
+            None,
+            &request.trace_id,
+            &payload,
+            now,
+        )?;
+        append_trace_tx(
+            &transaction,
+            &source.0,
+            &request.trace_id,
+            &serde_json::json!({
+                "spanKind": "effect",
+                "phase": "completed",
+                "name": "effect.reconcile",
+                "runId": source.0,
+                "traceId": request.trace_id,
+                "effectId": request.effect_id,
+                "timestamp": now,
+                "attributes": payload,
+            }),
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(EffectReconciliationRecord {
+            reconciliation_id: request.reconciliation_id.clone(),
+            effect_id: request.effect_id.clone(),
+            run_id: source.0,
+            format_version: 1,
+            status: request.status,
+            actor: request.actor.clone(),
+            reason: request.reason.clone(),
+            evidence: request.evidence.clone(),
+            result: request.result.clone(),
+            result_schema: request.result_schema.clone(),
+            authorization: request.authorization.clone(),
+            compensation_effect_id: request.compensation_effect_id.clone(),
+            supersedes_id: supersedes_id.map(ToOwned::to_owned),
+            trace_id: request.trace_id.clone(),
+            created_at: now,
+        })
     }
 
     pub fn reconcile_effect_not_applied(
@@ -1564,53 +1963,81 @@ impl SqliteStore {
         reason: &str,
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        let mut connection = self.connection.lock();
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let run_id: Option<String> = transaction
-            .query_row(
-                "SELECT run_id FROM effects WHERE effect_id = ?1 AND status IN (?2, ?3)",
-                params![
-                    effect_id,
-                    encode_enum(EffectStatus::Started)?,
-                    encode_enum(EffectStatus::Uncertain)?,
-                ],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(run_id) = run_id else {
-            return Err(StoreError::Incompatible(format!(
-                "effect `{effect_id}` is missing or is not uncertain"
-            )));
-        };
-        transaction.execute(
-            "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE effect_id = ?1",
-            params![
-                effect_id,
-                encode_enum(EffectStatus::Failed)?,
-                format!("operator reconciled as not applied: {reason}"),
-                now.to_rfc3339(),
-            ],
-        )?;
-        transaction.execute(
-            "UPDATE tool_calls SET status = 'failed', completed_at = COALESCE(completed_at, ?2) WHERE run_id = ?1 AND effect_id = ?3 AND status IN ('started', 'uncertain')",
-            params![run_id, now.to_rfc3339(), effect_id],
-        )?;
-        append_audit_tx(
-            &transaction,
-            &run_id,
-            "effect.reconciled_not_applied",
-            None,
-            "operator-reconciliation",
-            &serde_json::json!({
-                "effectId": effect_id,
-                "actor": actor,
-                "reason": reason,
-                "outcome": "not_applied",
-            }),
+        let identity = format!("{effect_id}\0{actor}\0{reason}\0{}", now.to_rfc3339());
+        self.reconcile_effect(
+            &EffectReconciliationRequest {
+                reconciliation_id: format!(
+                    "reconciliation-{}",
+                    hex::encode(Sha256::digest(identity.as_bytes()))
+                ),
+                effect_id: effect_id.to_owned(),
+                status: ReconciliationStatus::NotApplied,
+                actor: actor.to_owned(),
+                reason: reason.to_owned(),
+                evidence: serde_json::json!({"source": "legacy-api"}),
+                result: None,
+                result_schema: None,
+                authorization: serde_json::json!({"kind": "explicit-operator-action"}),
+                compensation_effect_id: None,
+                trace_id: "operator-reconciliation".to_owned(),
+            },
             now,
+        )
+        .map(|_| ())
+    }
+
+    pub fn latest_effect_reconciliation(
+        &self,
+        effect_id: &str,
+    ) -> Result<Option<EffectReconciliationRecord>, StoreError> {
+        self.connection
+            .lock()
+            .query_row(
+                "SELECT reconciliation_id, effect_id, run_id, format_version, status, actor, reason, evidence_json, result_json, result_schema_json, authorization_json, compensation_effect_id, supersedes_id, trace_id, created_at
+                 FROM effect_reconciliations
+                 WHERE effect_id = ?1
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT 1",
+                [effect_id],
+                decode_reconciliation_row,
+            )
+            .optional()?
+            .map(reconciliation_from_row)
+            .transpose()
+    }
+
+    pub fn effect_reconciliations(
+        &self,
+        effect_id: &str,
+    ) -> Result<Vec<EffectReconciliationRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT reconciliation_id, effect_id, run_id, format_version, status, actor, reason, evidence_json, result_json, result_schema_json, authorization_json, compensation_effect_id, supersedes_id, trace_id, created_at
+             FROM effect_reconciliations
+             WHERE effect_id = ?1
+             ORDER BY created_at, rowid",
         )?;
-        transaction.commit()?;
-        Ok(())
+        statement
+            .query_map([effect_id], decode_reconciliation_row)?
+            .map(|row| reconciliation_from_row(row?))
+            .collect()
+    }
+
+    pub fn run_effect_reconciliations(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<EffectReconciliationRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT reconciliation_id, effect_id, run_id, format_version, status, actor, reason, evidence_json, result_json, result_schema_json, authorization_json, compensation_effect_id, supersedes_id, trace_id, created_at
+             FROM effect_reconciliations
+             WHERE run_id = ?1
+             ORDER BY created_at, rowid",
+        )?;
+        statement
+            .query_map([run_id], decode_reconciliation_row)?
+            .map(|row| reconciliation_from_row(row?))
+            .collect()
     }
 
     pub fn latest_effect_for_task(
@@ -2445,6 +2872,8 @@ impl SqliteStore {
                 "artifact_blobs",
                 "artifact_refs",
                 "artifact_ingests",
+                "run_upgrades",
+                "effect_reconciliations",
             ];
             if !allowed.contains(&table) {
                 return Err(StoreError::Incompatible(
@@ -2474,6 +2903,8 @@ impl SqliteStore {
             artifact_blobs: count("artifact_blobs")?,
             artifact_references: count("artifact_refs")?,
             artifact_ingests: count("artifact_ingests")?,
+            run_upgrades: count("run_upgrades")?,
+            effect_reconciliations: count("effect_reconciliations")?,
         })
     }
 
@@ -2505,6 +2936,8 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (4_u32, MIGRATION_4),
         (5_u32, MIGRATION_5),
         (6_u32, MIGRATION_6),
+        (7_u32, MIGRATION_7),
+        (8_u32, MIGRATION_8),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -2583,6 +3016,103 @@ fn append_audit_tx(
         params![run_id, sequence, AUDIT_EVENT_VERSION, event_type, task_id, trace_id, encode(payload)?, now.to_rfc3339()],
     )?;
     Ok(())
+}
+
+fn append_trace_tx(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    trace_id: &str,
+    event: &Value,
+    now: DateTime<Utc>,
+) -> Result<(), StoreError> {
+    let sequence: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events WHERE run_id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    transaction.execute(
+        "INSERT INTO trace_events (run_id, sequence, trace_id, event_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            run_id,
+            sequence,
+            trace_id,
+            encode(event)?,
+            now.to_rfc3339()
+        ],
+    )?;
+    Ok(())
+}
+
+type ReconciliationRow = (
+    String,
+    String,
+    String,
+    u32,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+
+fn decode_reconciliation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReconciliationRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
+        row.get(13)?,
+        row.get(14)?,
+    ))
+}
+
+fn reconciliation_from_row(
+    row: ReconciliationRow,
+) -> Result<EffectReconciliationRecord, StoreError> {
+    if row.3 != 1 {
+        return Err(StoreError::Incompatible(format!(
+            "effect reconciliation format version {}",
+            row.3
+        )));
+    }
+    Ok(EffectReconciliationRecord {
+        reconciliation_id: row.0,
+        effect_id: row.1,
+        run_id: row.2,
+        format_version: row.3,
+        status: decode_enum(&row.4, "effect_reconciliation.status")?,
+        actor: row.5,
+        reason: row.6,
+        evidence: decode(&row.7, "effect_reconciliation.evidence")?,
+        result: row
+            .8
+            .map(|value| decode(&value, "effect_reconciliation.result"))
+            .transpose()?,
+        result_schema: row
+            .9
+            .map(|value| decode(&value, "effect_reconciliation.result_schema"))
+            .transpose()?,
+        authorization: decode(&row.10, "effect_reconciliation.authorization")?,
+        compensation_effect_id: row.11,
+        supersedes_id: row.12,
+        trace_id: row.13,
+        created_at: parse_time(&row.14, "effect_reconciliation.created_at")?,
+    })
 }
 
 type ArtifactReferenceRow = (
@@ -2868,15 +3398,28 @@ spec:
             .expect("complete task");
     }
 
-    fn create_version_four_database(path: &Path) {
+    fn create_version_database(path: &Path, version: u32) {
         let connection = Connection::open(path).expect("raw connection");
-        connection.execute_batch(MIGRATION_1).expect("v1 schema");
-        connection.execute_batch(MIGRATION_2).expect("v2 schema");
-        connection.execute_batch(MIGRATION_3).expect("v3 schema");
-        connection.execute_batch(MIGRATION_4).expect("v4 schema");
+        for (index, migration) in [
+            MIGRATION_1,
+            MIGRATION_2,
+            MIGRATION_3,
+            MIGRATION_4,
+            MIGRATION_5,
+            MIGRATION_6,
+            MIGRATION_7,
+        ]
+        .into_iter()
+        .enumerate()
+        .take(usize::try_from(version).expect("version"))
+        {
+            connection
+                .execute_batch(migration)
+                .unwrap_or_else(|error| panic!("v{} schema: {error}", index + 1));
+        }
         connection
-            .pragma_update(None, "user_version", 4)
-            .expect("v4 marker");
+            .pragma_update(None, "user_version", version)
+            .expect("version marker");
     }
 
     #[test]
@@ -3005,6 +3548,275 @@ spec:
     }
 
     #[test]
+    fn reconciliation_is_immutable_audited_traced_and_rejects_contradictions() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        let effect = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            1,
+            "external.publish",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"record": "x"}),
+            "publish record",
+            "trace",
+        );
+        let now = Utc::now();
+        store
+            .record_effect_request(&effect, now)
+            .expect("record effect");
+        store.mark_effect_started(&effect.id, now).expect("start");
+        store
+            .mark_effect_uncertain(&effect.id, "unknown", now)
+            .expect("uncertain");
+        let applied = EffectReconciliationRequest {
+            reconciliation_id: "reconciliation-applied-1".to_owned(),
+            effect_id: effect.id.clone(),
+            status: ReconciliationStatus::Applied,
+            actor: "operator".to_owned(),
+            reason: "external record exists".to_owned(),
+            evidence: serde_json::json!({"externalId": "record-1"}),
+            result: Some(serde_json::json!({"externalId": "record-1"})),
+            result_schema: Some(serde_json::json!({"type": "object"})),
+            authorization: serde_json::json!({"kind": "manual"}),
+            compensation_effect_id: None,
+            trace_id: "trace-reconcile".to_owned(),
+        };
+        let first = store
+            .reconcile_effect(&applied, now)
+            .expect("applied reconciliation");
+        assert_eq!(first.status, ReconciliationStatus::Applied);
+        assert!(
+            store
+                .unresolved_effects("run")
+                .expect("resolved")
+                .is_empty()
+        );
+        let source = store.load_effect(&effect.id).expect("immutable source");
+        assert_eq!(source.status, EffectStatus::Uncertain);
+        assert!(!source.confirmed);
+
+        let mut superseding = applied.clone();
+        superseding.reconciliation_id = "reconciliation-applied-2".to_owned();
+        superseding.reason = "external record independently verified".to_owned();
+        let second = store
+            .reconcile_effect(&superseding, now + chrono::Duration::seconds(1))
+            .expect("same-outcome supersession");
+        assert_eq!(
+            second.supersedes_id.as_deref(),
+            Some("reconciliation-applied-1")
+        );
+        let mut contradiction = superseding;
+        contradiction.reconciliation_id = "reconciliation-contradiction".to_owned();
+        contradiction.status = ReconciliationStatus::NotApplied;
+        contradiction.result = None;
+        assert!(matches!(
+            store.reconcile_effect(&contradiction, now + chrono::Duration::seconds(2)),
+            Err(StoreError::Incompatible(_))
+        ));
+        let compensation = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            2,
+            "external.delete",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Idempotent,
+            serde_json::json!({"externalId": "record-1"}),
+            "delete record",
+            "trace",
+        );
+        store
+            .record_effect_request(&compensation, now)
+            .expect("compensation");
+        store
+            .mark_effect_started(&compensation.id, now)
+            .expect("start compensation");
+        store
+            .complete_effect(
+                &compensation.id,
+                Ok(&serde_json::json!({"deleted": true})),
+                now,
+            )
+            .expect("complete compensation");
+        let mut compensated = applied;
+        compensated.reconciliation_id = "reconciliation-compensated".to_owned();
+        compensated.status = ReconciliationStatus::Compensated;
+        compensated.result = None;
+        compensated.compensation_effect_id = Some(compensation.id);
+        let compensated = store
+            .reconcile_effect(&compensated, now + chrono::Duration::seconds(3))
+            .expect("applied to compensated");
+        assert_eq!(
+            compensated.supersedes_id.as_deref(),
+            Some("reconciliation-applied-2")
+        );
+        assert_eq!(
+            store
+                .effect_reconciliations(&effect.id)
+                .expect("history")
+                .len(),
+            3
+        );
+        assert!(
+            store
+                .audit_events("run")
+                .expect("audit")
+                .iter()
+                .any(|event| event.event_type == "effect.reconciled")
+        );
+        assert!(
+            store
+                .trace_events("run")
+                .expect("traces")
+                .iter()
+                .any(|event| event.event["name"] == "effect.reconcile")
+        );
+    }
+
+    #[test]
+    fn reconciliation_compensation_requires_a_confirmed_same_run_effect() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        let now = Utc::now();
+        let original = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            1,
+            "external.publish",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::AtMostOnce,
+            serde_json::json!({"record": "x"}),
+            "publish record",
+            "trace",
+        );
+        store
+            .record_effect_request(&original, now)
+            .expect("original");
+        store
+            .mark_effect_started(&original.id, now)
+            .expect("start original");
+        store
+            .complete_effect(
+                &original.id,
+                Ok(&serde_json::json!({"externalId": "record-1"})),
+                now,
+            )
+            .expect("complete original");
+        let compensation = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            2,
+            "external.delete",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Idempotent,
+            serde_json::json!({"externalId": "record-1"}),
+            "delete record",
+            "trace",
+        );
+        store
+            .record_effect_request(&compensation, now)
+            .expect("compensation");
+        store
+            .mark_effect_started(&compensation.id, now)
+            .expect("start compensation");
+        let request = EffectReconciliationRequest {
+            reconciliation_id: "reconciliation-compensated".to_owned(),
+            effect_id: original.id.clone(),
+            status: ReconciliationStatus::Compensated,
+            actor: "operator".to_owned(),
+            reason: "record was deleted".to_owned(),
+            evidence: serde_json::json!({"externalId": "record-1", "deleted": true}),
+            result: None,
+            result_schema: None,
+            authorization: serde_json::json!({"kind": "manual"}),
+            compensation_effect_id: Some(compensation.id.clone()),
+            trace_id: "trace-reconcile".to_owned(),
+        };
+        assert!(matches!(
+            store.reconcile_effect(&request, now),
+            Err(StoreError::Incompatible(_))
+        ));
+        store
+            .complete_effect(
+                &compensation.id,
+                Ok(&serde_json::json!({"deleted": true})),
+                now,
+            )
+            .expect("complete compensation");
+        let record = store.reconcile_effect(&request, now).expect("compensated");
+        assert_eq!(record.status, ReconciliationStatus::Compensated);
+        assert_eq!(
+            record.compensation_effect_id.as_deref(),
+            Some(compensation.id.as_str())
+        );
+    }
+
+    #[test]
+    fn not_applied_reconciliation_can_only_supersede_the_same_outcome() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        let now = Utc::now();
+        let effect = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            1,
+            "external.publish",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"record": "x"}),
+            "publish",
+            "trace",
+        );
+        store.record_effect_request(&effect, now).expect("effect");
+        store.mark_effect_started(&effect.id, now).expect("start");
+        store
+            .mark_effect_uncertain(&effect.id, "unknown", now)
+            .expect("uncertain");
+        let request = EffectReconciliationRequest {
+            reconciliation_id: "not-applied-1".to_owned(),
+            effect_id: effect.id.clone(),
+            status: ReconciliationStatus::NotApplied,
+            actor: "operator".to_owned(),
+            reason: "no remote record".to_owned(),
+            evidence: serde_json::json!({"query": "empty"}),
+            result: None,
+            result_schema: None,
+            authorization: serde_json::json!({"kind": "manual"}),
+            compensation_effect_id: None,
+            trace_id: "trace-reconcile".to_owned(),
+        };
+        store.reconcile_effect(&request, now).expect("not applied");
+        let mut superseding = request.clone();
+        superseding.reconciliation_id = "not-applied-2".to_owned();
+        assert_eq!(
+            store
+                .reconcile_effect(&superseding, now + chrono::Duration::seconds(1))
+                .expect("supersede")
+                .supersedes_id
+                .as_deref(),
+            Some("not-applied-1")
+        );
+        superseding.reconciliation_id = "contradictory-applied".to_owned();
+        superseding.status = ReconciliationStatus::Applied;
+        superseding.result = Some(serde_json::json!({"record": "x"}));
+        assert!(matches!(
+            store.reconcile_effect(&superseding, now + chrono::Duration::seconds(2)),
+            Err(StoreError::Incompatible(_))
+        ));
+    }
+
+    #[test]
     fn tool_effect_and_call_completion_commit_atomically() {
         let store = SqliteStore::open_memory().expect("store");
         create(&store, "run");
@@ -3108,12 +3920,7 @@ spec:
     fn upgrades_a_version_one_database_transactionally() {
         let directory = tempdir().expect("temp dir");
         let path = directory.path().join("runtime.db");
-        let connection = Connection::open(&path).expect("raw connection");
-        connection.execute_batch(MIGRATION_1).expect("v1 schema");
-        connection
-            .pragma_update(None, "user_version", 1)
-            .expect("v1 marker");
-        drop(connection);
+        create_version_database(&path, 1);
 
         let store = SqliteStore::open(&path).expect("upgrade");
         assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
@@ -3121,10 +3928,23 @@ spec:
     }
 
     #[test]
+    fn upgrades_every_retained_database_schema_fixture() {
+        for version in 1..DATABASE_SCHEMA_VERSION {
+            let directory = tempdir().expect("temp dir");
+            let path = directory.path().join(format!("runtime-v{version}.db"));
+            create_version_database(&path, version);
+            let store = SqliteStore::open(&path)
+                .unwrap_or_else(|error| panic!("upgrade schema {version}: {error}"));
+            assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
+            assert_eq!(store.stats().expect("stats").run_upgrades, 0);
+        }
+    }
+
+    #[test]
     fn upgrades_the_pre_repair_schema_and_creates_repair_records() {
         let directory = tempdir().expect("temp dir");
         let path = directory.path().join("runtime.db");
-        create_version_four_database(&path);
+        create_version_database(&path, 4);
 
         let store = SqliteStore::open(&path).expect("upgrade");
         assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
@@ -3164,7 +3984,7 @@ spec:
     fn interrupted_repair_migration_can_restart_cleanly() {
         let directory = tempdir().expect("temp dir");
         let path = directory.path().join("runtime.db");
-        create_version_four_database(&path);
+        create_version_database(&path, 4);
         let mut connection = Connection::open(&path).expect("raw connection");
         let transaction = connection.transaction().expect("migration transaction");
         transaction
@@ -3208,6 +4028,83 @@ spec:
             Err(StoreError::RunNotFound(_))
         ));
         assert_eq!(store.stats().expect("stats").runs, 0);
+    }
+
+    #[test]
+    fn legacy_run_upgrade_rolls_back_task_mutations_on_failure() {
+        let directory = tempdir().expect("temp dir");
+        let database = directory.path().join("runtime.db");
+        let artifact_path = directory.path().join("legacy.txt");
+        std::fs::write(&artifact_path, b"legacy artifact").expect("artifact");
+        let store = SqliteStore::open(&database).expect("store");
+        create(&store, "legacy");
+        let now = Utc::now();
+        begin_task(&store, "legacy");
+        store
+            .transition_task(
+                "legacy",
+                "one",
+                TaskState::Succeeded,
+                Some(&serde_json::json!({"ok": true})),
+                None,
+                None,
+                now,
+                "trace",
+            )
+            .expect("legacy success");
+        store
+            .update_run_state(
+                "legacy",
+                RunState::Succeeded,
+                Some(&serde_json::json!({"ok": true})),
+                now,
+                "trace",
+            )
+            .expect("terminal");
+        let artifact = store
+            .ingest_artifact("legacy", "one", &artifact_path, "legacy.txt", 1024, now)
+            .expect("ingest");
+        let metadata = TaskCompletionMetadata {
+            execution: TaskExecutionMetadata {
+                metadata_version: 1,
+                definition_fingerprint: "definition".to_owned(),
+                input_digest: "input".to_owned(),
+                output_contract_fingerprint: "contract".to_owned(),
+            },
+            output_digest: "output".to_owned(),
+            state_delta: serde_json::json!({"set": {}, "remove": []}),
+            state_delta_digest: "state".to_owned(),
+            artifact_manifest: vec![artifact],
+        };
+        let result = store.apply_legacy_run_upgrade(
+            "upgrade",
+            "legacy",
+            &serde_json::json!({"dryRun": false}),
+            &[
+                LegacyTaskUpgrade {
+                    task_id: "one".to_owned(),
+                    metadata: metadata.clone(),
+                    provenance: serde_json::json!({"confidence": "proven"}),
+                },
+                LegacyTaskUpgrade {
+                    task_id: "missing".to_owned(),
+                    metadata,
+                    provenance: serde_json::json!({"confidence": "proven"}),
+                },
+            ],
+            now,
+            "trace",
+        );
+
+        assert!(matches!(result, Err(StoreError::Incompatible(_))));
+        assert_eq!(
+            store.list_tasks("legacy").expect("tasks")[0].metadata_version,
+            None
+        );
+        let stats = store.stats().expect("stats");
+        assert_eq!(stats.run_upgrades, 0);
+        assert_eq!(stats.artifact_references, 0);
+        assert_eq!(stats.artifact_ingests, 1);
     }
 
     #[test]

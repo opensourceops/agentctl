@@ -35,8 +35,8 @@ complete, every entry must have exactly one final disposition:
 | ID | Category | Program state | Intended final disposition |
 | --- | --- | --- | --- |
 | ART-001 | Durable artifacts | verified | implemented |
-| MIG-001 | Legacy selective repair | open | implemented |
-| EFX-001 | Effect reconciliation | open | implemented |
+| MIG-001 | Legacy selective repair | verified | implemented |
+| EFX-001 | Effect reconciliation | verified | implemented |
 | RET-001 | Terminal-run retry | open | implemented |
 | ENC-001 | Sensitive-state encryption | open | implemented |
 | SEC-001 | Secret providers | open | implemented |
@@ -97,9 +97,11 @@ complete, every entry must have exactly one final disposition:
 
 ### MIG-001: Legacy run analysis and upgrade
 
-- Current behavior: schema-v5 migration preserves old tasks but cannot safely
-  reuse tasks that lack repair metadata version 1.
-- User impact: operators must choose an unnecessarily broad root or full fork.
+- Current behavior: `runs analyze` and `runs upgrade` derive only metadata
+  proven by retained workflow, plan, effects, outputs, and checksummed
+  checkpoints. Unprovable suffixes receive conservative safe repair roots.
+- User impact: compatible proven predecessors remain reusable without a full
+  fork.
 - Security or durability impact: fabricating missing fingerprints or deltas
   would permit unsafe reuse.
 - Product decision: implement transactional dry-run analysis and an explicit
@@ -108,21 +110,27 @@ complete, every entry must have exactly one final disposition:
 - Required implementation: `runs upgrade` analysis/apply UX, confidence and
   provenance records, digest derivation, checkpoint-delta reconstruction,
   artifact import, and earliest-safe-boundary output.
-- Migration impact: every retained schema fixture remains readable; upgrades
-  are additive and source records remain immutable.
+- Migration impact: schema 7 records additive transactional upgrades; every
+  retained schema fixture remains readable and source execution records remain
+  unchanged.
 - Tests: schema fixtures 1 through 5, complete/partial/impossible derivation,
   failed-upgrade rollback, dry run, corrupt checkpoints, and boundary choice.
 - Examples: legacy analysis followed by selective retry/repair.
 - Live evidence: not required; the contract is deterministic.
 - Documentation: database migration, compatibility, and operator guidance.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified by retained-schema migration,
+  dry-run immutability, artifact-import, failed-upgrade rollback,
+  impossible-proof boundary, selective repair, workspace deletion, and offline
+  replay tests.
 
 ### EFX-001: Complete operator reconciliation
 
-- Current behavior: only a started or uncertain effect can be changed to a
-  failed `not_applied` state.
-- User impact: applied, compensated, or externally completed work cannot be
-  represented safely.
+- Current behavior: source effects are immutable. Versioned reconciliation
+  records represent `applied`, `not_applied`, and `compensated` conclusions
+  with effective runtime projection.
+- User impact: an operator can resume from a validated applied result, begin a
+  fresh attempt after not-applied/compensated evidence, and safely unblock a
+  compatible repair.
 - Security or durability impact: operators may resort to unsafe forks or
   out-of-band database edits.
 - Product decision: preserve immutable source effects and append versioned
@@ -131,15 +139,18 @@ complete, every entry must have exactly one final disposition:
   `not_applied`, and `compensated`; identity, timestamp, reason, evidence,
   optional validated result, supersession rules, compensation linkage, audit,
   trace, policy, and non-interactive behavior.
-- Migration impact: new reconciliation table and effective-effect projection;
-  existing `not_applied` audits migrate to records when provable.
+- Migration impact: schema 8 adds reconciliation history and effective-effect
+  projection. Existing source effects are never rewritten.
 - Tests: every transition, contradictory decisions, supersession, wrong
   schemas, operator policy, repair/resume/retry integration, idempotency keys,
   and transaction rollback.
 - Examples: operational workflow with manual applied and compensated outcomes.
 - Live evidence: selective repair after an explicitly reconciled mock effect.
 - Documentation: effect recovery and honest external-state semantics.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified by transition/supersession,
+  contradiction, compensation-link, immutable-source, audit/trace,
+  result-schema/tool-contract/hook, policy approval, repair, and both resume
+  paths.
 
 ### RET-001: Terminal-run retry
 

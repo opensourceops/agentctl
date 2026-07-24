@@ -17,8 +17,12 @@ use agentctl_protocols::{A2aClient, McpClient, ProtocolActionHandler, ProtocolHt
 use agentctl_providers::{
     AnthropicProvider, FakeProvider, GoogleProvider, HttpProviderConfig, OpenAiProvider,
 };
-use agentctl_runtime::{BuiltinToolExecutor, RunOptions, Runtime, RuntimeRegistry};
-use agentctl_store::{ApprovalResolution, RunMode, SqliteStore, StoreError, TaskDisposition};
+use agentctl_runtime::{
+    BuiltinToolExecutor, EffectReconciliationInput, RunOptions, Runtime, RuntimeRegistry,
+};
+use agentctl_store::{
+    ApprovalResolution, ReconciliationStatus, RunMode, SqliteStore, StoreError, TaskDisposition,
+};
 use chrono::{Duration as ChronoDuration, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
@@ -85,6 +89,8 @@ enum Command {
     Fork(ForkArgs),
     /// Create a new run that reuses compatible upstream results and executes a repaired suffix.
     Repair(RepairArgs),
+    /// Analyze or upgrade retained legacy run records for selective reuse.
+    Runs(RunsArgs),
     /// Durably request cancellation.
     Cancel(RunIdArgs),
     /// Inspect durable run, task, and audit state.
@@ -209,6 +215,26 @@ struct RepairArgs {
 }
 
 #[derive(Debug, Args)]
+struct RunsArgs {
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[command(subcommand)]
+    command: RunsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RunsCommand {
+    /// Prove reusable legacy metadata without changing the source run.
+    Analyze { run_id: String },
+    /// Transactionally persist every legacy field that can be proven.
+    Upgrade {
+        run_id: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Args)]
 struct ApprovalArgs {
     #[arg(long, default_value = ".agentctl/runtime.db")]
     db: PathBuf,
@@ -226,25 +252,40 @@ struct EffectArgs {
 
 #[derive(Debug, Subcommand)]
 enum EffectCommand {
-    Inspect {
+    List {
         run_id: String,
         #[arg(long)]
         task: Option<String>,
     },
+    Inspect {
+        effect_id: String,
+    },
     Reconcile {
         effect_id: String,
         #[arg(long, value_enum)]
-        outcome: ReconciledOutcome,
+        status: ReconciledOutcome,
         #[arg(long, default_value = "cli-user")]
         actor: String,
         #[arg(long)]
         reason: String,
+        #[arg(long)]
+        evidence_file: Option<PathBuf>,
+        #[arg(long)]
+        result_file: Option<PathBuf>,
+        #[arg(long)]
+        result_schema_file: Option<PathBuf>,
+        #[arg(long)]
+        compensation_effect: Option<String>,
+        #[arg(long)]
+        approved: bool,
     },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ReconciledOutcome {
+    Applied,
     NotApplied,
+    Compensated,
 }
 
 #[derive(Debug, Subcommand)]
@@ -615,6 +656,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             print_outcome(output, &outcome)
         }
         Command::Repair(args) => repair_workflow(output, args).await,
+        Command::Runs(args) => runs_command(output, args),
         Command::Cancel(args) => {
             let store = open_store(&args.db)?;
             store
@@ -642,6 +684,9 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 .map_err(CliError::persistence)?;
             let effects = store
                 .list_effects(&args.run_id)
+                .map_err(CliError::persistence)?;
+            let effect_reconciliations = store
+                .run_effect_reconciliations(&args.run_id)
                 .map_err(CliError::persistence)?;
             let approvals = store
                 .pending_approvals(&args.run_id)
@@ -696,6 +741,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 "run": run,
                 "tasks": tasks,
                 "effects": effects,
+                "effectReconciliations": effect_reconciliations,
                 "approvals": approvals,
                 "checkpoints": checkpoints,
                 "providerSessions": provider_sessions,
@@ -1013,7 +1059,7 @@ fn approval_command(output: OutputFormat, args: ApprovalArgs) -> Result<u8, CliE
 fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError> {
     let store = open_store(&args.db)?;
     match args.command {
-        EffectCommand::Inspect { run_id, task } => {
+        EffectCommand::List { run_id, task } => {
             let effects = store
                 .list_effects(&run_id)
                 .map_err(CliError::persistence)?
@@ -1023,38 +1069,111 @@ fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError
                         .is_none_or(|task| effect.request.task_id == *task)
                 })
                 .collect::<Vec<_>>();
+            let reconciliations = store
+                .run_effect_reconciliations(&run_id)
+                .map_err(CliError::persistence)?;
             print_value(
                 output,
-                "EffectInspection",
+                "EffectList",
                 &serde_json::json!({
                     "runId": run_id,
                     "taskId": task,
                     "effects": effects,
+                    "reconciliations": reconciliations,
                 }),
                 Vec::new(),
-                format!("{} effect(s)", effects.len()),
+                format!(
+                    "{} effect(s), {} reconciliation record(s)",
+                    effects.len(),
+                    reconciliations.len()
+                ),
+            )?;
+        }
+        EffectCommand::Inspect { effect_id } => {
+            let effect = store
+                .load_effect(&effect_id)
+                .map_err(CliError::persistence)?;
+            let reconciliations = store
+                .effect_reconciliations(&effect_id)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "EffectInspection",
+                &serde_json::json!({
+                    "effect": effect,
+                    "reconciliations": reconciliations,
+                    "effectiveReconciliation": reconciliations.last(),
+                }),
+                Vec::new(),
+                format!(
+                    "{} {:?}; {} reconciliation record(s)",
+                    effect.request.id,
+                    effect.status,
+                    reconciliations.len()
+                ),
             )?;
         }
         EffectCommand::Reconcile {
             effect_id,
-            outcome: ReconciledOutcome::NotApplied,
+            status,
             actor,
             reason,
+            evidence_file,
+            result_file,
+            result_schema_file,
+            compensation_effect,
+            approved,
         } => {
-            store
-                .reconcile_effect_not_applied(&effect_id, &actor, &reason, Utc::now())
+            let effect = store
+                .load_effect(&effect_id)
                 .map_err(CliError::persistence)?;
+            let run = store
+                .load_run(&effect.request.run_id)
+                .map_err(CliError::persistence)?;
+            let workflow: Workflow = serde_json::from_value(run.workflow)
+                .map_err(|error| CliError::persistence(error.to_string()))?;
+            let base = resolve_base_path(run.base_path.as_deref().map(Path::new))?;
+            let registry = build_registry(&workflow, &base)?;
+            let evidence = evidence_file
+                .as_deref()
+                .map(read_json)
+                .transpose()?
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "kind": "operator_statement",
+                        "statement": reason,
+                    })
+                });
+            let result = result_file.as_deref().map(read_json).transpose()?;
+            let result_schema = result_schema_file.as_deref().map(read_json).transpose()?;
+            let status = match status {
+                ReconciledOutcome::Applied => ReconciliationStatus::Applied,
+                ReconciledOutcome::NotApplied => ReconciliationStatus::NotApplied,
+                ReconciledOutcome::Compensated => ReconciliationStatus::Compensated,
+            };
+            let runtime = Runtime::new(store, base).with_registry(registry);
+            let reconciliation = runtime
+                .reconcile_effect(EffectReconciliationInput {
+                    effect_id,
+                    status,
+                    actor,
+                    reason,
+                    evidence,
+                    result,
+                    result_schema,
+                    compensation_effect_id: compensation_effect,
+                    approved,
+                })
+                .map_err(map_runtime_error)?;
             print_value(
                 output,
                 "EffectReconciliation",
-                &serde_json::json!({
-                    "effectId": effect_id,
-                    "outcome": "not_applied",
-                    "actor": actor,
-                    "reason": reason,
-                }),
+                &reconciliation,
                 Vec::new(),
-                "effect reconciled as not applied; a compatible repair may now retry it".to_owned(),
+                format!(
+                    "{} reconciled as {:?} by {}",
+                    reconciliation.effect_id, reconciliation.status, reconciliation.actor
+                ),
             )?;
         }
     }
@@ -1289,6 +1408,64 @@ fn pack_command(output: OutputFormat, args: PackArgs) -> Result<u8, CliError> {
     Ok(EXIT_OK)
 }
 
+fn runs_command(output: OutputFormat, args: RunsArgs) -> Result<u8, CliError> {
+    let store = open_store(&args.db)?;
+    let runtime = Runtime::new(store, current_dir()?);
+    match args.command {
+        RunsCommand::Analyze { run_id }
+        | RunsCommand::Upgrade {
+            run_id,
+            dry_run: true,
+        } => {
+            let analysis = runtime
+                .analyze_legacy_run(&run_id)
+                .map_err(map_runtime_error)?;
+            let roots = if analysis.recommended_repair_roots.is_empty() {
+                "none".to_owned()
+            } else {
+                analysis.recommended_repair_roots.join(",")
+            };
+            print_value(
+                output,
+                "LegacyRunUpgradeAnalysis",
+                &analysis,
+                Vec::new(),
+                format!(
+                    "{}: {} upgradeable, {} unavailable; safe repair roots: {roots}",
+                    analysis.run_id,
+                    analysis.upgradeable_tasks.len(),
+                    analysis.unavailable_tasks.len(),
+                ),
+            )?;
+        }
+        RunsCommand::Upgrade {
+            run_id,
+            dry_run: false,
+        } => {
+            let result = runtime
+                .upgrade_legacy_run(&run_id)
+                .map_err(map_runtime_error)?;
+            let roots = if result.analysis_after.recommended_repair_roots.is_empty() {
+                "none".to_owned()
+            } else {
+                result.analysis_after.recommended_repair_roots.join(",")
+            };
+            print_value(
+                output,
+                "LegacyRunUpgrade",
+                &result,
+                Vec::new(),
+                format!(
+                    "{}: upgraded {} task(s); safe repair roots: {roots}",
+                    result.run_id,
+                    result.upgraded_tasks.len(),
+                ),
+            )?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
 fn cancellation_token(timeout_seconds: Option<u64>) -> CancellationToken {
     let token = CancellationToken::new();
     let signal = token.clone();
@@ -1334,10 +1511,12 @@ fn db_command(output: OutputFormat, args: DbArgs) -> Result<u8, CliError> {
                 &stats,
                 Vec::new(),
                 format!(
-                    "schema {}: {} runs, {} effects, {} artifact blobs, {} artifact references",
+                    "schema {}: {} runs, {} effects, {} reconciliations, {} run upgrades, {} artifact blobs, {} artifact references",
                     stats.schema_version,
                     stats.runs,
                     stats.effects,
+                    stats.effect_reconciliations,
+                    stats.run_upgrades,
                     stats.artifact_blobs,
                     stats.artifact_references
                 ),
@@ -1876,6 +2055,11 @@ fn read_text(path: &Path) -> Result<String, CliError> {
     Ok(content)
 }
 
+fn read_json(path: &Path) -> Result<Value, CliError> {
+    serde_json::from_str(&read_text(path)?)
+        .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))
+}
+
 fn write_text(path: &Path, content: &str) -> Result<(), CliError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -2046,6 +2230,7 @@ mod tests {
             "replay",
             "fork",
             "repair",
+            "runs",
             "cancel",
             "inspect",
             "effects",

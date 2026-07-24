@@ -68,9 +68,9 @@ cargo xtask acceptance-container
 
 | Workstream | Focused evidence | Composite evidence | Status |
 | --- | --- | --- | --- |
-| Artifact CAS | pending | pending | open |
-| Legacy upgrades | pending | pending | open |
-| Reconciliation | pending | pending | open |
+| Artifact CAS | 19 store tests and 38 runtime tests | CLI acceptance and hardened OCI acceptance passed | verified |
+| Legacy upgrades | all retained schema fixtures, dry-run, rollback, import, boundary, repair/replay tests | migration verification command added; full composite rerun pending | verified |
+| Reconciliation | immutable transition matrix, schema/tool/hook/policy, repair and resume tests | full composite rerun pending | verified |
 | Terminal retry | pending | pending | open |
 | Parallel/dynamic workflows | pending | pending | open |
 | Conditions/loops/sub-workflows | pending | pending | open |

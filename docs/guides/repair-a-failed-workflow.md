@@ -137,22 +137,23 @@ flowchart TD
   N -->|no or unknown| H["Choose a safe business remediation<br/>or broader fresh execution"]
 ```
 
-Inspect effects for the failed boundary:
+List effects for the failed boundary, then inspect the selected effect:
 
 ```bash
-agentctl effects --db .agentctl/runtime.db inspect SOURCE_RUN_ID --task publish
+agentctl effects --db .agentctl/runtime.db list SOURCE_RUN_ID --task publish
+agentctl effects --db .agentctl/runtime.db inspect EFFECT_ID
 ```
 
 If an effect is `started` or `uncertain` and an operator has verified that it did not happen:
 
 ```bash
 agentctl effects --db .agentctl/runtime.db reconcile EFFECT_ID \
-  --outcome not-applied \
+  --status not-applied \
   --reason "remote system confirms no record" \
   --actor operator-name
 ```
 
-There is no generic force option and no exactly-once claim. Confirmed non-idempotent effects stay blocked because repeating them may duplicate external work. Normal policy, approval, timeout, retry, and cancellation behavior applies to every fresh task.
+Use `--status applied --result-file result.json` when the effect happened and resume needs its externally confirmed result. Use `--status compensated --compensation-effect EFFECT_ID` only after a distinct compensation effect is confirmed. There is no generic force option and no exactly-once claim. An applied non-idempotent effect stays blocked from duplicate fresh execution until it has a valid compensation record. Normal policy, approval, timeout, retry, and cancellation behavior applies to every fresh task. See [Effect reconciliation](EFFECT_RECONCILIATION.md).
 
 A repaired agent begins a new provider session. It receives target instructions and tools plus validated upstream output and reconstructed memory. It never receives the failed source task's `previous_response_id`, incomplete turn, pending call, or reasoning state. Within the new repaired task, normal multi-turn continuation still applies.
 
@@ -184,7 +185,7 @@ Recorded replay has a new replay run ID but the same semantic outputs. It dispat
 | `state_delta_missing` or `state_delta_invalid` | Successful boundary-state metadata is absent or corrupt. | Select the task as an earlier root; do not edit the database. |
 | `artifact_integrity` | A content-addressed artifact is missing or corrupt. The block reports its logical path, expected digest, and expected size. | Restore the database and sibling CAS from a consistent backup, or select its producer as an earlier repair root. |
 | `unresolved_reused_effect` | A nominally successful reusable task retains a started or uncertain effect. | Reconcile external reality before reuse. |
-| `legacy_task_metadata` | The source predates repair metadata v1. | Use an earlier root or a full fork. |
+| `legacy_task_metadata` | The source predates repair metadata v1. | Run `agentctl runs analyze` and `runs upgrade`, then use the reported safe root. |
 | `new_task_outside_repair_closure` | A new unrelated task has no result. | Add it as a root or choose an earlier common boundary. |
 | `unreconciled_effect` | Fresh execution may duplicate a mutation. | Inspect and reconcile external reality first. |
 

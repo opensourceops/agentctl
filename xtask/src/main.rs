@@ -24,6 +24,7 @@ fn main() -> Result<()> {
     match command.as_str() {
         "verify" => verify(&root),
         "docs-verify" => docs_verify(&root),
+        "migration-verify" => migration_verify(&root),
         "acceptance" => acceptance::run(&root),
         "acceptance-container" => acceptance::container(&root),
         "acceptance-live-openai" => acceptance::live_openai(&root),
@@ -37,12 +38,26 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
         other => bail!("unknown xtask command `{other}`"),
     }
+}
+
+fn migration_verify(root: &Path) -> Result<()> {
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-store",
+            "upgrades_every_retained_database_schema_fixture",
+            "--locked",
+        ],
+    )
 }
 
 fn docs_verify(root: &Path) -> Result<()> {
@@ -290,9 +305,13 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["replay"],
         &["fork"],
         &["repair"],
+        &["runs"],
+        &["runs", "analyze"],
+        &["runs", "upgrade"],
         &["cancel"],
         &["inspect"],
         &["effects"],
+        &["effects", "list"],
         &["effects", "inspect"],
         &["effects", "reconcile"],
         &["approvals"],
@@ -306,6 +325,12 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["schema"],
         &["migrate"],
         &["packs"],
+        &["artifacts"],
+        &["artifacts", "list"],
+        &["artifacts", "inspect"],
+        &["artifacts", "verify"],
+        &["artifacts", "export"],
+        &["artifacts", "gc"],
         &["db"],
         &["memory"],
         &["gc"],
@@ -661,6 +686,8 @@ fn verify_public_documentation(root: &Path) -> Result<()> {
         "docs/guides/WORKFLOW_AUTHORING.md",
         "docs/guides/LOCAL_OPERATION.md",
         "docs/guides/repair-a-failed-workflow.md",
+        "docs/guides/LEGACY_RUN_UPGRADE.md",
+        "docs/guides/EFFECT_RECONCILIATION.md",
         "docs/guides/CI_CD.md",
         "docs/guides/TROUBLESHOOTING.md",
         "docs/reference/YAML.md",

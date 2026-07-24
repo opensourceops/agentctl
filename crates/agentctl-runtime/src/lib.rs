@@ -23,8 +23,10 @@ use agentctl_core::template::{EvalContext, TemplateError, evaluate_when, render}
 use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
 use agentctl_observability::{NoopTraceSink, SpanKind, TraceEvent, TracePhase, TraceSink};
 use agentctl_store::{
-    ApprovalRequest, ArtifactRecord, ReusedTaskMaterialization, RunMode, SqliteStore, StoreError,
-    TaskCompletionMetadata, TaskDisposition, TaskExecutionMetadata, TaskRecord,
+    ApprovalRequest, ArtifactRecord, CheckpointRecord, EffectReconciliationRecord,
+    EffectReconciliationRequest, LegacyTaskUpgrade, ReconciliationStatus,
+    ReusedTaskMaterialization, RunMode, SqliteStore, StoreError, TaskCompletionMetadata,
+    TaskDisposition, TaskExecutionMetadata, TaskRecord,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -77,7 +79,17 @@ pub trait ExternalActionHandler: Send + Sync {
     ) -> Result<Value, RuntimeError>;
 }
 
+pub trait EffectReconciliationHook: Send + Sync {
+    fn validate(
+        &self,
+        effect: &EffectRecord,
+        evidence: &Value,
+        result: Option<&Value>,
+    ) -> Result<(), String>;
+}
+
 const MAX_WORKSPACE_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
 
 pub struct BuiltinToolExecutor {
     contract: ToolContract,
@@ -182,6 +194,7 @@ impl ToolExecutor for BuiltinToolExecutor {
 pub struct RuntimeRegistry {
     providers: BTreeMap<String, Arc<dyn ModelProvider>>,
     tools: BTreeMap<String, Arc<dyn ToolExecutor>>,
+    reconciliation_hooks: BTreeMap<String, Arc<dyn EffectReconciliationHook>>,
     external_actions: Option<Arc<dyn ExternalActionHandler>>,
 }
 
@@ -199,6 +212,16 @@ impl RuntimeRegistry {
     #[must_use]
     pub fn with_tool(mut self, name: impl Into<String>, tool: Arc<dyn ToolExecutor>) -> Self {
         self.tools.insert(name.into(), tool);
+        self
+    }
+
+    #[must_use]
+    pub fn with_reconciliation_hook(
+        mut self,
+        operation: impl Into<String>,
+        hook: Arc<dyn EffectReconciliationHook>,
+    ) -> Self {
+        self.reconciliation_hooks.insert(operation.into(), hook);
         self
     }
 
@@ -307,6 +330,60 @@ pub struct RepairOutcome {
     pub executed_tasks: Vec<String>,
     pub artifacts: Vec<ArtifactRecord>,
     pub output: Option<Value>,
+}
+
+pub const LEGACY_UPGRADE_ANALYSIS_VERSION: &str = "agentctl.dev/legacy-upgrade/v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTaskUpgradeAnalysis {
+    pub task_id: String,
+    pub state: TaskState,
+    pub already_current: bool,
+    pub upgradeable: bool,
+    pub confidence: String,
+    pub reasons: Vec<String>,
+    pub provenance: BTreeMap<String, String>,
+    pub proposed_metadata: Option<TaskCompletionMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyRunUpgradeAnalysis {
+    pub api_version: String,
+    pub run_id: String,
+    pub database_schema_version: u32,
+    pub terminal: bool,
+    pub fully_upgradeable: bool,
+    pub already_current: bool,
+    pub upgradeable_tasks: Vec<String>,
+    pub unavailable_tasks: Vec<String>,
+    pub recommended_repair_roots: Vec<String>,
+    pub tasks: Vec<LegacyTaskUpgradeAnalysis>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyRunUpgradeResult {
+    pub upgrade_id: String,
+    pub run_id: String,
+    pub upgraded_tasks: Vec<String>,
+    pub analysis_before: LegacyRunUpgradeAnalysis,
+    pub analysis_after: LegacyRunUpgradeAnalysis,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectReconciliationInput {
+    pub effect_id: String,
+    pub status: ReconciliationStatus,
+    pub actor: String,
+    pub reason: String,
+    pub evidence: Value,
+    pub result: Option<Value>,
+    pub result_schema: Option<Value>,
+    pub compensation_effect_id: Option<String>,
+    pub approved: bool,
 }
 
 #[derive(Debug, Error)]
@@ -459,6 +536,7 @@ impl Runtime {
                 run.state
             )));
         }
+        self.prepare_reconciled_resume(run_id, &trace_id)?;
         let tasks = self.store.list_tasks(run_id)?;
         for task in tasks
             .iter()
@@ -535,6 +613,69 @@ impl Runtime {
             )?;
         }
         self.drive(run_id, &trace_id, options, cancellation).await
+    }
+
+    fn prepare_reconciled_resume(&self, run_id: &str, trace_id: &str) -> Result<(), RuntimeError> {
+        for effect in self.store.list_effects(run_id)? {
+            let Some(reconciliation) = self
+                .store
+                .latest_effect_reconciliation(&effect.request.id)?
+            else {
+                continue;
+            };
+            if !matches!(
+                reconciliation.status,
+                ReconciliationStatus::NotApplied | ReconciliationStatus::Compensated
+            ) {
+                continue;
+            }
+            let Some(task) = self
+                .store
+                .list_tasks(run_id)?
+                .into_iter()
+                .find(|task| task.task_id == effect.request.task_id)
+            else {
+                return Err(RuntimeError::InvalidState(format!(
+                    "reconciled effect `{}` has no task row",
+                    effect.request.id
+                )));
+            };
+            if task.state == TaskState::WaitingForEffect {
+                self.store.transition_task(
+                    run_id,
+                    &task.task_id,
+                    TaskState::Running,
+                    None,
+                    None,
+                    None,
+                    self.clock.now(),
+                    trace_id,
+                )?;
+            }
+            if matches!(task.state, TaskState::Running | TaskState::WaitingForEffect) {
+                self.store.transition_task(
+                    run_id,
+                    &task.task_id,
+                    TaskState::RetryScheduled,
+                    None,
+                    Some("operator reconciliation permits a fresh task attempt"),
+                    None,
+                    self.clock.now(),
+                    trace_id,
+                )?;
+                self.store.transition_task(
+                    run_id,
+                    &task.task_id,
+                    TaskState::Ready,
+                    None,
+                    None,
+                    None,
+                    self.clock.now(),
+                    trace_id,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn replay(&self, source_run_id: &str) -> Result<RunOutcome, RuntimeError> {
@@ -648,6 +789,373 @@ impl Runtime {
             state: source.state,
             output: source.output,
         })
+    }
+
+    pub fn analyze_legacy_run(
+        &self,
+        run_id: &str,
+    ) -> Result<LegacyRunUpgradeAnalysis, RuntimeError> {
+        self.analyze_legacy_run_internal(run_id)
+            .map(|(analysis, _)| analysis)
+    }
+
+    pub fn upgrade_legacy_run(&self, run_id: &str) -> Result<LegacyRunUpgradeResult, RuntimeError> {
+        let (analysis_before, mut updates) = self.analyze_legacy_run_internal(run_id)?;
+        let source = self.store.load_run(run_id)?;
+        let workflow: Workflow = serde_json::from_value(source.workflow)?;
+        let base_path = source
+            .base_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.base_path.clone());
+        let policy = PolicyEngine::new(workflow.spec.policy, &base_path)?;
+        let now = self.clock.now();
+        for update in &mut updates {
+            for artifact in &mut update.metadata.artifact_manifest {
+                if artifact.store_path.is_empty() {
+                    let resolved = policy.resolve_artifact_path(&artifact.path)?;
+                    let ingested = self.store.ingest_artifact(
+                        run_id,
+                        &update.task_id,
+                        &resolved,
+                        &artifact.path,
+                        MAX_ARTIFACT_BYTES,
+                        now,
+                    )?;
+                    if ingested.digest != artifact.digest
+                        || ingested.size_bytes != artifact.size_bytes
+                    {
+                        return Err(RuntimeError::InvalidState(format!(
+                            "legacy artifact `{}` changed after analysis; expected {} bytes and `{}`, found {} bytes and `{}`",
+                            artifact.path,
+                            artifact.size_bytes,
+                            artifact.digest,
+                            ingested.size_bytes,
+                            ingested.digest
+                        )));
+                    }
+                    *artifact = ingested;
+                }
+            }
+        }
+        let upgrade_id = self.ids.next_id("upgrade");
+        let trace_id = self.ids.next_id("trace");
+        let analysis_value = serde_json::to_value(&analysis_before)?;
+        self.store.apply_legacy_run_upgrade(
+            &upgrade_id,
+            run_id,
+            &analysis_value,
+            &updates,
+            now,
+            &trace_id,
+        )?;
+        let upgraded_tasks = updates
+            .iter()
+            .map(|update| update.task_id.clone())
+            .collect();
+        let analysis_after = self.analyze_legacy_run(run_id)?;
+        Ok(LegacyRunUpgradeResult {
+            upgrade_id,
+            run_id: run_id.to_owned(),
+            upgraded_tasks,
+            analysis_before,
+            analysis_after,
+        })
+    }
+
+    pub fn reconcile_effect(
+        &self,
+        input: EffectReconciliationInput,
+    ) -> Result<EffectReconciliationRecord, RuntimeError> {
+        let effect = self.store.load_effect(&input.effect_id)?;
+        if input.evidence.is_null() {
+            return Err(RuntimeError::InvalidState(
+                "effect reconciliation requires evidence".to_owned(),
+            ));
+        }
+        if let (Some(result), Some(schema)) = (&input.result, &input.result_schema) {
+            validate_output_contract(schema, result).map_err(|message| {
+                RuntimeError::InvalidState(format!(
+                    "reconciled result failed the supplied schema: {message}"
+                ))
+            })?;
+        }
+        if input.status == ReconciliationStatus::Applied {
+            let result = input.result.as_ref().ok_or_else(|| {
+                RuntimeError::InvalidState(
+                    "an applied reconciliation requires --result-file".to_owned(),
+                )
+            })?;
+            if effect.request.effect_class == EffectClass::Model {
+                serde_json::from_value::<ProviderResponse>(result.clone()).map_err(|error| {
+                    RuntimeError::InvalidState(format!(
+                        "reconciled model result is not a provider response: {error}"
+                    ))
+                })?;
+            }
+            if let Some(tool_id) = effect.request.operation.strip_prefix("tool.") {
+                let tool = self.registry.tools.get(tool_id).ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "tool-specific reconciliation requires registered tool `{tool_id}`"
+                    ))
+                })?;
+                tool.contract().validate_output(result)?;
+            }
+        }
+        if let Some(hook) = self
+            .registry
+            .reconciliation_hooks
+            .get(&effect.request.operation)
+        {
+            hook.validate(&effect, &input.evidence, input.result.as_ref())
+                .map_err(|message| {
+                    RuntimeError::InvalidState(format!(
+                        "reconciliation hook for `{}` rejected the evidence: {message}",
+                        effect.request.operation
+                    ))
+                })?;
+        }
+
+        let run = self.store.load_run(&effect.request.run_id)?;
+        let workflow: Workflow = serde_json::from_value(run.workflow)?;
+        let base_path = run
+            .base_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.base_path.clone());
+        let policy = PolicyEngine::new(workflow.spec.policy, &base_path)?;
+        let trace_id = self.ids.next_id("trace");
+        let decision = policy.decide(&PolicyContext {
+            run_id: effect.request.run_id.clone(),
+            trace_id: trace_id.clone(),
+            task_id: effect.request.task_id.clone(),
+            agent: None,
+            tool: effect.request.operation.clone(),
+            capability: "effect_reconciliation".to_owned(),
+            effect_class: effect.request.effect_class,
+            risk: effect.request.risk,
+            resource: Some(effect.request.id.clone()),
+            provider: (effect.request.effect_class == EffectClass::Model)
+                .then(|| effect.request.operation.clone()),
+            input: serde_json::json!({
+                "status": input.status,
+                "hasResult": input.result.is_some(),
+                "compensationEffectId": input.compensation_effect_id,
+            }),
+            interactive: input.approved,
+        });
+        let authorization = match decision {
+            PolicyDecision::Deny { reason } => {
+                return Err(RuntimeError::InvalidState(format!(
+                    "policy denied effect reconciliation: {reason}"
+                )));
+            }
+            PolicyDecision::RequireApproval { reason } if !input.approved => {
+                return Err(RuntimeError::InvalidState(format!(
+                    "effect reconciliation requires explicit --approved confirmation: {reason}"
+                )));
+            }
+            PolicyDecision::RequireApproval { reason } => serde_json::json!({
+                "kind": "explicit_operator_approval",
+                "actor": input.actor,
+                "reason": reason,
+            }),
+            PolicyDecision::Allow { reason } => serde_json::json!({
+                "kind": "policy_allow",
+                "reason": reason,
+                "explicitApproval": input.approved,
+            }),
+        };
+        let request = EffectReconciliationRequest {
+            reconciliation_id: self.ids.next_id("reconciliation"),
+            effect_id: input.effect_id,
+            status: input.status,
+            actor: input.actor,
+            reason: input.reason,
+            evidence: input.evidence,
+            result: input.result,
+            result_schema: input.result_schema,
+            authorization,
+            compensation_effect_id: input.compensation_effect_id,
+            trace_id,
+        };
+        self.store
+            .reconcile_effect(&request, self.clock.now())
+            .map_err(RuntimeError::from)
+    }
+
+    fn analyze_legacy_run_internal(
+        &self,
+        run_id: &str,
+    ) -> Result<(LegacyRunUpgradeAnalysis, Vec<LegacyTaskUpgrade>), RuntimeError> {
+        let source = self.store.load_run(run_id)?;
+        if !source.state.is_terminal() {
+            return Err(RuntimeError::InvalidState(format!(
+                "legacy run analysis requires a terminal run, found {:?}",
+                source.state
+            )));
+        }
+        let workflow: Workflow = serde_json::from_value(source.workflow.clone())?;
+        let base_path = source
+            .base_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.base_path.clone());
+        let policy = PolicyEngine::new(workflow.spec.policy.clone(), &base_path)?;
+        let inputs = source
+            .inputs
+            .as_object()
+            .ok_or_else(|| RuntimeError::InvalidState("run inputs must be an object".to_owned()))?;
+        let task_records = self
+            .store
+            .list_tasks(run_id)?
+            .into_iter()
+            .map(|task| (task.task_id.clone(), task))
+            .collect::<BTreeMap<_, _>>();
+        let effects = self.store.list_effects(run_id)?;
+        let checkpoints = self.store.checkpoints(run_id)?;
+        let outputs = task_records
+            .iter()
+            .filter_map(|(task_id, task)| {
+                task.output
+                    .as_ref()
+                    .map(|output| (task_id.clone(), output.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut tasks = Vec::new();
+        let mut updates = Vec::new();
+        let mut unavailable = Vec::new();
+
+        for task_id in &source.plan.order {
+            let task = task_records.get(task_id).ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "compiled legacy task `{task_id}` has no durable task row"
+                ))
+            })?;
+            if task.state != TaskState::Succeeded {
+                unavailable.push(task_id.clone());
+                tasks.push(LegacyTaskUpgradeAnalysis {
+                    task_id: task_id.clone(),
+                    state: task.state,
+                    already_current: false,
+                    upgradeable: false,
+                    confidence: "unavailable".to_owned(),
+                    reasons: vec![format!(
+                        "task is {:?}; only successful task results can be upgraded for reuse",
+                        task.state
+                    )],
+                    provenance: BTreeMap::new(),
+                    proposed_metadata: None,
+                });
+                continue;
+            }
+            if task.metadata_version == Some(TASK_METADATA_VERSION) {
+                tasks.push(LegacyTaskUpgradeAnalysis {
+                    task_id: task_id.clone(),
+                    state: task.state,
+                    already_current: true,
+                    upgradeable: false,
+                    confidence: "already_current".to_owned(),
+                    reasons: Vec::new(),
+                    provenance: BTreeMap::new(),
+                    proposed_metadata: None,
+                });
+                continue;
+            }
+            if task.metadata_version.is_some() {
+                unavailable.push(task_id.clone());
+                tasks.push(LegacyTaskUpgradeAnalysis {
+                    task_id: task_id.clone(),
+                    state: task.state,
+                    already_current: false,
+                    upgradeable: false,
+                    confidence: "unsupported".to_owned(),
+                    reasons: vec![format!(
+                        "task metadata version {:?} is not supported by upgrader version {TASK_METADATA_VERSION}",
+                        task.metadata_version
+                    )],
+                    provenance: BTreeMap::new(),
+                    proposed_metadata: None,
+                });
+                continue;
+            }
+
+            let compiled = source.plan.tasks.get(task_id).ok_or_else(|| {
+                RuntimeError::InvalidState(format!("compiled task `{task_id}` disappeared"))
+            })?;
+            let task_effects = effects
+                .iter()
+                .filter(|effect| effect.request.task_id == *task_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let (metadata, provenance, reasons) = derive_legacy_task_metadata(
+                &workflow,
+                compiled,
+                task,
+                &policy,
+                inputs,
+                &outputs,
+                &task_effects,
+                &checkpoints,
+            );
+            let upgradeable = metadata.is_some();
+            if !upgradeable {
+                unavailable.push(task_id.clone());
+            }
+            if let Some(metadata) = &metadata {
+                updates.push(LegacyTaskUpgrade {
+                    task_id: task_id.clone(),
+                    metadata: metadata.clone(),
+                    provenance: serde_json::json!({
+                        "formatVersion": 1,
+                        "confidence": "proven",
+                        "fields": provenance,
+                    }),
+                });
+            }
+            tasks.push(LegacyTaskUpgradeAnalysis {
+                task_id: task_id.clone(),
+                state: task.state,
+                already_current: false,
+                upgradeable,
+                confidence: if upgradeable { "proven" } else { "unavailable" }.to_owned(),
+                reasons,
+                provenance,
+                proposed_metadata: metadata,
+            });
+        }
+
+        let recommended_repair_roots = earliest_safe_repair_roots(&source.plan, &unavailable);
+        let upgradeable_tasks = updates
+            .iter()
+            .map(|update| update.task_id.clone())
+            .collect::<Vec<_>>();
+        let legacy_successes = tasks
+            .iter()
+            .filter(|task| task.state == TaskState::Succeeded && !task.already_current)
+            .count();
+        let unavailable_successes = tasks
+            .iter()
+            .filter(|task| {
+                task.state == TaskState::Succeeded && !task.already_current && !task.upgradeable
+            })
+            .count();
+        let already_current = legacy_successes == 0;
+        Ok((
+            LegacyRunUpgradeAnalysis {
+                api_version: LEGACY_UPGRADE_ANALYSIS_VERSION.to_owned(),
+                run_id: run_id.to_owned(),
+                database_schema_version: self.store.schema_version(),
+                terminal: true,
+                fully_upgradeable: unavailable_successes == 0,
+                already_current,
+                upgradeable_tasks,
+                unavailable_tasks: unavailable,
+                recommended_repair_roots,
+                tasks,
+            },
+            updates,
+        ))
     }
 
     pub async fn fork(
@@ -823,7 +1331,10 @@ impl Runtime {
             .iter()
             .filter(|effect| rerun.contains(&effect.request.task_id))
         {
-            if repair_effect_is_unsafe(effect) {
+            let reconciliation = self
+                .store
+                .latest_effect_reconciliation(&effect.request.id)?;
+            if repair_effect_is_unsafe(effect, reconciliation.as_ref()) {
                 let task_id = effect.request.task_id.clone();
                 blocks.push(repair_block(
                     &task_id,
@@ -953,9 +1464,9 @@ impl Runtime {
                 blocked(
                     "legacy_task_metadata",
                     format!(
-                        "task `{task_id}` predates repair metadata version {TASK_METADATA_VERSION}; choose it as an earlier repair root or perform a full fork"
+                        "task `{task_id}` predates repair metadata version {TASK_METADATA_VERSION}; run `agentctl runs analyze`/`runs upgrade`, or choose the reported safe repair root"
                     ),
-                    true,
+                    false,
                     &mut blocks,
                     &mut blocked_task_ids,
                 );
@@ -1028,7 +1539,7 @@ impl Runtime {
                 ));
                 continue;
             }
-            match unresolved_reuse_effects(source_task, &source_effects) {
+            match unresolved_reuse_effects(&self.store, source_task, &source_effects) {
                 Ok(effect_ids) if !effect_ids.is_empty() => {
                     blocked(
                         "unresolved_reused_effect",
@@ -1385,16 +1896,21 @@ impl Runtime {
             .filter(|effect| rerun.contains(&effect.task) && effect.approval_possible)
             .map(|effect| format!("{}:{}", effect.task, effect.operation))
             .collect::<Vec<_>>();
-        let uncertain_source_effects = source_effects
-            .iter()
-            .filter(|effect| {
-                rerun.contains(&effect.request.task_id)
-                    && matches!(
-                        effect.status,
-                        EffectStatus::Started | EffectStatus::Uncertain
-                    )
-            })
-            .count();
+        let mut uncertain_source_effects = 0;
+        for effect in &source_effects {
+            if rerun.contains(&effect.request.task_id)
+                && matches!(
+                    effect.status,
+                    EffectStatus::Started | EffectStatus::Uncertain
+                )
+                && self
+                    .store
+                    .latest_effect_reconciliation(&effect.request.id)?
+                    .is_none()
+            {
+                uncertain_source_effects += 1;
+            }
+        }
         let compatible = blocks.is_empty();
         Ok(RepairPlan {
             api_version: REPAIR_PLAN_VERSION.to_owned(),
@@ -3100,6 +3616,27 @@ impl Runtime {
     ) -> Result<PreparedEffect, RuntimeError> {
         match self.store.load_effect(&request.id) {
             Ok(record) => {
+                if let Some(reconciliation) =
+                    self.store.latest_effect_reconciliation(&request.id)?
+                {
+                    return match reconciliation.status {
+                        ReconciliationStatus::Applied => reconciliation
+                            .result
+                            .map(PreparedEffect::Recorded)
+                            .ok_or_else(|| {
+                                RuntimeError::InvalidState(format!(
+                                    "applied reconciliation for effect `{}` has no result",
+                                    request.id
+                                ))
+                            }),
+                        ReconciliationStatus::NotApplied | ReconciliationStatus::Compensated => {
+                            Err(RuntimeError::InvalidState(format!(
+                                "effect `{}` requires a fresh task attempt after {:?} reconciliation",
+                                request.id, reconciliation.status
+                            )))
+                        }
+                    };
+                }
                 return match record.status {
                     EffectStatus::Succeeded if record.confirmed => {
                         record.result.map(PreparedEffect::Recorded).ok_or_else(|| {
@@ -3317,7 +3854,10 @@ fn blocked_task_plan(
     }
 }
 
-fn repair_effect_is_unsafe(effect: &EffectRecord) -> bool {
+fn repair_effect_is_unsafe(
+    effect: &EffectRecord,
+    reconciliation: Option<&EffectReconciliationRecord>,
+) -> bool {
     let potentially_mutating = matches!(
         effect.request.effect_class,
         EffectClass::WorkspaceMutate
@@ -3326,6 +3866,18 @@ fn repair_effect_is_unsafe(effect: &EffectRecord) -> bool {
             | EffectClass::Network
             | EffectClass::RemoteAgent
     );
+    if !potentially_mutating {
+        return false;
+    }
+    if let Some(reconciliation) = reconciliation {
+        return match reconciliation.status {
+            ReconciliationStatus::NotApplied | ReconciliationStatus::Compensated => false,
+            ReconciliationStatus::Applied => !matches!(
+                effect.request.idempotency,
+                Idempotency::Pure | Idempotency::Idempotent | Idempotency::Keyed
+            ),
+        };
+    }
     potentially_mutating
         && (matches!(
             effect.status,
@@ -3338,21 +3890,33 @@ fn repair_effect_is_unsafe(effect: &EffectRecord) -> bool {
 }
 
 fn unresolved_reuse_effects(
+    store: &SqliteStore,
     task: &TaskRecord,
     source_effects: &[EffectRecord],
 ) -> Result<Vec<String>, String> {
     if task.disposition != TaskDisposition::Reused {
-        return Ok(source_effects
+        let mut unresolved = Vec::new();
+        for effect in source_effects
             .iter()
-            .filter(|effect| {
-                effect.request.task_id == task.task_id
-                    && matches!(
-                        effect.status,
-                        EffectStatus::Started | EffectStatus::Uncertain
-                    )
-            })
-            .map(|effect| effect.request.id.clone())
-            .collect());
+            .filter(|effect| effect.request.task_id == task.task_id)
+        {
+            let reconciliation = store
+                .latest_effect_reconciliation(&effect.request.id)
+                .map_err(|error| error.to_string())?;
+            if reconciliation
+                .as_ref()
+                .is_some_and(|record| record.status == ReconciliationStatus::Compensated)
+                || (matches!(
+                    effect.status,
+                    EffectStatus::Started | EffectStatus::Uncertain
+                ) && !reconciliation
+                    .as_ref()
+                    .is_some_and(|record| record.status == ReconciliationStatus::Applied))
+            {
+                unresolved.push(effect.request.id.clone());
+            }
+        }
+        return Ok(unresolved);
     }
 
     let summaries = task
@@ -3371,8 +3935,25 @@ fn unresolved_reuse_effects(
             .get("status")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("source effect `{effect_id}` has no status"))?;
+        let reconciliation = store
+            .latest_effect_reconciliation(effect_id)
+            .map_err(|error| error.to_string())?;
+        if reconciliation
+            .as_ref()
+            .is_some_and(|record| record.status == ReconciliationStatus::Compensated)
+        {
+            unresolved.push(effect_id.to_owned());
+            continue;
+        }
         match status {
-            "started" | "uncertain" => unresolved.push(effect_id.to_owned()),
+            "started" | "uncertain"
+                if !reconciliation
+                    .as_ref()
+                    .is_some_and(|record| record.status == ReconciliationStatus::Applied) =>
+            {
+                unresolved.push(effect_id.to_owned());
+            }
+            "started" | "uncertain" => {}
             "requested" | "waiting_for_approval" | "succeeded" | "failed" | "cancelled" => {}
             other => {
                 return Err(format!(
@@ -3605,6 +4186,416 @@ fn canonical_json(value: &Value) -> Value {
         Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
         other => other.clone(),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_legacy_task_metadata(
+    workflow: &Workflow,
+    compiled: &agentctl_core::CompiledTask,
+    task: &TaskRecord,
+    policy: &PolicyEngine,
+    inputs: &serde_json::Map<String, Value>,
+    outputs: &BTreeMap<String, Value>,
+    effects: &[EffectRecord],
+    checkpoints: &[CheckpointRecord],
+) -> (
+    Option<TaskCompletionMetadata>,
+    BTreeMap<String, String>,
+    Vec<String>,
+) {
+    let mut provenance = BTreeMap::new();
+    let mut reasons = Vec::new();
+
+    let definition_fingerprint = match task_definition_fingerprint(
+        workflow,
+        compiled,
+        policy,
+        Some(effects),
+    ) {
+        Ok(fingerprint) => {
+            provenance.insert(
+                    "definitionFingerprint".to_owned(),
+                    "stored workflow, compiled plan, policy, tools, provider, and recorded instruction read"
+                        .to_owned(),
+                );
+            Some(fingerprint)
+        }
+        Err(error) => {
+            reasons.push(format!("definition fingerprint cannot be proven: {error}"));
+            None
+        }
+    };
+
+    let contract = task_output_schema(workflow, compiled).unwrap_or_else(|| serde_json::json!({}));
+    let output_contract_fingerprint = match versioned_json_digest(&contract) {
+        Ok(fingerprint) => {
+            provenance.insert(
+                "outputContractFingerprint".to_owned(),
+                "stored workflow task/agent output schema".to_owned(),
+            );
+            Some(fingerprint)
+        }
+        Err(error) => {
+            reasons.push(format!("output contract cannot be hashed: {error}"));
+            None
+        }
+    };
+
+    let output_digest = match task.output.as_ref() {
+        Some(output) => {
+            if let Err(error) = validate_output_contract(&contract, output) {
+                reasons.push(format!(
+                    "stored successful output does not satisfy its contract: {error}"
+                ));
+                None
+            } else {
+                match versioned_json_digest(output) {
+                    Ok(digest) => {
+                        provenance.insert(
+                            "outputDigest".to_owned(),
+                            "stored successful task output".to_owned(),
+                        );
+                        Some(digest)
+                    }
+                    Err(error) => {
+                        reasons.push(format!("stored output cannot be hashed: {error}"));
+                        None
+                    }
+                }
+            }
+        }
+        None => {
+            reasons.push("successful task has no stored output".to_owned());
+            None
+        }
+    };
+
+    let boundary = match legacy_checkpoint_boundary(checkpoints, &task.task_id) {
+        Ok(boundary) => {
+            provenance.insert(
+                "checkpointBoundary".to_owned(),
+                format!(
+                    "checksummed checkpoints {} and {} around the successful transition",
+                    boundary.0, boundary.1
+                ),
+            );
+            Some(boundary)
+        }
+        Err(error) => {
+            reasons.push(error);
+            None
+        }
+    };
+    let input_digest = boundary.as_ref().and_then(|boundary| {
+        match resolved_input_digest(inputs, &boundary.2, outputs, compiled) {
+            Ok(digest) => {
+                provenance.insert(
+                    "inputDigest".to_owned(),
+                    "stored inputs, dependency outputs, task variables, and pre-task checkpoint memory"
+                        .to_owned(),
+                );
+                Some(digest)
+            }
+            Err(error) => {
+                reasons.push(format!("resolved input boundary cannot be proven: {error}"));
+                None
+            }
+        }
+    });
+    let state_delta =
+        boundary.as_ref().and_then(
+            |boundary| match state_delta(&boundary.2, Some(&boundary.3)) {
+                Ok(delta) => {
+                    provenance.insert(
+                        "stateDelta".to_owned(),
+                        "difference between checksummed pre/post-task working memory".to_owned(),
+                    );
+                    Some(delta)
+                }
+                Err(error) => {
+                    reasons.push(format!("state delta cannot be reconstructed: {error}"));
+                    None
+                }
+            },
+        );
+    let state_delta_digest =
+        state_delta
+            .as_ref()
+            .and_then(|delta| match versioned_json_digest(delta) {
+                Ok(digest) => Some(digest),
+                Err(error) => {
+                    reasons.push(format!("state delta cannot be hashed: {error}"));
+                    None
+                }
+            });
+
+    let artifact_manifest = match analyze_legacy_artifacts(task, effects, policy) {
+        Ok(artifacts) => {
+            provenance.insert(
+                "artifactManifest".to_owned(),
+                if task.artifact_manifest.is_empty() {
+                    "confirmed workspace-mutation effects plus current policy-authorized bytes"
+                        .to_owned()
+                } else {
+                    "legacy manifest identity plus current policy-authorized bytes".to_owned()
+                },
+            );
+            Some(artifacts)
+        }
+        Err(error) => {
+            reasons.push(format!("artifact manifest cannot be proven: {error}"));
+            None
+        }
+    };
+
+    let metadata = match (
+        definition_fingerprint,
+        input_digest,
+        output_contract_fingerprint,
+        output_digest,
+        state_delta,
+        state_delta_digest,
+        artifact_manifest,
+    ) {
+        (
+            Some(definition_fingerprint),
+            Some(input_digest),
+            Some(output_contract_fingerprint),
+            Some(output_digest),
+            Some(state_delta),
+            Some(state_delta_digest),
+            Some(artifact_manifest),
+        ) if reasons.is_empty() => Some(TaskCompletionMetadata {
+            execution: TaskExecutionMetadata {
+                metadata_version: TASK_METADATA_VERSION,
+                definition_fingerprint,
+                input_digest,
+                output_contract_fingerprint,
+            },
+            output_digest,
+            state_delta,
+            state_delta_digest,
+            artifact_manifest,
+        }),
+        _ => None,
+    };
+    (metadata, provenance, reasons)
+}
+
+fn legacy_checkpoint_boundary(
+    checkpoints: &[CheckpointRecord],
+    task_id: &str,
+) -> Result<(i64, i64, Value, Value), String> {
+    for pair in checkpoints.windows(2) {
+        let before_state = checkpoint_task_state(&pair[0].state, task_id);
+        let after_state = checkpoint_task_state(&pair[1].state, task_id);
+        if before_state.as_deref() != Some("succeeded")
+            && after_state.as_deref() == Some("succeeded")
+        {
+            let before_memory = pair[0]
+                .state
+                .get("workingMemory")
+                .filter(|memory| memory.is_object())
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "checkpoint {} has no object workingMemory before task `{task_id}`",
+                        pair[0].sequence
+                    )
+                })?;
+            let after_memory = pair[1]
+                .state
+                .get("workingMemory")
+                .filter(|memory| memory.is_object())
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "checkpoint {} has no object workingMemory after task `{task_id}`",
+                        pair[1].sequence
+                    )
+                })?;
+            return Ok((
+                pair[0].sequence,
+                pair[1].sequence,
+                before_memory,
+                after_memory,
+            ));
+        }
+    }
+    Err(format!(
+        "no consecutive checksummed checkpoints prove the successful transition for task `{task_id}`"
+    ))
+}
+
+fn checkpoint_task_state(checkpoint: &Value, task_id: &str) -> Option<String> {
+    checkpoint
+        .get("tasks")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|task| task.get("taskId").and_then(Value::as_str) == Some(task_id))?
+        .get("state")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn analyze_legacy_artifacts(
+    task: &TaskRecord,
+    effects: &[EffectRecord],
+    policy: &PolicyEngine,
+) -> Result<Vec<ArtifactRecord>, String> {
+    let mut expected = task
+        .artifact_manifest
+        .iter()
+        .map(|artifact| (artifact.path.clone(), Some(artifact)))
+        .collect::<BTreeMap<_, _>>();
+    let mutations = effects
+        .iter()
+        .filter(|effect| effect.request.effect_class == EffectClass::WorkspaceMutate)
+        .collect::<Vec<_>>();
+    if expected.is_empty() {
+        for effect in &mutations {
+            if effect.status != EffectStatus::Succeeded || !effect.confirmed {
+                return Err(format!(
+                    "workspace mutation `{}` is not a confirmed success",
+                    effect.request.id
+                ));
+            }
+            let result = effect.result.as_ref().ok_or_else(|| {
+                format!(
+                    "confirmed workspace mutation `{}` has no stored result",
+                    effect.request.id
+                )
+            })?;
+            let mut paths = BTreeSet::new();
+            collect_result_paths(result, &mut paths);
+            if paths.is_empty() {
+                return Err(format!(
+                    "confirmed workspace mutation `{}` has no stored output path",
+                    effect.request.id
+                ));
+            }
+            for path in paths {
+                expected.insert(path, None);
+            }
+        }
+    }
+
+    expected
+        .into_iter()
+        .map(|(path, legacy)| {
+            let resolved = policy
+                .resolve_artifact_path(&path)
+                .map_err(|error| error.to_string())?;
+            let (digest, size_bytes) = hash_bounded_artifact(&resolved)?;
+            if let Some(legacy) = legacy
+                && (legacy.digest != digest || legacy.size_bytes != size_bytes)
+            {
+                return Err(format!(
+                    "legacy artifact `{path}` identity changed: expected {} bytes and `{}`, found {} bytes and `{digest}`",
+                    legacy.size_bytes, legacy.digest, size_bytes
+                ));
+            }
+            let logical_name = Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("artifact `{path}` has no valid logical name"))?;
+            Ok(ArtifactRecord {
+                path: path.clone(),
+                digest,
+                size_bytes,
+                media_type: legacy
+                    .map(|artifact| artifact.media_type.clone())
+                    .filter(|media_type| !media_type.is_empty())
+                    .unwrap_or_else(|| legacy_media_type(Path::new(&path)).to_owned()),
+                logical_name: legacy
+                    .map(|artifact| artifact.logical_name.clone())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| logical_name.to_owned()),
+                store_path: legacy
+                    .map(|artifact| artifact.store_path.clone())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn hash_bounded_artifact(path: &Path) -> Result<(String, u64), String> {
+    use std::io::Read as _;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    if metadata.len() > MAX_ARTIFACT_BYTES {
+        return Err(format!(
+            "{} exceeds the {} byte artifact limit",
+            path.display(),
+            MAX_ARTIFACT_BYTES
+        ));
+    }
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut reader = file.take(MAX_ARTIFACT_BYTES + 1);
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_ARTIFACT_BYTES {
+        return Err(format!(
+            "{} changed while reading and exceeded the {} byte artifact limit",
+            path.display(),
+            MAX_ARTIFACT_BYTES
+        ));
+    }
+    Ok((
+        format!("sha256:{}", digest(&bytes)),
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    ))
+}
+
+fn legacy_media_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("json") => "application/json",
+        Some("yaml" | "yml") => "application/yaml",
+        Some("md") => "text/markdown",
+        Some("txt" | "log" | "csv") => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn earliest_safe_repair_roots(plan: &CompiledPlan, unavailable: &[String]) -> Vec<String> {
+    let unavailable = unavailable.iter().cloned().collect::<BTreeSet<_>>();
+    if unavailable.is_empty() {
+        return Vec::new();
+    }
+    let earliest = plan
+        .order
+        .iter()
+        .position(|task_id| unavailable.contains(task_id))
+        .unwrap_or(plan.order.len());
+    let mut covered = BTreeSet::new();
+    let mut roots = Vec::new();
+    for task_id in plan.order.iter().skip(earliest) {
+        if !covered.contains(task_id) {
+            roots.push(task_id.clone());
+            covered.insert(task_id.clone());
+            loop {
+                let before = covered.len();
+                for candidate in &plan.order {
+                    if plan
+                        .tasks
+                        .get(candidate)
+                        .is_some_and(|task| task.needs.iter().any(|need| covered.contains(need)))
+                    {
+                        covered.insert(candidate.clone());
+                    }
+                }
+                if covered.len() == before {
+                    break;
+                }
+            }
+        }
+    }
+    roots
 }
 
 fn read_bounded_text_sync(path: &Path) -> Result<String, RuntimeError> {
@@ -4369,6 +5360,19 @@ mod tests {
         }
     }
 
+    struct RejectReconciliationHook;
+
+    impl EffectReconciliationHook for RejectReconciliationHook {
+        fn validate(
+            &self,
+            _effect: &EffectRecord,
+            _evidence: &Value,
+            _result: Option<&Value>,
+        ) -> Result<(), String> {
+            Err("external verifier did not confirm the record".to_owned())
+        }
+    }
+
     fn compile_fixture(source: &str) -> (Workflow, CompiledPlan) {
         let workflow = parse_workflow(source, "fixture.yaml")
             .expect("parse fixture")
@@ -4453,6 +5457,405 @@ spec:
         Runtime::new(store, base)
             .with_clock(Arc::new(FixedClock))
             .with_ids(Arc::new(SequenceIds::default()))
+    }
+
+    fn running_memory_effect(
+        store: &SqliteStore,
+        base: &Path,
+        run_id: &str,
+        uncertain: bool,
+    ) -> EffectRequest {
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: reconciled-resume }
+spec:
+  policy: { approval: never }
+  memory:
+    working: { value: old }
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - id: remember
+      uses: action:remember
+      with: { key: value, value: new }
+"#;
+        let (workflow, plan) = compile_fixture(source);
+        store
+            .create_run(
+                run_id,
+                API_VERSION,
+                &serde_json::to_value(workflow).expect("workflow"),
+                &plan,
+                &serde_json::json!({}),
+                &serde_json::json!({"value": "old"}),
+                RunMode::Execute,
+                None,
+                base,
+                FixedClock.now(),
+                "trace-source",
+            )
+            .expect("create interrupted run");
+        store
+            .transition_task(
+                run_id,
+                "remember",
+                TaskState::Ready,
+                None,
+                None,
+                None,
+                FixedClock.now(),
+                "trace-source",
+            )
+            .expect("ready");
+        store
+            .transition_task(
+                run_id,
+                "remember",
+                TaskState::Running,
+                None,
+                None,
+                None,
+                FixedClock.now(),
+                "trace-source",
+            )
+            .expect("running");
+        let effect = EffectRequest::new(
+            run_id,
+            "remember",
+            1,
+            1,
+            "builtin.memory.write",
+            EffectClass::InternalState,
+            Risk::Low,
+            Idempotency::Keyed,
+            serde_json::json!({"key": "value", "value": "new"}),
+            "update transactional run working memory",
+            "trace-source",
+        );
+        store
+            .record_effect_request(&effect, FixedClock.now())
+            .expect("effect");
+        store
+            .mark_effect_started(&effect.id, FixedClock.now())
+            .expect("started");
+        if uncertain {
+            store
+                .mark_effect_uncertain(&effect.id, "interrupted", FixedClock.now())
+                .expect("uncertain");
+        } else {
+            store
+                .complete_effect(
+                    &effect.id,
+                    Ok(&serde_json::json!({
+                        "status": "changed",
+                        "changed": true,
+                        "before": "old",
+                        "after": "new",
+                        "key": "value",
+                    })),
+                    FixedClock.now(),
+                )
+                .expect("complete");
+        }
+        effect
+    }
+
+    #[tokio::test]
+    async fn applied_reconciliation_supplies_a_validated_result_to_resume() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let effect = running_memory_effect(&store, directory.path(), "resume-applied", true);
+        let runtime = runtime(store.clone(), directory.path());
+        let result = serde_json::json!({
+            "status": "changed",
+            "changed": true,
+            "before": "old",
+            "after": "new",
+            "key": "value",
+        });
+        let reconciliation = runtime
+            .reconcile_effect(EffectReconciliationInput {
+                effect_id: effect.id.clone(),
+                status: ReconciliationStatus::Applied,
+                actor: "operator".to_owned(),
+                reason: "checkpoint confirms the memory write".to_owned(),
+                evidence: serde_json::json!({"checkpoint": "external-1"}),
+                result: Some(result),
+                result_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["status", "changed", "key"],
+                })),
+                compensation_effect_id: None,
+                approved: false,
+            })
+            .expect("reconcile applied");
+        assert_eq!(reconciliation.status, ReconciliationStatus::Applied);
+        let outcome = runtime
+            .resume(
+                "resume-applied",
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resume");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(
+            store
+                .load_run("resume-applied")
+                .expect("run")
+                .working_memory["value"],
+            "new"
+        );
+        assert_eq!(
+            store.list_effects("resume-applied").expect("effects").len(),
+            1
+        );
+        assert_eq!(
+            store.load_effect(&effect.id).expect("source effect").status,
+            EffectStatus::Uncertain
+        );
+    }
+
+    #[tokio::test]
+    async fn not_applied_reconciliation_resumes_with_a_fresh_task_and_effect_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let effect = running_memory_effect(&store, directory.path(), "resume-not-applied", true);
+        let runtime = runtime(store.clone(), directory.path());
+        runtime
+            .reconcile_effect(EffectReconciliationInput {
+                effect_id: effect.id.clone(),
+                status: ReconciliationStatus::NotApplied,
+                actor: "operator".to_owned(),
+                reason: "checkpoint confirms no write".to_owned(),
+                evidence: serde_json::json!({"checkpoint": "external-2"}),
+                result: None,
+                result_schema: None,
+                compensation_effect_id: None,
+                approved: false,
+            })
+            .expect("reconcile not applied");
+        let outcome = runtime
+            .resume(
+                "resume-not-applied",
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resume");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        let task = store
+            .list_tasks("resume-not-applied")
+            .expect("tasks")
+            .remove(0);
+        assert_eq!(task.attempt, 2);
+        let effects = store.list_effects("resume-not-applied").expect("effects");
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].request.id, effect.id);
+        assert_eq!(effects[0].status, EffectStatus::Uncertain);
+        assert_eq!(effects[1].status, EffectStatus::Succeeded);
+        assert_ne!(effects[0].request.id, effects[1].request.id);
+    }
+
+    #[tokio::test]
+    async fn compensated_reconciliation_resumes_a_completed_effect_with_a_fresh_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let effect = running_memory_effect(&store, directory.path(), "resume-compensated", false);
+        let compensation = EffectRequest::new(
+            "resume-compensated",
+            "remember",
+            1,
+            2,
+            "builtin.memory.restore",
+            EffectClass::InternalState,
+            Risk::Low,
+            Idempotency::Keyed,
+            serde_json::json!({"key": "value", "value": "old"}),
+            "restore transactional run working memory",
+            "trace-source",
+        );
+        store
+            .record_effect_request(&compensation, FixedClock.now())
+            .expect("compensation");
+        store
+            .mark_effect_started(&compensation.id, FixedClock.now())
+            .expect("compensation started");
+        store
+            .complete_effect(
+                &compensation.id,
+                Ok(&serde_json::json!({"restored": true})),
+                FixedClock.now(),
+            )
+            .expect("compensation complete");
+        let runtime = runtime(store.clone(), directory.path());
+        runtime
+            .reconcile_effect(EffectReconciliationInput {
+                effect_id: effect.id.clone(),
+                status: ReconciliationStatus::Compensated,
+                actor: "operator".to_owned(),
+                reason: "the state write was reversed".to_owned(),
+                evidence: serde_json::json!({"checkpoint": "external-3"}),
+                result: None,
+                result_schema: None,
+                compensation_effect_id: Some(compensation.id),
+                approved: false,
+            })
+            .expect("reconcile compensated");
+        let outcome = runtime
+            .resume(
+                "resume-compensated",
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resume");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        let task = store
+            .list_tasks("resume-compensated")
+            .expect("tasks")
+            .remove(0);
+        assert_eq!(task.attempt, 2);
+        let effects = store.list_effects("resume-compensated").expect("effects");
+        assert_eq!(effects.len(), 3);
+        assert_eq!(effects[0].status, EffectStatus::Succeeded);
+        assert_eq!(effects[2].status, EffectStatus::Succeeded);
+        assert_ne!(effects[0].request.id, effects[2].request.id);
+    }
+
+    #[test]
+    fn reconciliation_enforces_tool_contract_hook_and_policy_approval() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: reconciliation-policy }
+spec:
+  policy:
+    approval: high_risk
+    nonInteractive: pause
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: one, uses: "action:assign", with: { value: one } }
+"#;
+        let (workflow, plan) = compile_fixture(source);
+        store
+            .create_run(
+                "reconciliation-policy",
+                API_VERSION,
+                &serde_json::to_value(workflow).expect("workflow"),
+                &plan,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                RunMode::Execute,
+                None,
+                directory.path(),
+                FixedClock.now(),
+                "trace",
+            )
+            .expect("run");
+        let effect = EffectRequest::new(
+            "reconciliation-policy",
+            "one",
+            1,
+            1,
+            "tool.echo",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"text": "hello"}),
+            "external echo",
+            "trace",
+        );
+        store
+            .record_effect_request(&effect, FixedClock.now())
+            .expect("effect");
+        store
+            .mark_effect_started(&effect.id, FixedClock.now())
+            .expect("started");
+        store
+            .mark_effect_uncertain(&effect.id, "unknown", FixedClock.now())
+            .expect("uncertain");
+        let runtime_instance = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default().with_tool("echo", Arc::new(FixtureTool::new(false))),
+        );
+        let base = EffectReconciliationInput {
+            effect_id: effect.id.clone(),
+            status: ReconciliationStatus::Applied,
+            actor: "operator".to_owned(),
+            reason: "external verifier confirms output".to_owned(),
+            evidence: serde_json::json!({"externalId": "echo-1"}),
+            result: Some(serde_json::json!({"text": "hello"})),
+            result_schema: None,
+            compensation_effect_id: None,
+            approved: false,
+        };
+        let mut invalid = base.clone();
+        invalid.result = Some(serde_json::json!({"wrong": true}));
+        assert!(matches!(
+            runtime_instance.reconcile_effect(invalid),
+            Err(RuntimeError::Tool(_))
+        ));
+        assert!(runtime_instance.reconcile_effect(base.clone()).is_err());
+        let mut approved = base;
+        approved.approved = true;
+        assert_eq!(
+            runtime_instance
+                .reconcile_effect(approved)
+                .expect("approved")
+                .status,
+            ReconciliationStatus::Applied
+        );
+
+        let hook_effect = EffectRequest::new(
+            "reconciliation-policy",
+            "one",
+            1,
+            2,
+            "external.verify",
+            EffectClass::ExternalMutate,
+            Risk::High,
+            Idempotency::Unknown,
+            serde_json::json!({"record": "x"}),
+            "verify record",
+            "trace",
+        );
+        store
+            .record_effect_request(&hook_effect, FixedClock.now())
+            .expect("hook effect");
+        store
+            .mark_effect_started(&hook_effect.id, FixedClock.now())
+            .expect("hook started");
+        store
+            .mark_effect_uncertain(&hook_effect.id, "unknown", FixedClock.now())
+            .expect("hook uncertain");
+        let hooked = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default()
+                .with_reconciliation_hook("external.verify", Arc::new(RejectReconciliationHook)),
+        );
+        assert!(matches!(
+            hooked.reconcile_effect(EffectReconciliationInput {
+                effect_id: hook_effect.id.clone(),
+                status: ReconciliationStatus::Applied,
+                actor: "operator".to_owned(),
+                reason: "manual claim".to_owned(),
+                evidence: serde_json::json!({"claim": true}),
+                result: Some(serde_json::json!({"record": "x"})),
+                result_schema: None,
+                compensation_effect_id: None,
+                approved: true,
+            }),
+            Err(RuntimeError::InvalidState(message)) if message.contains("hook")
+        ));
+        assert!(
+            store
+                .effect_reconciliations(&hook_effect.id)
+                .expect("no hook reconciliation")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -5452,6 +6855,172 @@ spec:
                 && block.message.contains("earlier repair root")
         }));
         assert_eq!(store.stats().expect("stats"), stats_before);
+    }
+
+    #[tokio::test]
+    async fn legacy_analysis_upgrade_imports_artifacts_and_enables_selective_repair() {
+        let directory = tempdir().expect("tempdir");
+        let database = directory.path().join("state").join("runtime.db");
+        let store = SqliteStore::open(&database).expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: legacy-upgrade }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:write
+      with: { path: legacy.txt, content: durable }
+    - id: second
+      uses: action:assert
+      needs: [first]
+      with: { that: false }
+"#;
+        let repaired_yaml = source_yaml.replace("with: { that: false }", "with: { that: true }");
+        let (source_workflow, source_plan) = compile_fixture(source_yaml);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let raw = rusqlite::Connection::open(&database).expect("raw database");
+        raw.execute(
+            "UPDATE task_states SET metadata_version = NULL, definition_fingerprint = NULL, input_digest = NULL, output_contract_fingerprint = NULL, output_digest = NULL, state_delta_json = NULL, state_delta_digest = NULL, artifact_manifest_json = NULL, reuse_decision_json = NULL WHERE run_id = ?1 AND task_id = 'first'",
+            [&source_run_id],
+        )
+        .expect("simulate pre-v5 task");
+        raw.execute(
+            "DELETE FROM artifact_refs WHERE run_id = ?1",
+            [&source_run_id],
+        )
+        .expect("remove post-v5 references");
+        raw.execute("DELETE FROM artifact_blobs", [])
+            .expect("remove post-v5 blob index");
+        drop(raw);
+
+        let stats_before = store.stats().expect("stats");
+        let analysis = runtime
+            .analyze_legacy_run(&source_run_id)
+            .expect("dry-run analysis");
+        assert_eq!(analysis.upgradeable_tasks, ["first"]);
+        assert_eq!(analysis.unavailable_tasks, ["second"]);
+        assert_eq!(analysis.recommended_repair_roots, ["second"]);
+        assert_eq!(store.stats().expect("stats"), stats_before);
+        assert_eq!(
+            store.list_tasks(&source_run_id).expect("tasks")[0].metadata_version,
+            None
+        );
+
+        let upgrade = runtime
+            .upgrade_legacy_run(&source_run_id)
+            .expect("legacy upgrade");
+        assert_eq!(upgrade.upgraded_tasks, ["first"]);
+        assert!(upgrade.analysis_after.tasks[0].already_current);
+        let upgraded = store.list_tasks(&source_run_id).expect("upgraded tasks");
+        assert_eq!(upgraded[0].metadata_version, Some(TASK_METADATA_VERSION));
+        assert_eq!(upgraded[0].artifact_manifest.len(), 1);
+        assert_eq!(store.stats().expect("stats").run_upgrades, 1);
+
+        std::fs::remove_file(directory.path().join("legacy.txt")).expect("remove workspace file");
+        let (repaired_workflow, repaired_plan) = compile_fixture(&repaired_yaml);
+        let plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &upgrade.analysis_after.recommended_repair_roots,
+                false,
+            )
+            .expect("repair plan");
+        assert!(plan.compatible, "{:?}", plan.blocked_reuse);
+        let outcome = runtime
+            .repair(
+                &repaired_workflow,
+                &repaired_plan,
+                plan,
+                Some("repair from proven legacy boundary"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("selective repair");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        let tasks = store.list_tasks(&outcome.run_id).expect("repair tasks");
+        assert_eq!(tasks[0].disposition, TaskDisposition::Reused);
+        assert_eq!(tasks[1].disposition, TaskDisposition::Executed);
+        assert!(runtime.replay(&outcome.run_id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn legacy_analysis_reports_the_earliest_safe_boundary_when_proof_is_missing() {
+        let directory = tempdir().expect("tempdir");
+        let database = directory.path().join("runtime.db");
+        let store = SqliteStore::open(&database).expect("store");
+        let runtime = runtime(store, directory.path());
+        let source_yaml = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: legacy-missing-proof }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: first, uses: "action:assign", with: { value: first } }
+    - { id: second, uses: "action:assign", with: { value: second } }
+"#;
+        let (workflow, plan) = compile_fixture(source_yaml);
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("source");
+        let raw = rusqlite::Connection::open(&database).expect("raw database");
+        raw.execute(
+            "UPDATE task_states SET metadata_version = NULL, definition_fingerprint = NULL, input_digest = NULL, output_contract_fingerprint = NULL, output_digest = NULL, state_delta_json = NULL, state_delta_digest = NULL, artifact_manifest_json = NULL, reuse_decision_json = NULL WHERE run_id = ?1",
+            [&outcome.run_id],
+        )
+        .expect("simulate legacy tasks");
+        raw.execute(
+            "DELETE FROM checkpoints WHERE run_id = ?1 AND sequence > 1",
+            [&outcome.run_id],
+        )
+        .expect("remove unavailable proof");
+        drop(raw);
+
+        let analysis = runtime
+            .analyze_legacy_run(&outcome.run_id)
+            .expect("analysis");
+        assert!(!analysis.fully_upgradeable);
+        assert_eq!(analysis.unavailable_tasks, ["first", "second"]);
+        assert_eq!(analysis.recommended_repair_roots, ["first", "second"]);
+        assert!(analysis.tasks.iter().all(|task| {
+            task.proposed_metadata.is_none()
+                && task
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.contains("checksummed checkpoints"))
+        }));
     }
 
     #[tokio::test]

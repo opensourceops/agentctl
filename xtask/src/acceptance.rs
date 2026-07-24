@@ -15,7 +15,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 28;
+const ACCEPTANCE_SCENARIOS: usize = 29;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -914,6 +914,72 @@ pub fn run(root: &Path) -> Result<()> {
     );
     uncertain_repair_acceptance(&binary, &workspace, directory.path())?;
 
+    scenario(
+        29,
+        "legacy dry-run analysis and transactional upgrade expose a safe repair root",
+    );
+    let connection = rusqlite::Connection::open(&repair_db)?;
+    connection.execute(
+        "UPDATE task_states SET metadata_version = NULL, definition_fingerprint = NULL, input_digest = NULL, output_contract_fingerprint = NULL, output_digest = NULL, state_delta_json = NULL, state_delta_digest = NULL, artifact_manifest_json = NULL, reuse_decision_json = NULL WHERE run_id = ?1 AND task_id = 'first'",
+        [source_run_id],
+    )?;
+    drop(connection);
+    let legacy_analysis = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "runs",
+            "--db",
+            path(&repair_db)?,
+            "upgrade",
+            source_run_id,
+            "--dry-run",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&legacy_analysis, "/data/upgradeableTasks/0", "first")?;
+    ensure_eq(&legacy_analysis, "/data/recommendedRepairRoots/0", "second")?;
+    let still_legacy = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "runs",
+            "--db",
+            path(&repair_db)?,
+            "analyze",
+            source_run_id,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&still_legacy, "/data/upgradeableTasks/0", "first")?;
+    let upgraded = successful_json(
+        &binary,
+        &workspace,
+        &strings([
+            "runs",
+            "--db",
+            path(&repair_db)?,
+            "upgrade",
+            source_run_id,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&upgraded, "/data/upgradedTasks/0", "first")?;
+    ensure_eq(
+        &upgraded,
+        "/data/analysisAfter/recommendedRepairRoots/0",
+        "second",
+    )?;
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -1637,7 +1703,7 @@ fn uncertain_repair_acceptance(binary: &Path, workspace: &Path, directory: &Path
                 "effects",
                 "--db",
                 path(&db)?,
-                "inspect",
+                "list",
                 run_id,
                 "--task",
                 "work",
@@ -1678,7 +1744,7 @@ fn uncertain_repair_acceptance(binary: &Path, workspace: &Path, directory: &Path
                 path(&db)?,
                 "reconcile",
                 effect_id,
-                "--outcome",
+                "--status",
                 "not-applied",
                 "--actor",
                 "acceptance",
