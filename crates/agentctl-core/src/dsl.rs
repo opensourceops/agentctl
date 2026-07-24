@@ -420,6 +420,10 @@ pub struct TaskDefinition {
     pub uses: String,
     #[serde(default)]
     pub needs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreach: Option<ForeachDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<MatrixDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory_writes: Vec<String>,
     #[serde(default)]
@@ -436,6 +440,35 @@ pub struct TaskDefinition {
     pub failure: FailureBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+}
+
+pub const DEFAULT_MAX_EXPANSION_ITEMS: usize = 32;
+pub const MAX_EXPANSION_ITEMS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForeachDefinition {
+    pub items: Vec<Value>,
+    #[serde(default = "default_item_binding", rename = "as")]
+    pub binding: String,
+    #[serde(default = "default_max_expansion_items")]
+    pub max_items: usize,
+}
+
+fn default_item_binding() -> String {
+    "item".to_owned()
+}
+
+const fn default_max_expansion_items() -> usize {
+    DEFAULT_MAX_EXPANSION_ITEMS
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MatrixDefinition {
+    pub axes: BTreeMap<String, Vec<Value>>,
+    #[serde(default = "default_max_expansion_items")]
+    pub max_items: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -915,6 +948,45 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
             )
             .with_path("spec.runtime.defaultTimeoutSeconds"),
         );
+    }
+    for (position, task) in workflow.spec.tasks.iter().enumerate() {
+        if task.foreach.is_some() && task.matrix.is_some() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!(
+                        "task `{}` cannot declare both foreach and matrix expansion",
+                        task.id
+                    ),
+                )
+                .with_path(format!("spec.tasks[{position}]")),
+            );
+        }
+        if let Some(foreach) = &task.foreach
+            && (foreach.max_items == 0 || foreach.max_items > MAX_EXPANSION_ITEMS)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("foreach.maxItems must be between 1 and {MAX_EXPANSION_ITEMS}"),
+                )
+                .with_path(format!("spec.tasks[{position}].foreach.maxItems")),
+            );
+        }
+        if let Some(matrix) = &task.matrix
+            && (matrix.max_items == 0 || matrix.max_items > MAX_EXPANSION_ITEMS)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("matrix.maxItems must be between 1 and {MAX_EXPANSION_ITEMS}"),
+                )
+                .with_path(format!("spec.tasks[{position}].matrix.maxItems")),
+            );
+        }
     }
     for (name, action) in &workflow.spec.actions {
         if let Err(message) = action.validate_process_bounds() {

@@ -2461,12 +2461,14 @@ impl Runtime {
                 {
                     continue;
                 }
-                if dependencies.iter().any(|dependency| {
-                    matches!(
-                        dependency.state,
-                        TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
-                    )
-                }) {
+                if !matches!(task.uses, TaskUse::Aggregate(_))
+                    && dependencies.iter().any(|dependency| {
+                        matches!(
+                            dependency.state,
+                            TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
+                        )
+                    })
+                {
                     self.store.transition_task(
                         run_id,
                         task_id,
@@ -2976,12 +2978,14 @@ impl Runtime {
                 .iter()
                 .filter_map(|needed| tasks.iter().find(|candidate| &candidate.task_id == needed))
                 .collect();
-            if dependencies.iter().any(|dependency| {
-                matches!(
-                    dependency.state,
-                    TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
-                )
-            }) {
+            if !matches!(task.uses, TaskUse::Aggregate(_))
+                && dependencies.iter().any(|dependency| {
+                    matches!(
+                        dependency.state,
+                        TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
+                    )
+                })
+            {
                 self.store.transition_task(
                     run_id,
                     &task.id,
@@ -3370,6 +3374,34 @@ impl Runtime {
                     cancellation,
                 )
                 .await
+            }
+            TaskUse::Aggregate(children) => {
+                let records = self.store.list_tasks(&run.run_id)?;
+                let items = children
+                    .iter()
+                    .enumerate()
+                    .map(|(index, child)| {
+                        let record = records
+                            .iter()
+                            .find(|candidate| &candidate.task_id == child)
+                            .ok_or_else(|| {
+                                RuntimeError::InvalidState(format!(
+                                    "expanded child task `{child}` disappeared"
+                                ))
+                            })?;
+                        Ok(serde_json::json!({
+                            "index": index,
+                            "taskId": child,
+                            "state": record.state,
+                            "output": record.output,
+                            "error": record.error,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                Ok(TaskExecution::Complete {
+                    output: serde_json::json!({"items": items}),
+                    memory: None,
+                })
             }
         }
     }
@@ -4836,6 +4868,12 @@ fn task_output_schema(workflow: &Workflow, task: &agentctl_core::CompiledTask) -
             .get(name)
             .and_then(|agent| agent.structured_output.clone()),
         TaskUse::Action(_) => Some(serde_json::json!({"type": "object"})),
+        TaskUse::Aggregate(_) => Some(serde_json::json!({
+            "type": "object",
+            "required": ["items"],
+            "properties": {"items": {"type": "array"}},
+            "additionalProperties": false
+        })),
     })
 }
 
@@ -4920,6 +4958,11 @@ fn task_definition_fingerprint(
                 "instructionContentDigest": instruction_content_digest,
             })
         }
+        TaskUse::Aggregate(children) => serde_json::json!({
+            "kind": "aggregate",
+            "task": task,
+            "children": children,
+        }),
     };
     versioned_json_digest(&serde_json::json!({
         "formatVersion": 1,
@@ -8762,6 +8805,151 @@ spec:
                 .is_empty()
         );
         assert_eq!(replay.output, outcome.output);
+    }
+
+    #[tokio::test]
+    async fn foreach_aggregates_partial_results_and_retries_only_failed_children() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(TerminalRetryProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, compiled) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: foreach-retry }
+spec:
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: return a recovery object
+      structuredOutput:
+        type: object
+        required: [value]
+        additionalProperties: false
+        properties:
+          value: { type: string }
+  tasks:
+    - id: expanded
+      uses: "agent:worker"
+      foreach:
+        items: [first, second]
+        as: item
+        maxItems: 2
+      with: { prompt: "${{ vars.item }}" }
+      failure: continue
+"#,
+        );
+        let children = match &compiled.tasks["expanded"].uses {
+            TaskUse::Aggregate(children) => children.clone(),
+            other => panic!("expected aggregate, got {other:?}"),
+        };
+        let source = runtime
+            .start(
+                &workflow,
+                &compiled,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("continue failure returns a terminal outcome");
+        assert_eq!(source.state, RunState::Failed);
+        let source_tasks = store.list_tasks(&source.run_id).expect("source tasks");
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == children[0])
+                .expect("first child")
+                .state,
+            TaskState::Failed
+        );
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == children[1])
+                .expect("second child")
+                .state,
+            TaskState::Succeeded
+        );
+        let aggregate = source_tasks
+            .iter()
+            .find(|task| task.task_id == "expanded")
+            .expect("aggregate");
+        assert_eq!(aggregate.state, TaskState::Succeeded);
+        assert_eq!(
+            aggregate.output.as_ref().expect("aggregate output")["items"][0]["state"],
+            "failed"
+        );
+
+        let repair_plan = runtime
+            .plan_repair(
+                &source.run_id,
+                &workflow,
+                &compiled,
+                &[children[0].clone()],
+                false,
+            )
+            .expect("repair plan");
+        assert!(repair_plan.compatible, "{:?}", repair_plan.blocked_reuse);
+        assert!(repair_plan.reused_tasks.contains(&children[1]));
+        assert!(repair_plan.rerun_tasks.contains(&"expanded".to_owned()));
+        let repaired = runtime
+            .repair(
+                &workflow,
+                &compiled,
+                repair_plan,
+                Some("repair failed foreach child"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair succeeds");
+        assert_eq!(repaired.state, RunState::Succeeded);
+
+        let retry_plan = runtime
+            .plan_retry(&source.run_id, &workflow, &compiled, &[], true, false)
+            .expect("retry plan");
+        assert_eq!(retry_plan.retry_roots, [children[0].clone()]);
+        assert!(retry_plan.reused_tasks.contains(&children[1]));
+        assert!(retry_plan.rerun_tasks.contains(&"expanded".to_owned()));
+        let retried = runtime
+            .retry(
+                &workflow,
+                &compiled,
+                retry_plan,
+                Some("retry failed foreach child"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("retry succeeds");
+        assert_eq!(retried.state, RunState::Succeeded);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 4);
+        let retry_tasks = store.list_tasks(&retried.run_id).expect("retry tasks");
+        assert_eq!(
+            retry_tasks
+                .iter()
+                .find(|task| task.task_id == children[1])
+                .expect("reused child")
+                .disposition,
+            TaskDisposition::Reused
+        );
+        let replay = runtime
+            .replay(&retried.run_id)
+            .await
+            .expect("offline replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("replay effects")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

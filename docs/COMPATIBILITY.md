@@ -2,7 +2,7 @@
 
 ## Preserved
 
-Declaration-order scheduling among ready tasks, `needs` dataflow, exact typed templates, deterministic assign/assert/file/memory use cases, bounded agent/tool turns, approval concepts, SQLite local persistence, and the useful top-level command names remain. The language-neutral fixture records the legacy assign workflow’s translated model, graph order, and task reference.
+Declaration-order scheduling among ready tasks, `needs` dataflow, exact typed templates, deterministic assign/assert/file/memory use cases, bounded agent/tool turns, approval concepts, SQLite local persistence, and the useful top-level command names remain. The language-neutral fixture records the legacy assign workflow’s translated model, graph order, and task reference. Omitted `foreach` and `matrix` fields preserve the unchanged single-task graph; compiled expansion metadata is additive.
 
 ## Migrated
 
@@ -22,4 +22,4 @@ Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2
 
 ## Deferred product decisions
 
-Foreach/matrix, loops, routers, sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1.
+Loops, routers, sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1.

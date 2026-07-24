@@ -59,6 +59,7 @@ For retained pre-schema-5 history, use [Legacy run upgrade](docs/guides/LEGACY_R
 For confidential workflow history, use [Sensitive-state encryption](docs/guides/SENSITIVE_STATE_ENCRYPTION.md).
 For environment, mounted-file, and policy-gated process credentials, use [Secret references](docs/guides/SECRET_REFERENCES.md).
 For bounded independent branches and working-memory conflict rules, use [Deterministic parallel tasks](docs/guides/PARALLEL_TASKS.md).
+For bounded static task expansion and child-level recovery, use [Matrix and foreach tasks](docs/guides/MATRIX_AND_FOREACH.md).
 
 ## Safety boundary
 

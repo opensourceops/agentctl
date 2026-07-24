@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 33;
+const ACCEPTANCE_SCENARIOS: usize = 34;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1365,6 +1365,71 @@ pub fn run(root: &Path) -> Result<()> {
     let parallel_replay_id = string_at(&parallel_replay, "/data/runId")?;
     let parallel_replay_inspect = inspect(&binary, root, &parallel_db, parallel_replay_id)?;
     ensure!(array_len(&parallel_replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        34,
+        "packaged CLI expands, aggregates, inspects, and replays a bounded matrix",
+    );
+    let matrix = root.join("examples/v1/matrix.yaml");
+    let matrix_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "plan",
+            path(&matrix)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let matrix_children = matrix_plan
+        .pointer("/data/tasks/verify/uses/name")
+        .and_then(Value::as_array)
+        .context("matrix aggregate child list")?;
+    ensure!(matrix_children.len() == 4);
+    let first_matrix_child = matrix_children[0]
+        .as_str()
+        .context("first matrix child ID")?;
+    ensure!(first_matrix_child.starts_with("verify--0000-"));
+    ensure_eq(
+        &matrix_plan,
+        &format!("/data/tasks/{first_matrix_child}/expansion/parent"),
+        "verify",
+    )?;
+    let matrix_db = directory.path().join("matrix.db");
+    let matrix_run = successful_json(&binary, root, &run_args(&matrix, &matrix_db, root, &[]))?;
+    ensure_eq(&matrix_run, "/data/state", "succeeded")?;
+    ensure_eq(
+        &matrix_run,
+        "/data/output/results/0/output/output/platform",
+        "linux",
+    )?;
+    ensure_eq(
+        &matrix_run,
+        "/data/output/results/3/output/output/profile",
+        "release",
+    )?;
+    let matrix_run_id = string_at(&matrix_run, "/data/runId")?;
+    let matrix_inspect = inspect(&binary, root, &matrix_db, matrix_run_id)?;
+    ensure!(array_len(&matrix_inspect, "/data/tasks")? == 5);
+    let matrix_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            matrix_run_id,
+            "--db",
+            path(&matrix_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let matrix_replay_id = string_at(&matrix_replay, "/data/runId")?;
+    let matrix_replay_inspect = inspect(&binary, root, &matrix_db, matrix_replay_id)?;
+    ensure!(array_len(&matrix_replay_inspect, "/data/effects")? == 0);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

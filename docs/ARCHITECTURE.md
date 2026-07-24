@@ -32,10 +32,13 @@ Unordered overlapping `memoryWrites` fail compilation. Effects and provider
 sessions remain task-local. See ADR 0008 and
 [Deterministic parallel tasks](guides/PARALLEL_TASKS.md).
 
-Loops, matrix/foreach expansion, routers, sub-workflows, handlers,
-compensation execution, and event triggers still require their own explicit
-state and recovery contracts. The DSL carries optional compensation metadata
-on a tool contract, but the runtime does not execute compensation.
+Static foreach lists and matrix axes compile into ordinary namespaced child
+tasks followed by a pure aggregate. Their IDs, bindings, attempts, outputs,
+and recovery lineage use the same durable task model as authored nodes. Loops,
+routers, sub-workflows, handlers, compensation execution, and event triggers
+still require their own explicit state and recovery contracts. The DSL carries
+optional compensation metadata on a tool contract, but the runtime does not
+execute compensation.
 
 Clock and identifier generation are injected. Provider responses, tools, and external actions are injected interfaces. Cryptographic digests canonicalize identity; output maps use stable ordering where the public contract requires it.
 

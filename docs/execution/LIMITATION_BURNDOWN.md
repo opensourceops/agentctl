@@ -44,7 +44,7 @@ complete, every entry must have exactly one final disposition:
 | ISO-001 | Process isolation | open | redesigned |
 | BUD-001 | Resource and cost budgets | open | implemented |
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
-| DYN-001 | Foreach and matrix | open | implemented |
+| DYN-001 | Foreach and matrix | in progress | implemented |
 | COND-001 | Conditions and routers | open | implemented |
 | LOOP-001 | Bounded loops | open | implemented |
 | SUB-001 | Sub-workflows | open | implemented |
@@ -235,13 +235,14 @@ complete, every entry must have exactly one final disposition:
 
 ### DYN-001: Bounded foreach and matrix expansion
 
-- Current behavior: no dynamic task expansion.
+- Current behavior: static typed foreach lists and matrix axes compile to
+  bounded durable child tasks and an ordered aggregate.
 - User impact: authors duplicate similar tasks and cannot retry individual
   expanded units.
 - Security or durability impact: model-controlled unbounded expansion could
   exhaust resources.
-- Product decision: compile static matrices and deterministically expand
-  runtime arrays only from typed non-model inputs or validated bounded outputs.
+- Product decision: compile static foreach and matrix values only. Runtime or
+  model-controlled graph growth is outside the supported surface.
 - Required implementation: stable escaped child IDs, item binding, count
   limits, aggregate output, partial-failure rules, child inspection,
   repair/retry/replay, and task budgets.
@@ -251,7 +252,12 @@ complete, every entry must have exactly one final disposition:
 - Examples: small deterministic and agent matrices.
 - Live evidence: two-item OpenAI matrix.
 - Documentation: syntax, limits, IDs, and recovery.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Static typed lists and Cartesian axes compile
+  to stable digest-qualified child IDs and an ordered parent aggregate.
+  Deterministic verification covers bounds, malformed bindings, identity,
+  output aggregation, partial failure, failed-only child retry, sibling reuse,
+  and offline replay. Program state remains in progress until the bounded live
+  OpenAI matrix scenario executes.
 
 ### COND-001: Typed conditions and routers
 

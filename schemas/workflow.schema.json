@@ -702,6 +702,26 @@
           },
           "default": []
         },
+        "foreach": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForeachDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "matrix": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MatrixDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "memoryWrites": {
           "type": "array",
           "items": {
@@ -751,6 +771,51 @@
       "required": [
         "id",
         "uses"
+      ]
+    },
+    "ForeachDefinition": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": true
+        },
+        "as": {
+          "type": "string",
+          "default": "item"
+        },
+        "maxItems": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 32
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items"
+      ]
+    },
+    "MatrixDefinition": {
+      "type": "object",
+      "properties": {
+        "axes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": true
+          }
+        },
+        "maxItems": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 32
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "axes"
       ]
     },
     "FailureBehavior": {

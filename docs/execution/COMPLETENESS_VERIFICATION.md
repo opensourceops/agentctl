@@ -74,7 +74,8 @@ cargo xtask acceptance-container
 | Terminal retry | runtime/store identity, roots, acknowledgements, reconciliation, lineage, source immutability, and replay tests passed | packaged CLI scenario 30 and the 12-stage verification gate passed | verified |
 | Sensitive-state encryption | authenticated context, wrong-key, tamper, inventory, stale-writer trigger, rollback, rotation, checkpoint, and retained-schema tests passed | packaged CLI scenario 31 and the 12-stage verification gate passed | verified |
 | Secret references | environment compatibility, file bounds/missing/symlink containment, process allowlist/timeout/output/cancellation, zeroizing values, adapter redaction, and raw-database absence tests passed | packaged CLI scenario 32 and the 12-stage verification gate passed | verified |
-| Parallel/dynamic workflows | pending | pending | open |
+| Parallel scheduling | overlap, caps, conflicts, ordered atomic commits, approvals, cancellation, retry, repair, and replay tests passed | packaged CLI scenario 33 and OCI parallel run/replay passed | deterministic verified; live pending |
+| Foreach/matrix | compiler bounds/identity tests and runtime partial-failure, child retry, sibling reuse, aggregation, and replay tests passed | packaged CLI scenario 34 pending | deterministic in progress |
 | Conditions/loops/sub-workflows | pending | pending | open |
 | Compensation/handoffs/streaming | pending | pending | open |
 | MCP/A2A resilience | pending | pending | open |

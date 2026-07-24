@@ -31,4 +31,10 @@ persisted immutable memory snapshot, while task output, disjoint memory deltas,
 artifacts, failures, audit events, and the checkpoint commit atomically in
 compiled order.
 
+Static foreach and matrix declarations compile before a run is created. Every
+expanded child is a normal durable task with its own attempts, effects,
+fingerprint, output, retry/repair identity, and replay record. The parent is a
+pure aggregate task that records child IDs, states, outputs, and errors in
+stable expansion order.
+
 The artifact root is `artifacts/` beside the database. `agentctl artifacts` lists references and blobs, verifies hashes, exports bytes atomically, and performs reachability-based collection. GC excludes referenced blobs and active ingestion leases, recovers interrupted quarantine operations on startup, and cleans stale untracked blobs and partial temporary files.

@@ -10,6 +10,7 @@ The deterministic examples are exercised by `cargo xtask verify` and never requi
 - `policy-denial.yaml`: an explicit tool-policy denial.
 - `crash-resume.yaml`: effect-ledger write followed by observation; crash behavior is injected in runtime tests.
 - `parallel.yaml`: bounded parallel batches with disjoint working-memory writes and stable commits.
+- `matrix.yaml`: bounded static matrix expansion, stable child identities, and ordered aggregation.
 - `working-memory.yaml` and `long-term-memory.yaml`: separate memory lifecycles.
 - `fake-provider.yaml`: deterministic model-provider path.
 - `mcp.yaml` and `a2a.yaml`: local protocol fixtures, backed by the protocol crate's mock-server tests.

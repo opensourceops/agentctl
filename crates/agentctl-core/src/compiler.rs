@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::PLAN_FORMAT_VERSION;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::dsl::{
-    ActionKind, EffectClass, Idempotency, JsonMap, ProviderKind, RetryDefinition, ToolKind,
-    Workflow,
+    ActionKind, EffectClass, Idempotency, JsonMap, MAX_EXPANSION_ITEMS, ProviderKind,
+    RetryDefinition, TaskDefinition, ToolKind, Workflow,
 };
 use crate::template::{TemplateError, referenced_tasks, validate_expression};
 
@@ -26,6 +26,8 @@ pub struct CompiledTask {
     pub id: String,
     pub uses: TaskUse,
     pub needs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion: Option<CompiledExpansion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory_writes: Vec<String>,
     pub when: Option<String>,
@@ -38,11 +40,20 @@ pub struct CompiledTask {
     pub predictability: PlanPredictability,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledExpansion {
+    pub parent: String,
+    pub index: usize,
+    pub bindings: JsonMap,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "name")]
 pub enum TaskUse {
     Action(String),
     Agent(String),
+    Aggregate(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -135,12 +146,251 @@ impl ProviderCapability {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ExpandedTaskDefinition {
+    definition: TaskDefinition,
+    source_position: usize,
+    expansion: Option<CompiledExpansion>,
+    aggregate_children: Option<Vec<String>>,
+}
+
+fn expand_tasks(
+    workflow: &Workflow,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<ExpandedTaskDefinition> {
+    let mut expanded = Vec::new();
+    for (position, task) in workflow.spec.tasks.iter().enumerate() {
+        let bindings = match (&task.foreach, &task.matrix) {
+            (None, None) => {
+                expanded.push(ExpandedTaskDefinition {
+                    definition: task.clone(),
+                    source_position: position,
+                    expansion: None,
+                    aggregate_children: None,
+                });
+                continue;
+            }
+            (Some(_), Some(_)) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "task `{}` cannot declare both foreach and matrix expansion",
+                            task.id
+                        ),
+                    )
+                    .with_path(format!("spec.tasks[{position}]")),
+                );
+                continue;
+            }
+            (Some(foreach), None) => {
+                if !valid_identifier(&foreach.binding) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!("invalid foreach binding `{}`", foreach.binding),
+                        )
+                        .with_path(format!("spec.tasks[{position}].foreach.as")),
+                    );
+                    continue;
+                }
+                if task.vars.contains_key(&foreach.binding)
+                    || task.vars.contains_key("foreachIndex")
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!(
+                                "task `{}` foreach bindings conflict with existing task vars",
+                                task.id
+                            ),
+                        )
+                        .with_path(format!("spec.tasks[{position}].vars")),
+                    );
+                    continue;
+                }
+                if foreach.max_items == 0
+                    || foreach.max_items > MAX_EXPANSION_ITEMS
+                    || foreach.items.len() > foreach.max_items
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!(
+                                "task `{}` foreach expands to {} items, exceeding maxItems {} or framework maximum {MAX_EXPANSION_ITEMS}",
+                                task.id,
+                                foreach.items.len(),
+                                foreach.max_items
+                            ),
+                        )
+                        .with_path(format!("spec.tasks[{position}].foreach")),
+                    );
+                    continue;
+                }
+                foreach
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let mut values = JsonMap::new();
+                        values.insert(foreach.binding.clone(), item.clone());
+                        values.insert("foreachIndex".to_owned(), Value::from(index));
+                        values
+                    })
+                    .collect::<Vec<_>>()
+            }
+            (None, Some(matrix)) => {
+                if matrix.axes.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!("task `{}` matrix must declare at least one axis", task.id),
+                        )
+                        .with_path(format!("spec.tasks[{position}].matrix.axes")),
+                    );
+                    continue;
+                }
+                if task.vars.contains_key("matrix") || task.vars.contains_key("matrixIndex") {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!(
+                                "task `{}` matrix bindings conflict with existing task vars",
+                                task.id
+                            ),
+                        )
+                        .with_path(format!("spec.tasks[{position}].vars")),
+                    );
+                    continue;
+                }
+                if let Some(axis) = matrix.axes.keys().find(|name| !valid_identifier(name)) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!("invalid matrix axis `{axis}`"),
+                        )
+                        .with_path(format!("spec.tasks[{position}].matrix.axes")),
+                    );
+                    continue;
+                }
+                let count = matrix
+                    .axes
+                    .values()
+                    .try_fold(1_usize, |count, values| count.checked_mul(values.len()));
+                if matrix.max_items == 0
+                    || matrix.max_items > MAX_EXPANSION_ITEMS
+                    || count.is_none_or(|count| count > matrix.max_items)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SchemaViolation,
+                            file,
+                            format!(
+                                "task `{}` matrix exceeds maxItems {} or framework maximum {MAX_EXPANSION_ITEMS}",
+                                task.id, matrix.max_items
+                            ),
+                        )
+                        .with_path(format!("spec.tasks[{position}].matrix")),
+                    );
+                    continue;
+                }
+                let mut combinations = vec![JsonMap::new()];
+                for (axis, values) in &matrix.axes {
+                    let mut next = Vec::with_capacity(combinations.len() * values.len());
+                    for combination in &combinations {
+                        for value in values {
+                            let mut candidate = combination.clone();
+                            candidate.insert(axis.clone(), value.clone());
+                            next.push(candidate);
+                        }
+                    }
+                    combinations = next;
+                }
+                combinations
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, matrix)| {
+                        let mut values = JsonMap::new();
+                        values.insert(
+                            "matrix".to_owned(),
+                            Value::Object(matrix.into_iter().collect()),
+                        );
+                        values.insert("matrixIndex".to_owned(), Value::from(index));
+                        values
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let mut children = Vec::with_capacity(bindings.len());
+        for (index, values) in bindings.into_iter().enumerate() {
+            let id = expanded_task_id(&task.id, index, &values);
+            let mut child = task.clone();
+            child.id.clone_from(&id);
+            child.foreach = None;
+            child.matrix = None;
+            child.vars.extend(values.clone());
+            children.push(id.clone());
+            expanded.push(ExpandedTaskDefinition {
+                definition: child,
+                source_position: position,
+                expansion: Some(CompiledExpansion {
+                    parent: task.id.clone(),
+                    index,
+                    bindings: values,
+                }),
+                aggregate_children: None,
+            });
+        }
+
+        let mut aggregate = task.clone();
+        aggregate.needs.clone_from(&children);
+        aggregate.foreach = None;
+        aggregate.matrix = None;
+        aggregate.memory_writes.clear();
+        aggregate.when = None;
+        aggregate.vars.clear();
+        aggregate.input.clear();
+        aggregate.retry = RetryDefinition::default();
+        aggregate.timeout_seconds = None;
+        aggregate.output_schema = None;
+        expanded.push(ExpandedTaskDefinition {
+            definition: aggregate,
+            source_position: position,
+            expansion: None,
+            aggregate_children: Some(children),
+        });
+    }
+    expanded
+}
+
+fn expanded_task_id(parent: &str, index: usize, bindings: &JsonMap) -> String {
+    let encoded = serde_json::to_vec(bindings).unwrap_or_default();
+    let digest = sha256(&encoded);
+    format!("{parent}--{index:04}-{}", &digest[..12])
+}
+
 pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut tasks = BTreeMap::new();
     let mut declaration_order = Vec::new();
+    let mut source_positions = BTreeMap::new();
+    let expanded_tasks = expand_tasks(workflow, file, &mut diagnostics);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
 
-    for (position, task) in workflow.spec.tasks.iter().enumerate() {
+    for expanded in &expanded_tasks {
+        let position = expanded.source_position;
+        let task = &expanded.definition;
         if tasks.contains_key(&task.id) {
             diagnostics.push(
                 Diagnostic::error(
@@ -162,23 +412,27 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .with_path(format!("spec.tasks[{position}].id")),
             );
         }
-        let task_use = match parse_use(&task.uses) {
-            Some(TaskUse::Action(name)) if workflow.spec.actions.contains_key(&name) => {
-                TaskUse::Action(name)
-            }
-            Some(TaskUse::Agent(name)) if workflow.spec.agents.contains_key(&name) => {
-                TaskUse::Agent(name)
-            }
-            _ => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        DiagnosticCode::MissingReference,
-                        file,
-                        format!("task `{}` refers to unknown `{}`", task.id, task.uses),
-                    )
-                    .with_path(format!("spec.tasks[{position}].uses")),
-                );
-                continue;
+        let task_use = if let Some(children) = &expanded.aggregate_children {
+            TaskUse::Aggregate(children.clone())
+        } else {
+            match parse_use(&task.uses) {
+                Some(TaskUse::Action(name)) if workflow.spec.actions.contains_key(&name) => {
+                    TaskUse::Action(name)
+                }
+                Some(TaskUse::Agent(name)) if workflow.spec.agents.contains_key(&name) => {
+                    TaskUse::Agent(name)
+                }
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::MissingReference,
+                            file,
+                            format!("task `{}` refers to unknown `{}`", task.id, task.uses),
+                        )
+                        .with_path(format!("spec.tasks[{position}].uses")),
+                    );
+                    continue;
+                }
             }
         };
         let mut input = match &task_use {
@@ -188,18 +442,22 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .get(name)
                 .map(|action| action.defaults.clone())
                 .unwrap_or_default(),
-            TaskUse::Agent(_) => JsonMap::new(),
+            TaskUse::Agent(_) | TaskUse::Aggregate(_) => JsonMap::new(),
         };
         input.extend(task.input.clone());
-        let memory_writes = task_memory_writes(
-            workflow,
-            &task_use,
-            &input,
-            &task.memory_writes,
-            file,
-            position,
-            &mut diagnostics,
-        );
+        let memory_writes = if matches!(task_use, TaskUse::Aggregate(_)) {
+            Vec::new()
+        } else {
+            task_memory_writes(
+                workflow,
+                &task_use,
+                &input,
+                &task.memory_writes,
+                file,
+                position,
+                &mut diagnostics,
+            )
+        };
         let mut vars = match &task_use {
             TaskUse::Agent(name) => workflow
                 .spec
@@ -207,16 +465,18 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .get(name)
                 .map(|agent| agent.vars.clone())
                 .unwrap_or_default(),
-            TaskUse::Action(_) => JsonMap::new(),
+            TaskUse::Action(_) | TaskUse::Aggregate(_) => JsonMap::new(),
         };
         vars.extend(task.vars.clone());
         declaration_order.push(task.id.clone());
+        source_positions.insert(task.id.clone(), position);
         tasks.insert(
             task.id.clone(),
             CompiledTask {
                 id: task.id.clone(),
                 uses: task_use,
                 needs: task.needs.clone(),
+                expansion: expanded.expansion.clone(),
                 memory_writes,
                 when: task.when.clone(),
                 vars,
@@ -232,10 +492,11 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         );
     }
 
-    for (position, id) in declaration_order.iter().enumerate() {
+    for id in &declaration_order {
         let Some(task) = tasks.get(id) else {
             continue;
         };
+        let position = source_positions.get(id).copied().unwrap_or_default();
         for dependency in &task.needs {
             if !tasks.contains_key(dependency) {
                 diagnostics.push(
@@ -291,6 +552,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .map_or(PlanPredictability::RequiresExecution, |action| {
                     action_predictability(action.kind)
                 }),
+            TaskUse::Aggregate(_) => PlanPredictability::FullyPredictable,
         };
     }
     let predictability = tasks
@@ -385,7 +647,7 @@ fn task_memory_writes(
             .actions
             .get(name)
             .is_some_and(|action| action.kind == ActionKind::MemoryWrite),
-        TaskUse::Agent(_) => false,
+        TaskUse::Agent(_) | TaskUse::Aggregate(_) => false,
     };
     if !is_memory_write {
         if !declared.is_empty() {
@@ -591,6 +853,7 @@ fn plan_requirements(
                     predictability: task.predictability,
                 }]
             }
+            TaskUse::Aggregate(_) => Vec::new(),
         })
         .collect();
     PlanRequirements {
@@ -1218,6 +1481,123 @@ spec:
         );
         let plan = compile(&workflow, "fixture.yaml").expect("compiles");
         assert_eq!(plan.order, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn foreach_and_matrix_expand_to_stable_children_and_aggregates() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: expansion }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: each
+      uses: "action:assign"
+      foreach:
+        items: [alpha, beta]
+        as: value
+        maxItems: 2
+      with: { value: "${{ vars.value }}", index: "${{ vars.foreachIndex }}" }
+    - id: combinations
+      uses: "action:assign"
+      matrix:
+        axes:
+          os: [linux, macos]
+          tier: [small, large]
+        maxItems: 4
+      with:
+        os: "${{ vars.matrix.os }}"
+        tier: "${{ vars.matrix.tier }}"
+        index: "${{ vars.matrixIndex }}"
+    - { id: done, uses: "action:assign", needs: [each, combinations] }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("compiles");
+        let second = compile(&workflow, "fixture.yaml").expect("compiles deterministically");
+        assert_eq!(plan, second);
+
+        let each_children = match &plan.tasks["each"].uses {
+            TaskUse::Aggregate(children) => children,
+            other => panic!("expected foreach aggregate, got {other:?}"),
+        };
+        assert_eq!(each_children.len(), 2);
+        assert!(each_children[0].starts_with("each--0000-"));
+        assert_eq!(
+            plan.tasks[&each_children[1]]
+                .expansion
+                .as_ref()
+                .expect("expansion")
+                .bindings["value"],
+            Value::String("beta".to_owned())
+        );
+        assert_eq!(plan.tasks["each"].needs, *each_children);
+
+        let matrix_children = match &plan.tasks["combinations"].uses {
+            TaskUse::Aggregate(children) => children,
+            other => panic!("expected matrix aggregate, got {other:?}"),
+        };
+        assert_eq!(matrix_children.len(), 4);
+        assert_eq!(
+            plan.tasks[&matrix_children[2]]
+                .expansion
+                .as_ref()
+                .expect("expansion")
+                .bindings["matrix"],
+            serde_json::json!({"os": "macos", "tier": "small"})
+        );
+        assert_eq!(
+            plan.tasks["done"].needs,
+            ["each".to_owned(), "combinations".to_owned()]
+        );
+    }
+
+    #[test]
+    fn expansion_bounds_and_binding_collisions_are_rejected() {
+        let too_many = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: expansion-bound }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: each
+      uses: "action:assign"
+      foreach: { items: [a, b], maxItems: 1 }
+"#,
+        );
+        let diagnostics = compile(&too_many, "fixture.yaml").expect_err("bound rejected");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("foreach expands to 2 items"))
+        );
+
+        let collision = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: expansion-collision }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: each
+      uses: "action:assign"
+      vars: { item: existing }
+      foreach: { items: [a] }
+"#,
+        );
+        let diagnostics = compile(&collision, "fixture.yaml").expect_err("collision rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("foreach bindings conflict with existing task vars")
+        }));
     }
 
     #[test]
