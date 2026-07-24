@@ -400,6 +400,7 @@ fn verify_examples(root: &Path) -> Result<()> {
         "hello.yaml",
         "dataflow.yaml",
         "condition.yaml",
+        "parallel.yaml",
         "working-memory.yaml",
         "long-term-memory.yaml",
         "fake-provider.yaml",

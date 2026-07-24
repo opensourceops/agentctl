@@ -250,6 +250,7 @@ pub const DEFAULT_PROCESS_STREAM_LIMIT_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_PROCESS_COMBINED_LIMIT_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PROCESS_OUTPUT_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PROCESS_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+pub const MAX_TASK_CONCURRENCY: usize = 64;
 
 impl ActionDefinition {
     #[must_use]
@@ -419,6 +420,8 @@ pub struct TaskDefinition {
     pub uses: String,
     #[serde(default)]
     pub needs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_writes: Vec<String>,
     #[serde(default)]
     pub when: Option<String>,
     #[serde(default)]
@@ -889,17 +892,16 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
             .with_path("spec.tasks"),
         );
     }
-    if workflow.spec.runtime.max_concurrency != 1 {
+    if workflow.spec.runtime.max_concurrency == 0
+        || workflow.spec.runtime.max_concurrency > MAX_TASK_CONCURRENCY
+    {
         diagnostics.push(
             Diagnostic::error(
                 DiagnosticCode::SchemaViolation,
                 file,
-                "v1alpha1 requires runtime.maxConcurrency: 1",
+                format!("runtime.maxConcurrency must be between 1 and {MAX_TASK_CONCURRENCY}"),
             )
-            .with_path("spec.runtime.maxConcurrency")
-            .with_help(
-                "parallel scheduling is deferred until deterministic merge semantics are versioned",
-            ),
+            .with_path("spec.runtime.maxConcurrency"),
         );
     }
     if workflow.spec.runtime.default_timeout_seconds == 0

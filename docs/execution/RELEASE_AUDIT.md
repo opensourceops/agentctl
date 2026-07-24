@@ -222,7 +222,7 @@ Coverage percentage was not invented; `cargo-llvm-cov` was unavailable. Timing-s
 
 - Dispatch the configured Linux amd64, macOS, Windows, scan/SBOM, and external pipeline gates; until then they remain CI-configured or documentation-reviewed only.
 - Expand Azure/Anthropic/Google adapter negative/error/cancellation/tool-continuation coverage before raising their maturity beyond focused mock mapping.
-- Single-host SQLite, sequential scheduling, manual uncertain-effect reconciliation, alpha schema evolution, and policy-not-sandbox limitations remain intentional.
+- Single-host SQLite, local bounded parallel scheduling, explicit uncertain-effect reconciliation, alpha schema evolution, and policy-not-sandbox limitations remain intentional.
 - Tool-using OpenAI/Azure `store: false` remains unsupported until full stateless response-item replay is implemented.
 - Container bind mounts require deliberate UID/GID 65532 provisioning and protected collection of state, which may contain prompts and outputs.
 - Formal external MCP/A2A/provider conformance suites and long-horizon upgrade fixtures are deferred.

@@ -58,6 +58,7 @@ See [Retry a terminal workflow](docs/guides/TERMINAL_RETRY.md) and [Repair a fai
 For retained pre-schema-5 history, use [Legacy run upgrade](docs/guides/LEGACY_RUN_UPGRADE.md). For ambiguous external outcomes, use [Effect reconciliation](docs/guides/EFFECT_RECONCILIATION.md).
 For confidential workflow history, use [Sensitive-state encryption](docs/guides/SENSITIVE_STATE_ENCRYPTION.md).
 For environment, mounted-file, and policy-gated process credentials, use [Secret references](docs/guides/SECRET_REFERENCES.md).
+For bounded independent branches and working-memory conflict rules, use [Deterministic parallel tasks](docs/guides/PARALLEL_TASKS.md).
 
 ## Safety boundary
 

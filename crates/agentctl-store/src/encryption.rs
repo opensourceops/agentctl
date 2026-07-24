@@ -75,6 +75,10 @@ pub(crate) const SENSITIVE_COLUMNS: &[SensitiveColumn] = &[
         column: "reuse_decision_json",
     },
     SensitiveColumn {
+        table: "task_states",
+        column: "execution_memory_json",
+    },
+    SensitiveColumn {
         table: "effects",
         column: "input_json",
     },

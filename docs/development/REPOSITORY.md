@@ -8,7 +8,7 @@ The production implementation is a Rust workspace. The remaining top-level TypeS
 | --- | --- |
 | `agentctl-core` | strict DSL, migration, compiler, templates, state, effects, policy, provider and tool contracts |
 | `agentctl-store` | versioned SQLite persistence, migrations, checkpoints, approvals, audit, trace, sessions, tool calls, memory |
-| `agentctl-runtime` | sequential scheduler, actions, bounded agent loop, resume, replay, fork, cancellation |
+| `agentctl-runtime` | bounded deterministic scheduler, actions, bounded agent loop, resume, replay, fork, cancellation |
 | `agentctl-providers` | native OpenAI, Azure OpenAI, Anthropic, Google, and fake adapters |
 | `agentctl-protocols` | MCP and A2A clients |
 | `agentctl-observability` | typed events, test sink, and OpenTelemetry bridge |

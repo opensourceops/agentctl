@@ -25,6 +25,10 @@ Cancellation is both an injected token and a durable run flag. CLI SIGINT and SI
 
 A repaired agent task starts a fresh provider session. Source `previous_response_id`, incomplete turns, pending tool calls, and reasoning state are not copied. Validated task output and reconstructed memory are the only cross-task/cross-run dataflow.
 
-Clock and ID generation are injected; test providers/tools/protocol handlers are injected. The current scheduler is sequential, so output and memory commit order is task declaration order.
+Clock and ID generation are injected; test providers/tools/protocol handlers
+are injected. Ready tasks execute in bounded stable batches. Each reads a
+persisted immutable memory snapshot, while task output, disjoint memory deltas,
+artifacts, failures, audit events, and the checkpoint commit atomically in
+compiled order.
 
 The artifact root is `artifacts/` beside the database. `agentctl artifacts` lists references and blobs, verifies hashes, exports bytes atomically, and performs reachability-based collection. GC excludes referenced blobs and active ingestion leases, recovers interrupted quarantine operations on startup, and cleans stale untracked blobs and partial temporary files.

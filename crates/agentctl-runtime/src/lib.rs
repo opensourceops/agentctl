@@ -25,11 +25,12 @@ use agentctl_observability::{NoopTraceSink, SpanKind, TraceEvent, TracePhase, Tr
 use agentctl_store::{
     ApprovalRequest, ArtifactRecord, CheckpointRecord, EffectReconciliationRecord,
     EffectReconciliationRequest, LegacyTaskUpgrade, ReconciliationStatus,
-    ReusedTaskMaterialization, RunMode, SqliteStore, StoreError, TaskCompletionMetadata,
-    TaskDisposition, TaskExecutionMetadata, TaskRecord,
+    ReusedTaskMaterialization, RunMode, SqliteStore, StoreError, TaskBatchOutcome, TaskBatchResult,
+    TaskCompletionMetadata, TaskDisposition, TaskExecutionMetadata, TaskRecord,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -2335,6 +2336,585 @@ impl Runtime {
         options: RunOptions,
         cancellation: &CancellationToken,
     ) -> Result<RunOutcome, RuntimeError> {
+        let run = self.store.load_run(run_id)?;
+        let workflow: Workflow = serde_json::from_value(run.workflow)?;
+        if workflow.spec.runtime.max_concurrency == 1 {
+            self.drive_sequential(run_id, trace_id, options, cancellation)
+                .await
+        } else {
+            self.drive_parallel(run_id, trace_id, options, cancellation)
+                .await
+        }
+    }
+
+    async fn drive_parallel(
+        &self,
+        run_id: &str,
+        trace_id: &str,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<RunOutcome, RuntimeError> {
+        loop {
+            let run = self.store.load_run(run_id)?;
+            if run.cancellation_requested || cancellation.is_cancelled() {
+                self.cancel_non_terminal(run_id, trace_id)?;
+                return Ok(RunOutcome {
+                    run_id: run_id.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    state: RunState::Cancelled,
+                    output: None,
+                });
+            }
+            let workflow: Workflow = serde_json::from_value(run.workflow.clone())?;
+            let policy = PolicyEngine::new(workflow.spec.policy.clone(), &self.base_path)?;
+            let tasks = self.store.list_tasks(run_id)?;
+            if tasks.iter().all(|task| task.state.is_terminal()) {
+                let failed = tasks.iter().any(|task| task.state == TaskState::Failed);
+                let state = if failed {
+                    RunState::Failed
+                } else if tasks.iter().any(|task| task.state == TaskState::Cancelled) {
+                    RunState::Cancelled
+                } else {
+                    RunState::Succeeded
+                };
+                let output = collect_outputs(&run, &tasks, &workflow.spec.outputs)?;
+                self.store.update_run_state(
+                    run_id,
+                    state,
+                    Some(&output),
+                    self.clock.now(),
+                    trace_id,
+                )?;
+                self.trace(
+                    TraceEvent::new(
+                        SpanKind::Run,
+                        if failed {
+                            TracePhase::Failed
+                        } else {
+                            TracePhase::Completed
+                        },
+                        "run.execute",
+                        trace_id,
+                        run_id,
+                        self.clock.now(),
+                    )
+                    .attributes(serde_json::json!({"state": state}), &[]),
+                )?;
+                return Ok(RunOutcome {
+                    run_id: run_id.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    state,
+                    output: Some(output),
+                });
+            }
+
+            if let Some(failed) = tasks.iter().find(|record| {
+                record.state == TaskState::Failed
+                    && run
+                        .plan
+                        .tasks
+                        .get(&record.task_id)
+                        .is_some_and(|task| task.failure == FailureBehavior::Stop)
+            }) {
+                if run.state == RunState::Running {
+                    self.store.update_run_state(
+                        run_id,
+                        RunState::Failed,
+                        None,
+                        self.clock.now(),
+                        trace_id,
+                    )?;
+                }
+                return Err(RuntimeError::RunFailed {
+                    run_id: run_id.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    task: failed.task_id.clone(),
+                    message: failed
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "task failed".to_owned()),
+                });
+            }
+
+            let context = context_for(&run, &tasks)?;
+            let mut prepared_pending = false;
+            for task_id in &run.plan.order {
+                let Some(record) = tasks.iter().find(|record| &record.task_id == task_id) else {
+                    return Err(RuntimeError::InvalidState(format!(
+                        "task `{task_id}` missing"
+                    )));
+                };
+                if record.state != TaskState::Pending {
+                    continue;
+                }
+                let task = &run.plan.tasks[task_id];
+                let dependencies = task
+                    .needs
+                    .iter()
+                    .filter_map(|needed| {
+                        tasks.iter().find(|candidate| &candidate.task_id == needed)
+                    })
+                    .collect::<Vec<_>>();
+                if !dependencies
+                    .iter()
+                    .all(|dependency| dependency.state.is_terminal())
+                {
+                    continue;
+                }
+                if dependencies.iter().any(|dependency| {
+                    matches!(
+                        dependency.state,
+                        TaskState::Failed | TaskState::Cancelled | TaskState::Skipped
+                    )
+                }) {
+                    self.store.transition_task(
+                        run_id,
+                        task_id,
+                        TaskState::Skipped,
+                        None,
+                        Some("dependency did not succeed"),
+                        None,
+                        self.clock.now(),
+                        trace_id,
+                    )?;
+                    prepared_pending = true;
+                    continue;
+                }
+                if let Some(condition) = &task.when
+                    && !evaluate_when(condition, &context)?
+                {
+                    self.store.transition_task(
+                        run_id,
+                        task_id,
+                        TaskState::Skipped,
+                        Some(&serde_json::json!({"reason": "when condition was false"})),
+                        None,
+                        None,
+                        self.clock.now(),
+                        trace_id,
+                    )?;
+                    prepared_pending = true;
+                    continue;
+                }
+                self.store.transition_task(
+                    run_id,
+                    task_id,
+                    TaskState::Ready,
+                    None,
+                    None,
+                    None,
+                    self.clock.now(),
+                    trace_id,
+                )?;
+                prepared_pending = true;
+            }
+            if prepared_pending {
+                continue;
+            }
+
+            let batch = ready_task_batch(&run.plan, &tasks, workflow.spec.runtime.max_concurrency);
+            if batch.is_empty() {
+                let retrying = tasks
+                    .iter()
+                    .filter(|task| task.state == TaskState::RetryScheduled)
+                    .collect::<Vec<_>>();
+                if !retrying.is_empty() {
+                    let backoff_ms = retrying
+                        .iter()
+                        .filter_map(|record| run.plan.tasks.get(&record.task_id))
+                        .map(|task| task.retry.backoff_ms)
+                        .max()
+                        .unwrap_or_default();
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                        () = cancellation.cancelled() => {
+                            self.cancel_non_terminal(run_id, trace_id)?;
+                            return Ok(RunOutcome {
+                                run_id: run_id.to_owned(),
+                                trace_id: trace_id.to_owned(),
+                                state: RunState::Cancelled,
+                                output: None,
+                            });
+                        },
+                    }
+                    for record in retrying {
+                        self.store.transition_task(
+                            run_id,
+                            &record.task_id,
+                            TaskState::Ready,
+                            None,
+                            None,
+                            None,
+                            self.clock.now(),
+                            trace_id,
+                        )?;
+                    }
+                    continue;
+                }
+                if tasks.iter().any(|task| {
+                    matches!(
+                        task.state,
+                        TaskState::WaitingForApproval | TaskState::WaitingForEffect
+                    )
+                }) {
+                    if run.state == RunState::Running {
+                        self.store.update_run_state(
+                            run_id,
+                            RunState::Paused,
+                            None,
+                            self.clock.now(),
+                            trace_id,
+                        )?;
+                    }
+                    return Ok(RunOutcome {
+                        run_id: run_id.to_owned(),
+                        trace_id: trace_id.to_owned(),
+                        state: RunState::Paused,
+                        output: None,
+                    });
+                }
+                return Err(RuntimeError::InvalidState(
+                    "no runnable task exists and the run is not terminal".to_owned(),
+                ));
+            }
+
+            for task in &batch {
+                let record = tasks
+                    .iter()
+                    .find(|record| record.task_id == task.id)
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidState(format!("task `{}` missing", task.id))
+                    })?;
+                if record.state == TaskState::Ready {
+                    self.store.transition_task(
+                        run_id,
+                        &task.id,
+                        TaskState::Running,
+                        None,
+                        None,
+                        None,
+                        self.clock.now(),
+                        trace_id,
+                    )?;
+                    self.trace(
+                        TraceEvent::new(
+                            SpanKind::Task,
+                            TracePhase::Started,
+                            "task.execute",
+                            trace_id,
+                            run_id,
+                            self.clock.now(),
+                        )
+                        .task(&task.id)
+                        .attributes(
+                            serde_json::json!({
+                                "scheduler": "stable_parallel_batch",
+                                "maxConcurrency": workflow.spec.runtime.max_concurrency,
+                            }),
+                            &[],
+                        ),
+                    )?;
+                }
+            }
+
+            let running = self.store.list_tasks(run_id)?;
+            let task_outputs = running
+                .iter()
+                .filter_map(|record| {
+                    record
+                        .output
+                        .clone()
+                        .map(|output| (record.task_id.clone(), output))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let mut prepared = Vec::with_capacity(batch.len());
+            for task in batch {
+                let record = running
+                    .iter()
+                    .find(|record| record.task_id == task.id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidState(format!("task `{}` missing", task.id))
+                    })?;
+                let execution_memory = record
+                    .execution_memory
+                    .clone()
+                    .unwrap_or_else(|| run.working_memory.clone());
+                let execution_contract = if options.check {
+                    serde_json::json!({})
+                } else {
+                    task_output_schema(&workflow, task).unwrap_or_else(|| serde_json::json!({}))
+                };
+                let execution_metadata = TaskExecutionMetadata {
+                    metadata_version: TASK_METADATA_VERSION,
+                    definition_fingerprint: task_definition_fingerprint(
+                        &workflow, task, &policy, None,
+                    )?,
+                    input_digest: resolved_input_digest(
+                        run.inputs.as_object().ok_or_else(|| {
+                            RuntimeError::InvalidState("run inputs must be an object".to_owned())
+                        })?,
+                        &execution_memory,
+                        &task_outputs,
+                        task,
+                    )?,
+                    output_contract_fingerprint: versioned_json_digest(&execution_contract)?,
+                };
+                self.store.record_task_execution_metadata(
+                    run_id,
+                    &task.id,
+                    &execution_metadata,
+                    &execution_memory,
+                    self.clock.now(),
+                )?;
+                let mut execution_run = run.clone();
+                execution_run.working_memory = execution_memory;
+                prepared.push(PreparedBatchTask {
+                    task,
+                    record,
+                    run: execution_run,
+                    execution_contract,
+                    execution_metadata,
+                });
+            }
+
+            let executions = join_all(prepared.iter().map(|prepared| async {
+                self.execute_task(
+                    &workflow,
+                    &prepared.run,
+                    &prepared.record,
+                    prepared.task,
+                    &policy,
+                    trace_id,
+                    options,
+                    cancellation,
+                )
+                .await
+                .and_then(|execution| {
+                    if let TaskExecution::Complete { output, .. } = &execution {
+                        validate_output_contract(&prepared.execution_contract, output).map_err(
+                            |message| RuntimeError::Task {
+                                task: prepared.task.id.clone(),
+                                message: format!("task output contract failed: {message}"),
+                            },
+                        )?;
+                    }
+                    Ok(execution)
+                })
+            }))
+            .await;
+
+            if cancellation.is_cancelled()
+                || executions
+                    .iter()
+                    .any(|result| matches!(result, Err(RuntimeError::Cancelled)))
+            {
+                self.cancel_non_terminal(run_id, trace_id)?;
+                return Ok(RunOutcome {
+                    run_id: run_id.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    state: RunState::Cancelled,
+                    output: None,
+                });
+            }
+
+            let mut committed_memory = run.working_memory.clone();
+            let mut has_memory_update = false;
+            let mut results = Vec::new();
+            let mut paused = false;
+            let mut stop_failure = None;
+            let mut retrying = Vec::new();
+            let all_effects = self.store.list_effects(run_id)?;
+            for (prepared, execution) in prepared.iter().zip(executions) {
+                match execution {
+                    Ok(TaskExecution::Complete { output, memory }) => {
+                        let delta = state_delta(&prepared.run.working_memory, memory.as_ref())?;
+                        validate_memory_delta(prepared.task, &delta)?;
+                        if memory.is_some() {
+                            apply_state_delta(&mut committed_memory, &delta)?;
+                            has_memory_update = true;
+                        }
+                        let completion = TaskCompletionMetadata {
+                            execution: TaskExecutionMetadata {
+                                definition_fingerprint: task_definition_fingerprint(
+                                    &workflow,
+                                    prepared.task,
+                                    &policy,
+                                    Some(&all_effects),
+                                )?,
+                                ..prepared.execution_metadata.clone()
+                            },
+                            output_digest: versioned_json_digest(&output)?,
+                            state_delta_digest: versioned_json_digest(&delta)?,
+                            artifact_manifest: collect_artifacts(
+                                &self.store,
+                                &policy,
+                                &all_effects,
+                                run_id,
+                                &prepared.task.id,
+                                self.clock.now(),
+                            )?,
+                            state_delta: delta,
+                        };
+                        results.push(TaskBatchResult {
+                            task_id: prepared.task.id.clone(),
+                            outcome: TaskBatchOutcome::Succeeded {
+                                output,
+                                metadata: Box::new(completion),
+                            },
+                        });
+                    }
+                    Ok(TaskExecution::Paused) => paused = true,
+                    Err(error) => {
+                        let message = error.to_string();
+                        if prepared.record.attempt < prepared.task.retry.max_attempts
+                            && retryable_error(&error)
+                        {
+                            results.push(TaskBatchResult {
+                                task_id: prepared.task.id.clone(),
+                                outcome: TaskBatchOutcome::RetryScheduled {
+                                    error: message.clone(),
+                                },
+                            });
+                            retrying
+                                .push((prepared.task.id.clone(), prepared.task.retry.backoff_ms));
+                        } else {
+                            results.push(TaskBatchResult {
+                                task_id: prepared.task.id.clone(),
+                                outcome: TaskBatchOutcome::Failed {
+                                    error: message.clone(),
+                                },
+                            });
+                            if prepared.task.failure == FailureBehavior::Stop
+                                && stop_failure.is_none()
+                            {
+                                stop_failure = Some((prepared.task.id.clone(), message));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !results.is_empty() {
+                self.store.commit_task_batch(
+                    run_id,
+                    &results,
+                    has_memory_update.then_some(&committed_memory),
+                    stop_failure.is_some(),
+                    self.clock.now(),
+                    trace_id,
+                )?;
+            }
+            for result in &results {
+                match &result.outcome {
+                    TaskBatchOutcome::Succeeded { .. } => {
+                        self.trace(
+                            TraceEvent::new(
+                                SpanKind::Task,
+                                TracePhase::Completed,
+                                "task.execute",
+                                trace_id,
+                                run_id,
+                                self.clock.now(),
+                            )
+                            .task(&result.task_id),
+                        )?;
+                    }
+                    TaskBatchOutcome::Failed { error } => {
+                        self.trace(
+                            TraceEvent::new(
+                                SpanKind::Task,
+                                TracePhase::Failed,
+                                "task.execute",
+                                trace_id,
+                                run_id,
+                                self.clock.now(),
+                            )
+                            .task(&result.task_id)
+                            .attributes(serde_json::json!({"error": error}), &[]),
+                        )?;
+                    }
+                    TaskBatchOutcome::RetryScheduled { error } => {
+                        self.trace(
+                            TraceEvent::new(
+                                SpanKind::Retry,
+                                TracePhase::Waiting,
+                                "task.retry",
+                                trace_id,
+                                run_id,
+                                self.clock.now(),
+                            )
+                            .task(&result.task_id)
+                            .attributes(serde_json::json!({"error": error}), &[]),
+                        )?;
+                    }
+                }
+            }
+
+            if let Some((task, message)) = stop_failure {
+                return Err(RuntimeError::RunFailed {
+                    run_id: run_id.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    task,
+                    message,
+                });
+            }
+            if paused {
+                self.store.update_run_state(
+                    run_id,
+                    RunState::Paused,
+                    None,
+                    self.clock.now(),
+                    trace_id,
+                )?;
+                return Ok(RunOutcome {
+                    run_id: run_id.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    state: RunState::Paused,
+                    output: None,
+                });
+            }
+            if !retrying.is_empty() {
+                let backoff_ms = retrying
+                    .iter()
+                    .map(|(_, backoff_ms)| *backoff_ms)
+                    .max()
+                    .unwrap_or_default();
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                    () = cancellation.cancelled() => {
+                        self.cancel_non_terminal(run_id, trace_id)?;
+                        return Ok(RunOutcome {
+                            run_id: run_id.to_owned(),
+                            trace_id: trace_id.to_owned(),
+                            state: RunState::Cancelled,
+                            output: None,
+                        });
+                    },
+                }
+                for (task_id, _) in retrying {
+                    self.store.transition_task(
+                        run_id,
+                        &task_id,
+                        TaskState::Ready,
+                        None,
+                        None,
+                        None,
+                        self.clock.now(),
+                        trace_id,
+                    )?;
+                }
+            }
+        }
+    }
+
+    async fn drive_sequential(
+        &self,
+        run_id: &str,
+        trace_id: &str,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<RunOutcome, RuntimeError> {
         loop {
             let run = self.store.load_run(run_id)?;
             if run.cancellation_requested || cancellation.is_cancelled() {
@@ -2518,6 +3098,7 @@ impl Runtime {
                 run_id,
                 &task.id,
                 &execution_metadata,
+                &run.working_memory,
                 self.clock.now(),
             )?;
             let execution = self
@@ -2740,6 +3321,19 @@ impl Runtime {
                 let action = workflow.spec.actions.get(name).ok_or_else(|| {
                     RuntimeError::InvalidState(format!("action `{name}` disappeared after compile"))
                 })?;
+                if action.kind == ActionKind::MemoryWrite {
+                    let key = required_string(&input, "key")?;
+                    if (workflow.spec.runtime.max_concurrency > 1 || !task.memory_writes.is_empty())
+                        && !task.memory_writes.contains(&key)
+                    {
+                        return Err(RuntimeError::Task {
+                            task: task.id.clone(),
+                            message: format!(
+                                "resolved working-memory key `{key}` is not declared in memoryWrites"
+                            ),
+                        });
+                    }
+                }
                 self.execute_action(
                     workflow,
                     run,
@@ -3933,8 +4527,60 @@ impl Runtime {
             Err(StoreError::EffectNotFound(_)) => {}
             Err(error) => return Err(RuntimeError::Store(error)),
         }
-        self.store
-            .record_effect_request(request, self.clock.now())?;
+        let context = PolicyContext {
+            run_id: request.run_id.clone(),
+            trace_id: request.trace_id.clone(),
+            task_id: request.task_id.clone(),
+            agent: agent.map(ToOwned::to_owned),
+            tool: tool.to_owned(),
+            capability: capability.to_owned(),
+            effect_class: request.effect_class,
+            risk: request.risk,
+            resource: None,
+            provider: (request.effect_class == EffectClass::Model)
+                .then(|| request.operation.clone()),
+            input: request.input.clone(),
+            interactive,
+        };
+        let decision = policy.decide_with_approval(&context, approval);
+        match decision {
+            PolicyDecision::Allow { .. } => {
+                self.store
+                    .record_effect_request(request, self.clock.now())?;
+                self.trace_effect_request(request)?;
+                Ok(PreparedEffect::Execute)
+            }
+            PolicyDecision::Deny { reason } => Err(RuntimeError::Task {
+                task: request.task_id.clone(),
+                message: format!("policy denied effect: {reason}"),
+            }),
+            PolicyDecision::RequireApproval { reason } => {
+                let approval_id = format!("approval-{}", &request.id[..16]);
+                self.store.create_approval(
+                    request,
+                    &ApprovalRequest {
+                        approval_id,
+                        run_id: request.run_id.clone(),
+                        effect_id: request.id.clone(),
+                        task_id: request.task_id.clone(),
+                        agent: agent.map(ToOwned::to_owned),
+                        tool: tool.to_owned(),
+                        capability: capability.to_owned(),
+                        risk: format!("{:?}", request.risk).to_ascii_lowercase(),
+                        redacted_input: redact(&request.input, &[]),
+                        expected_effect: request.expected_effect.clone(),
+                        reason,
+                        trace_id: request.trace_id.clone(),
+                        requested_at: self.clock.now(),
+                    },
+                )?;
+                self.trace_effect_request(request)?;
+                Ok(PreparedEffect::Paused)
+            }
+        }
+    }
+
+    fn trace_effect_request(&self, request: &EffectRequest) -> Result<(), RuntimeError> {
         self.trace(
             TraceEvent::new(
                 match request.effect_class {
@@ -3961,59 +4607,7 @@ impl Runtime {
                 }),
                 &[],
             ),
-        )?;
-        let context = PolicyContext {
-            run_id: request.run_id.clone(),
-            trace_id: request.trace_id.clone(),
-            task_id: request.task_id.clone(),
-            agent: agent.map(ToOwned::to_owned),
-            tool: tool.to_owned(),
-            capability: capability.to_owned(),
-            effect_class: request.effect_class,
-            risk: request.risk,
-            resource: None,
-            provider: (request.effect_class == EffectClass::Model)
-                .then(|| request.operation.clone()),
-            input: request.input.clone(),
-            interactive,
-        };
-        let decision = policy.decide_with_approval(&context, approval);
-        match decision {
-            PolicyDecision::Allow { .. } => Ok(PreparedEffect::Execute),
-            PolicyDecision::Deny { reason } => Err(RuntimeError::Task {
-                task: request.task_id.clone(),
-                message: format!("policy denied effect: {reason}"),
-            }),
-            PolicyDecision::RequireApproval { reason } => {
-                let approval_id = format!("approval-{}", &request.id[..16]);
-                self.store.create_approval(&ApprovalRequest {
-                    approval_id,
-                    run_id: request.run_id.clone(),
-                    effect_id: request.id.clone(),
-                    task_id: request.task_id.clone(),
-                    agent: agent.map(ToOwned::to_owned),
-                    tool: tool.to_owned(),
-                    capability: capability.to_owned(),
-                    risk: format!("{:?}", request.risk).to_ascii_lowercase(),
-                    redacted_input: redact(&request.input, &[]),
-                    expected_effect: request.expected_effect.clone(),
-                    reason,
-                    trace_id: request.trace_id.clone(),
-                    requested_at: self.clock.now(),
-                })?;
-                self.store.transition_task(
-                    &request.run_id,
-                    &request.task_id,
-                    TaskState::WaitingForApproval,
-                    None,
-                    None,
-                    None,
-                    self.clock.now(),
-                    &request.trace_id,
-                )?;
-                Ok(PreparedEffect::Paused)
-            }
-        }
+        )
     }
 
     fn cancel_non_terminal(&self, run_id: &str, trace_id: &str) -> Result<(), RuntimeError> {
@@ -4077,6 +4671,14 @@ enum TaskExecution {
         memory: Option<Value>,
     },
     Paused,
+}
+
+struct PreparedBatchTask<'a> {
+    task: &'a agentctl_core::CompiledTask,
+    record: TaskRecord,
+    run: agentctl_store::RunRecord,
+    execution_contract: Value,
+    execution_metadata: TaskExecutionMetadata,
 }
 
 fn repair_block(
@@ -4957,6 +5559,72 @@ fn next_task<'a>(
     })
 }
 
+fn ready_task_batch<'a>(
+    plan: &'a CompiledPlan,
+    records: &[TaskRecord],
+    limit: usize,
+) -> Vec<&'a agentctl_core::CompiledTask> {
+    plan.order
+        .iter()
+        .filter_map(|id| {
+            let record = records.iter().find(|record| &record.task_id == id)?;
+            if !matches!(record.state, TaskState::Ready | TaskState::Running) {
+                return None;
+            }
+            let task = plan.tasks.get(id)?;
+            task.needs
+                .iter()
+                .all(|needed| {
+                    records
+                        .iter()
+                        .find(|record| &record.task_id == needed)
+                        .is_some_and(|record| record.state.is_terminal())
+                })
+                .then_some(task)
+        })
+        .take(limit)
+        .collect()
+}
+
+fn validate_memory_delta(
+    task: &agentctl_core::CompiledTask,
+    delta: &Value,
+) -> Result<(), RuntimeError> {
+    let mut changed = delta
+        .get("set")
+        .and_then(Value::as_object)
+        .map(|set| set.keys().cloned().collect::<BTreeSet<_>>())
+        .ok_or_else(|| RuntimeError::InvalidState("state delta has no set object".to_owned()))?;
+    let removed = delta
+        .get("remove")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RuntimeError::InvalidState("state delta has no remove array".to_owned()))?;
+    for key in removed {
+        changed.insert(
+            key.as_str()
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState("state delta key is not a string".to_owned())
+                })?
+                .to_owned(),
+        );
+    }
+    let undeclared = changed
+        .difference(&task.memory_writes.iter().cloned().collect())
+        .cloned()
+        .collect::<Vec<_>>();
+    if undeclared.is_empty() {
+        Ok(())
+    } else {
+        Err(RuntimeError::Task {
+            task: task.id.clone(),
+            message: format!(
+                "task changed undeclared working-memory key(s): {}",
+                undeclared.join(", ")
+            ),
+        })
+    }
+}
+
 fn context_for(
     run: &agentctl_store::RunRecord,
     tasks: &[TaskRecord],
@@ -5181,8 +5849,9 @@ mod tests {
     use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
     use agentctl_observability::BufferedTraceSink;
     use agentctl_store::ApprovalResolution;
-    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
     use tempfile::tempdir;
+    use tokio::sync::Notify;
 
     struct FixedClock;
 
@@ -5254,6 +5923,167 @@ mod tests {
                 },
                 finish_reason: FinishReason::Complete,
             })
+        }
+    }
+
+    struct OverlapProvider {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        delay: Duration,
+    }
+
+    impl OverlapProvider {
+        fn new(delay: Duration) -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                delay,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ModelProvider for OverlapProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            tokio::select! {
+                () = tokio::time::sleep(self.delay) => {}
+                () = cancellation.cancelled() => {
+                    self.active.fetch_sub(1, Ordering::SeqCst);
+                    return Err(ProviderError::Cancelled);
+                }
+            }
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            let text = request_text(request);
+            Ok(ProviderResponse {
+                response_id: Some(format!("overlap-{text}")),
+                text: text.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text { text }],
+                continuation: None,
+                usage: Usage::default(),
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CancellationProvider {
+        started: AtomicUsize,
+        notify: Notify,
+    }
+
+    #[async_trait]
+    impl ModelProvider for CancellationProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            cancellation.cancelled().await;
+            Err(ProviderError::Cancelled)
+        }
+    }
+
+    struct FailureSiblingProvider;
+
+    #[async_trait]
+    impl ModelProvider for FailureSiblingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            let text = request_text(request);
+            if text == "fail" {
+                return Err(ProviderError::Malformed(
+                    "deterministic parallel failure".to_owned(),
+                ));
+            }
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(40)) => {}
+                () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+            }
+            Ok(ProviderResponse {
+                response_id: Some("sibling-success".to_owned()),
+                text: text.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text { text }],
+                continuation: None,
+                usage: Usage::default(),
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct ParallelRetryProvider {
+        broken_calls: AtomicUsize,
+        sibling_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ModelProvider for ParallelRetryProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            let prompt = request_text(request);
+            if prompt == "broken" && self.broken_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ProviderError::Malformed(
+                    "first parallel attempt fails".to_owned(),
+                ));
+            }
+            if prompt == "sibling" {
+                let prior = self.sibling_calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(prior, 0, "successful sibling must be reused by retry");
+            }
+            Ok(ProviderResponse {
+                response_id: Some(format!("parallel-retry-{prompt}")),
+                text: prompt.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text { text: prompt }],
+                continuation: None,
+                usage: Usage::default(),
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    fn request_text(request: &ProviderRequest) -> String {
+        match request.messages.first() {
+            Some(Message::User(content)) => content
+                .first()
+                .and_then(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
         }
     }
 
@@ -5673,6 +6503,519 @@ mod tests {
             .workflow;
         let plan = compile(&workflow, "fixture.yaml").expect("compile fixture");
         (workflow, plan)
+    }
+
+    #[tokio::test]
+    async fn parallel_scheduler_overlaps_work_caps_concurrency_and_commits_in_plan_order() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(OverlapProvider::new(Duration::from_millis(40)));
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-overlap }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: return the prompt
+      maxTurns: 1
+  tasks:
+    - { id: first, uses: "agent:worker", with: { prompt: first } }
+    - { id: second, uses: "agent:worker", with: { prompt: second } }
+    - { id: third, uses: "agent:worker", with: { prompt: third } }
+"#,
+        );
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("parallel run");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(provider.peak.load(Ordering::SeqCst), 2);
+        let tasks = store.list_tasks(&outcome.run_id).expect("tasks");
+        assert_eq!(tasks[0].output.as_ref().expect("first")["text"], "first");
+        assert_eq!(tasks[1].output.as_ref().expect("second")["text"], "second");
+        assert_eq!(tasks[2].output.as_ref().expect("third")["text"], "third");
+        let completion_order = store
+            .audit_events(&outcome.run_id)
+            .expect("audit")
+            .into_iter()
+            .filter(|event| {
+                event.event_type == "task.transition" && event.payload["to"] == "succeeded"
+            })
+            .filter_map(|event| event.task_id)
+            .collect::<Vec<_>>();
+        assert_eq!(completion_order, ["first", "second", "third"]);
+    }
+
+    #[tokio::test]
+    async fn parallel_memory_deltas_merge_atomically_and_replay_offline() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-memory }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  memory:
+    working: { seed: kept }
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - { id: left, uses: "action:remember", with: { key: left, value: one } }
+    - { id: right, uses: "action:remember", with: { key: right, value: two } }
+"#,
+        );
+        let runtime = runtime(store.clone(), directory.path());
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("parallel memory run");
+        let source = store.load_run(&outcome.run_id).expect("source run");
+        assert_eq!(
+            source.working_memory,
+            serde_json::json!({"seed": "kept", "left": "one", "right": "two"})
+        );
+        let replay = runtime
+            .replay(&outcome.run_id)
+            .await
+            .expect("offline replay");
+        let replayed = store.load_run(&replay.run_id).expect("replayed run");
+        assert_eq!(replayed.working_memory, source.working_memory);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("effects")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_dynamic_memory_write_is_rejected_before_effect_dispatch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-write-declaration }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  inputs:
+    selected: { type: string }
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - id: remember
+      uses: action:remember
+      memoryWrites: [allowed]
+      with: { key: "${{ inputs.selected }}", value: blocked }
+"#,
+        );
+        let run_id = match runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({"selected": "undeclared"}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed {
+                run_id, message, ..
+            }) => {
+                assert!(message.contains("not declared in memoryWrites"));
+                run_id
+            }
+            other => panic!("expected declared-write failure, got {other:?}"),
+        };
+        assert!(store.list_effects(&run_id).expect("effects").is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_cancellation_propagates_to_every_running_task() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(CancellationProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-cancellation }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: wait
+      maxTurns: 1
+  tasks:
+    - { id: first, uses: "agent:worker", with: { prompt: first } }
+    - { id: second, uses: "agent:worker", with: { prompt: second } }
+"#,
+        );
+        let cancellation = CancellationToken::new();
+        let run_cancellation = cancellation.clone();
+        let handle = tokio::spawn(async move {
+            runtime
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &run_cancellation,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while provider.started.load(Ordering::SeqCst) != 2 {
+                provider.notify.notified().await;
+            }
+        })
+        .await
+        .expect("both tasks started");
+        cancellation.cancel();
+        let outcome = handle.await.expect("join").expect("cancel outcome");
+        assert_eq!(outcome.state, RunState::Cancelled);
+        assert!(
+            store
+                .list_tasks(&outcome.run_id)
+                .expect("tasks")
+                .iter()
+                .all(|task| task.state == TaskState::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_failure_waits_for_and_commits_successful_parallel_sibling() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default().with_provider("fake", Arc::new(FailureSiblingProvider)),
+        );
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-failure }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: execute
+      maxTurns: 1
+  tasks:
+    - { id: broken, uses: "agent:worker", with: { prompt: fail } }
+    - { id: sibling, uses: "agent:worker", with: { prompt: keep } }
+"#,
+        );
+        let run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, task, .. }) => {
+                assert_eq!(task, "broken");
+                run_id
+            }
+            other => panic!("expected stop failure, got {other:?}"),
+        };
+        let tasks = store.list_tasks(&run_id).expect("tasks");
+        assert_eq!(tasks[0].state, TaskState::Failed);
+        assert_eq!(tasks[1].state, TaskState::Succeeded);
+        assert_eq!(
+            tasks[1].output.as_ref().expect("sibling output")["text"],
+            "keep"
+        );
+        assert_eq!(
+            store.load_run(&run_id).expect("run").state,
+            RunState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_failure_preserves_independent_parallel_branch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default().with_provider("fake", Arc::new(FailureSiblingProvider)),
+        );
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-continue }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: execute
+      maxTurns: 1
+  tasks:
+    - id: broken
+      uses: agent:worker
+      failure: continue
+      with: { prompt: fail }
+    - { id: sibling, uses: "agent:worker", with: { prompt: keep } }
+"#,
+        );
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("continue returns terminal outcome");
+        assert_eq!(outcome.state, RunState::Failed);
+        let tasks = store.list_tasks(&outcome.run_id).expect("tasks");
+        assert_eq!(tasks[0].state, TaskState::Failed);
+        assert_eq!(tasks[1].state, TaskState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn parallel_approvals_pause_and_resume_all_tasks() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-approvals }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy:
+    approval: always
+    nonInteractive: pause
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - { id: left, uses: "action:remember", with: { key: left, value: one } }
+    - { id: right, uses: "action:remember", with: { key: right, value: two } }
+"#,
+        );
+        let runtime = runtime(store.clone(), directory.path());
+        let paused = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("paused run");
+        assert_eq!(paused.state, RunState::Paused);
+        let tasks = store.list_tasks(&paused.run_id).expect("paused tasks");
+        assert!(tasks.iter().all(|task| {
+            task.state == TaskState::WaitingForApproval && task.execution_memory.is_some()
+        }));
+        let approvals = store.pending_approvals(&paused.run_id).expect("approvals");
+        assert_eq!(approvals.len(), 2);
+        for approval in approvals {
+            store
+                .resolve_approval(
+                    &approval.approval_id,
+                    ApprovalResolution::Approved,
+                    "test",
+                    "approved parallel task",
+                    FixedClock.now(),
+                )
+                .expect("approval");
+        }
+        let resumed = runtime
+            .resume(
+                &paused.run_id,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resume");
+        assert_eq!(resumed.state, RunState::Succeeded);
+        assert_eq!(
+            store.load_run(&resumed.run_id).expect("run").working_memory,
+            serde_json::json!({"left": "one", "right": "two"})
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_only_retry_reuses_successful_parallel_sibling() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(ParallelRetryProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-retry }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: execute
+      maxTurns: 1
+  tasks:
+    - { id: broken, uses: "agent:worker", with: { prompt: broken } }
+    - { id: sibling, uses: "agent:worker", with: { prompt: sibling } }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let retry_plan = runtime
+            .plan_retry(&source_run_id, &workflow, &plan, &[], true, false)
+            .expect("retry plan");
+        assert!(retry_plan.compatible, "{:?}", retry_plan.blocked_reuse);
+        assert_eq!(retry_plan.retry_roots, ["broken"]);
+        assert_eq!(retry_plan.reused_tasks, ["sibling"]);
+        let outcome = runtime
+            .retry(
+                &workflow,
+                &plan,
+                retry_plan,
+                Some("retry failed parallel branch"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("retry");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(provider.broken_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.sibling_calls.load(Ordering::SeqCst), 1);
+        let retry_tasks = store.list_tasks(&outcome.run_id).expect("retry tasks");
+        assert_eq!(retry_tasks[0].disposition, TaskDisposition::Executed);
+        assert_eq!(retry_tasks[1].disposition, TaskDisposition::Reused);
+    }
+
+    #[tokio::test]
+    async fn repair_reuses_successful_parallel_memory_branch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-repair }
+spec:
+  runtime: { maxConcurrency: 2 }
+  policy: { approval: never }
+  actions:
+    remember: { kind: builtin.memory.write }
+    verify: { kind: builtin.assert }
+  tasks:
+    - { id: remember, uses: "action:remember", with: { key: durable, value: kept } }
+    - { id: verify, uses: "action:verify", with: { that: false } }
+"#;
+        let target = source.replace("that: false", "that: true");
+        let (source_workflow, source_plan) = compile_fixture(source);
+        let source_run_id = match runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+        let (target_workflow, target_plan) = compile_fixture(&target);
+        let repair_plan = runtime
+            .plan_repair(
+                &source_run_id,
+                &target_workflow,
+                &target_plan,
+                &["verify".to_owned()],
+                false,
+            )
+            .expect("repair plan");
+        assert!(repair_plan.compatible, "{:?}", repair_plan.blocked_reuse);
+        assert_eq!(repair_plan.reused_tasks, ["remember"]);
+        assert_eq!(repair_plan.rerun_tasks, ["verify"]);
+        let outcome = runtime
+            .repair(
+                &target_workflow,
+                &target_plan,
+                repair_plan,
+                Some("fix independent assertion"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(
+            store
+                .load_run(&outcome.run_id)
+                .expect("repair run")
+                .working_memory,
+            serde_json::json!({"durable": "kept"})
+        );
+        let tasks = store.list_tasks(&outcome.run_id).expect("repair tasks");
+        assert_eq!(tasks[0].disposition, TaskDisposition::Reused);
+        assert_eq!(tasks[1].disposition, TaskDisposition::Executed);
     }
 
     #[test]

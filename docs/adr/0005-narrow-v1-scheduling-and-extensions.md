@@ -1,6 +1,6 @@
 # ADR 0005: Narrow v1 scheduling and extension surface
 
-Status: accepted, 2026-07-22.
+Status: superseded for scheduling by ADR 0008, 2026-07-24.
 
 V1alpha1 schedules a sequential DAG in declaration order and integrates typed actions/tools, local packs, MCP 2025-11-25, and A2A 1.0. `maxConcurrency` greater than one is rejected.
 

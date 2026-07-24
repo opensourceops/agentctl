@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 32;
+const ACCEPTANCE_SCENARIOS: usize = 33;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1312,6 +1312,60 @@ pub fn run(root: &Path) -> Result<()> {
     );
     ensure!(!serde_json::to_string(&missing_secret)?.contains(secret_marker));
 
+    scenario(
+        33,
+        "packaged CLI runs, inspects, and replays an atomic parallel batch",
+    );
+    let parallel = root.join("examples/v1/parallel.yaml");
+    let parallel_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "plan",
+            path(&parallel)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&parallel_plan, "/data/maxConcurrency", 2_u64)?;
+    ensure_eq(
+        &parallel_plan,
+        "/data/tasks/write-left/memoryWrites/0",
+        "left",
+    )?;
+    ensure_eq(
+        &parallel_plan,
+        "/data/tasks/write-right/memoryWrites/0",
+        "right",
+    )?;
+    let parallel_db = directory.path().join("parallel.db");
+    let parallel_run =
+        successful_json(&binary, root, &run_args(&parallel, &parallel_db, root, &[]))?;
+    ensure_eq(&parallel_run, "/data/state", "succeeded")?;
+    let parallel_run_id = string_at(&parallel_run, "/data/runId")?;
+    let parallel_inspect = inspect(&binary, root, &parallel_db, parallel_run_id)?;
+    ensure_eq(&parallel_inspect, "/data/run/workingMemory/left", "one")?;
+    ensure_eq(&parallel_inspect, "/data/run/workingMemory/right", "two")?;
+    let parallel_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            parallel_run_id,
+            "--db",
+            path(&parallel_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let parallel_replay_id = string_at(&parallel_replay, "/data/runId")?;
+    let parallel_replay_inspect = inspect(&binary, root, &parallel_db, parallel_replay_id)?;
+    ensure!(array_len(&parallel_replay_inspect, "/data/effects")? == 0);
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -1339,6 +1393,38 @@ pub fn container(root: &Path) -> Result<()> {
     let replay_inspect = inspect_container(&engine, &layout, replay_id)?;
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
     ensure!(array_len(&replay_inspect, "/data/toolCalls")? == 0);
+
+    write(
+        &layout.config.join("parallel.yaml"),
+        &fs::read_to_string(root.join("examples/v1/parallel.yaml"))?,
+    )?;
+    let parallel = container_agentctl(
+        &engine,
+        &layout,
+        &[
+            "run",
+            "/config/parallel.yaml",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/runtime.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI parallel run",
+    )?;
+    ensure_eq(&parallel, "/data/state", "succeeded")?;
+    let parallel_id = string_at(&parallel, "/data/runId")?;
+    let parallel_inspect = inspect_container(&engine, &layout, parallel_id)?;
+    ensure_eq(&parallel_inspect, "/data/run/workingMemory/left", "one")?;
+    ensure_eq(&parallel_inspect, "/data/run/workingMemory/right", "two")?;
+    let parallel_replay = replay_container(&engine, &layout, parallel_id)?;
+    let parallel_replay_id = string_at(&parallel_replay, "/data/runId")?;
+    let parallel_replay_inspect = inspect_container(&engine, &layout, parallel_replay_id)?;
+    ensure!(array_len(&parallel_replay_inspect, "/data/effects")? == 0);
 
     let repair_directory = tempfile::tempdir()?;
     let repair_layout = container_layout(repair_directory.path(), false)?;
@@ -1432,7 +1518,7 @@ pub fn container(root: &Path) -> Result<()> {
 
     container_signal_acceptance(&engine, directory.path())?;
     println!(
-        "agentctl OCI acceptance passed: success, artifact, inspect, network-disabled replay, selective repair, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
+        "agentctl OCI acceptance passed: success, artifact, inspect, parallel ordered commit, network-disabled replay, selective repair, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
     );
     Ok(())
 }

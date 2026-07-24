@@ -647,9 +647,10 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 &plan,
                 diagnostics,
                 format!(
-                    "plan {}\norder: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}",
+                    "plan {}\norder: {}\nmax concurrency: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}",
                     plan.plan_digest,
                     plan.order.join(" -> "),
+                    plan.max_concurrency,
                     plan.predictability,
                     plan.requirements
                         .providers

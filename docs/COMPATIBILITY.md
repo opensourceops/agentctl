@@ -22,4 +22,4 @@ Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2
 
 ## Deferred product decisions
 
-Parallel execution, foreach/matrix, loops, routers, sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1.
+Foreach/matrix, loops, routers, sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1.

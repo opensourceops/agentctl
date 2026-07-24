@@ -26,6 +26,8 @@ pub struct CompiledTask {
     pub id: String,
     pub uses: TaskUse,
     pub needs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_writes: Vec<String>,
     pub when: Option<String>,
     pub vars: JsonMap,
     pub input: JsonMap,
@@ -51,6 +53,8 @@ pub struct CompiledPlan {
     pub workflow_digest: String,
     pub plan_digest: String,
     pub order: Vec<String>,
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: usize,
     pub tasks: BTreeMap<String, CompiledTask>,
     pub predictability: PlanPredictability,
     pub requirements: PlanRequirements,
@@ -187,6 +191,15 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             TaskUse::Agent(_) => JsonMap::new(),
         };
         input.extend(task.input.clone());
+        let memory_writes = task_memory_writes(
+            workflow,
+            &task_use,
+            &input,
+            &task.memory_writes,
+            file,
+            position,
+            &mut diagnostics,
+        );
         let mut vars = match &task_use {
             TaskUse::Agent(name) => workflow
                 .spec
@@ -204,6 +217,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 id: task.id.clone(),
                 uses: task_use,
                 needs: task.needs.clone(),
+                memory_writes,
                 when: task.when.clone(),
                 vars,
                 input,
@@ -262,6 +276,10 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             format!("task dependency cycle: {}", cycle.join(" -> ")),
         )]
     })?;
+    validate_parallel_memory_writes(workflow, &order, &tasks, file, &mut diagnostics);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
 
     for task in tasks.values_mut() {
         task.predictability = match &task.uses {
@@ -297,6 +315,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         &workflow.metadata.name,
         &workflow_digest,
         &order,
+        workflow.spec.runtime.max_concurrency,
         &tasks,
         &requirements,
     ))
@@ -315,10 +334,178 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         workflow_digest,
         plan_digest,
         order,
+        max_concurrency: workflow.spec.runtime.max_concurrency,
         tasks,
         predictability,
         requirements,
     })
+}
+
+const fn default_max_concurrency() -> usize {
+    1
+}
+
+#[allow(clippy::too_many_arguments)]
+fn task_memory_writes(
+    workflow: &Workflow,
+    task_use: &TaskUse,
+    input: &JsonMap,
+    declared: &[String],
+    file: &str,
+    position: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<String> {
+    let path = format!("spec.tasks[{position}].memoryWrites");
+    let mut writes = BTreeSet::new();
+    for key in declared {
+        if key.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    "working-memory write keys must not be empty",
+                )
+                .with_path(path.clone()),
+            );
+        } else if !writes.insert(key.clone()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("duplicate working-memory write key `{key}`"),
+                )
+                .with_path(path.clone()),
+            );
+        }
+    }
+
+    let is_memory_write = match task_use {
+        TaskUse::Action(name) => workflow
+            .spec
+            .actions
+            .get(name)
+            .is_some_and(|action| action.kind == ActionKind::MemoryWrite),
+        TaskUse::Agent(_) => false,
+    };
+    if !is_memory_write {
+        if !declared.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    "memoryWrites is only valid for builtin.memory.write tasks",
+                )
+                .with_path(path),
+            );
+        }
+        return writes.into_iter().collect();
+    }
+
+    let Some(key) = input.get("key").and_then(Value::as_str) else {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "builtin.memory.write requires a string `key`",
+            )
+            .with_path(format!("spec.tasks[{position}].with.key")),
+        );
+        return writes.into_iter().collect();
+    };
+    if key.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "builtin.memory.write key must not be empty",
+            )
+            .with_path(format!("spec.tasks[{position}].with.key")),
+        );
+    } else if key.contains("${{") {
+        if writes.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    "a templated builtin.memory.write key requires an explicit memoryWrites set",
+                )
+                .with_path(path),
+            );
+        }
+    } else if writes.is_empty() {
+        writes.insert(key.to_owned());
+    } else if !writes.contains(key) {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                format!("literal working-memory key `{key}` is missing from memoryWrites"),
+            )
+            .with_path(path),
+        );
+    }
+    writes.into_iter().collect()
+}
+
+fn validate_parallel_memory_writes(
+    workflow: &Workflow,
+    order: &[String],
+    tasks: &BTreeMap<String, CompiledTask>,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if workflow.spec.runtime.max_concurrency == 1 {
+        return;
+    }
+    for (position, left_id) in order.iter().enumerate() {
+        let left = &tasks[left_id];
+        for right_id in order.iter().skip(position + 1) {
+            let right = &tasks[right_id];
+            if depends_on(left_id, right_id, tasks) || depends_on(right_id, left_id, tasks) {
+                continue;
+            }
+            let conflicts = left
+                .memory_writes
+                .iter()
+                .filter(|key| right.memory_writes.contains(key))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !conflicts.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "parallel tasks `{left_id}` and `{right_id}` have conflicting working-memory writes: {}",
+                            conflicts.join(", ")
+                        ),
+                    )
+                    .with_path("spec.runtime.maxConcurrency")
+                    .with_help(
+                        "order the tasks with needs or give them disjoint memoryWrites keys",
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn depends_on(task_id: &str, dependency_id: &str, tasks: &BTreeMap<String, CompiledTask>) -> bool {
+    let mut pending = tasks
+        .get(task_id)
+        .map_or_else(Vec::new, |task| task.needs.clone());
+    let mut visited = BTreeSet::new();
+    while let Some(candidate) = pending.pop() {
+        if candidate == dependency_id {
+            return true;
+        }
+        if visited.insert(candidate.clone())
+            && let Some(task) = tasks.get(&candidate)
+        {
+            pending.extend(task.needs.iter().cloned());
+        }
+    }
+    false
 }
 
 fn plan_requirements(
@@ -1031,6 +1218,113 @@ spec:
         );
         let plan = compile(&workflow, "fixture.yaml").expect("compiles");
         assert_eq!(plan.order, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn parallel_memory_writes_are_inferred_and_conflicts_are_rejected() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-conflict }
+spec:
+  runtime: { maxConcurrency: 2 }
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - { id: left, uses: "action:remember", with: { key: shared, value: left } }
+    - { id: right, uses: "action:remember", with: { key: shared, value: right } }
+"#,
+        );
+        let diagnostics = compile(&workflow, "fixture.yaml").expect_err("conflict rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("parallel tasks `left` and `right`")
+                && diagnostic.message.contains("shared")
+        }));
+    }
+
+    #[test]
+    fn ordered_or_disjoint_parallel_memory_writes_compile() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: parallel-memory }
+spec:
+  runtime: { maxConcurrency: 3 }
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - { id: left, uses: "action:remember", with: { key: left, value: one } }
+    - { id: right, uses: "action:remember", with: { key: right, value: two } }
+    - { id: ordered, uses: "action:remember", needs: [left], with: { key: left, value: three } }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("compiles");
+        assert_eq!(plan.tasks["left"].memory_writes, ["left"]);
+        assert_eq!(plan.tasks["right"].memory_writes, ["right"]);
+        assert_eq!(plan.tasks["ordered"].memory_writes, ["left"]);
+    }
+
+    #[test]
+    fn templated_memory_key_requires_declared_write_set() {
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: dynamic-memory-key }
+spec:
+  inputs:
+    selected: { type: string }
+  actions:
+    remember: { kind: builtin.memory.write }
+  tasks:
+    - id: remember
+      uses: action:remember
+      with: { key: "${{ inputs.selected }}", value: kept }
+"#;
+        let workflow = parse(source);
+        let diagnostics = compile(&workflow, "fixture.yaml").expect_err("declaration required");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("requires an explicit memoryWrites set")
+        }));
+
+        let declared = source.replace(
+            "uses: action:remember",
+            "uses: action:remember\n      memoryWrites: [selected]",
+        );
+        compile(&parse(&declared), "fixture.yaml").expect("declared write compiles");
+    }
+
+    #[test]
+    fn additive_parallel_plan_fields_preserve_old_sequential_plans() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: old-plan }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: one, uses: "action:assign" }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("compile");
+        let mut json = serde_json::to_value(plan).expect("plan json");
+        json.as_object_mut()
+            .expect("plan object")
+            .remove("maxConcurrency");
+        json["tasks"]["one"]
+            .as_object_mut()
+            .expect("task object")
+            .remove("memoryWrites");
+        let decoded: CompiledPlan = serde_json::from_value(json).expect("old plan decodes");
+        assert_eq!(decoded.max_concurrency, 1);
+        assert!(decoded.tasks["one"].memory_writes.is_empty());
     }
 
     #[test]

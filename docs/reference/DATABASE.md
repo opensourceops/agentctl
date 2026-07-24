@@ -1,11 +1,11 @@
 # Runtime database and migrations
 
-The local SQLite database and its sibling artifact root are history and part of the correctness boundary. The current database schema version is `10`.
+The local SQLite database and its sibling artifact root are history and part of the correctness boundary. The current database schema version is `11`.
 
 ## Stored records
 
 - runs, source workflow, compiled plan, inputs, output, mode, state, parent linkage, and repair/retry source/root metadata
-- task states, attempts, output, errors, disposition, source attempt, versioned fingerprints/digests, state delta, artifact manifest, and reuse decision
+- task states, attempts, output, errors, disposition, source attempt, versioned fingerprints/digests, state delta, artifact manifest, reuse decision, and encrypted-capable execution memory snapshot
 - effects, request/result/error, confirmation, and uncertainty
 - immutable effect reconciliation history, operator authorization, evidence, validated results, supersession, and compensation linkage
 - approvals and resolutions
@@ -18,7 +18,7 @@ The local SQLite database and its sibling artifact root are history and part of 
 
 Working memory is stored on the run and in checkpoints. Provider credentials and state-encryption key values are not stored. Prompts, workflow inputs and outputs, task output and errors, effect input/results, approvals, checkpoints, audit/trace payloads, provider continuations, reconciliation evidence, and long-term-memory values can be protected with application-level authenticated envelopes.
 
-Migration 5 adds `source_run_id`, `source_workflow_digest`, repair roots/reason/version, and task-boundary metadata used by repair. Migration 6 adds artifact blob, reference, and ingestion-lease tables. Migration 7 records transactional legacy-run upgrades. Migration 8 adds immutable effect reconciliation records. Migration 9 adds retry roots/reason/version and failed-only selection. Migration 10 adds state-encryption configuration and fail-closed write guards. A repair or retry transaction creates the run, materializes every reused task and artifact reference, creates pending fresh tasks, records provenance audit events, and writes its first checkpoint atomically. The source identifier is durable lineage rather than a foreign-key dependency, so source garbage collection does not delete the derived run.
+Migration 5 adds `source_run_id`, `source_workflow_digest`, repair roots/reason/version, and task-boundary metadata used by repair. Migration 6 adds artifact blob, reference, and ingestion-lease tables. Migration 7 records transactional legacy-run upgrades. Migration 8 adds immutable effect reconciliation records. Migration 9 adds retry roots/reason/version and failed-only selection. Migration 10 adds state-encryption configuration and fail-closed write guards. Migration 11 adds the protected execution-memory snapshot used to preserve parallel task boundaries across crashes and approvals. A repair or retry transaction creates the run, materializes every reused task and artifact reference, creates pending fresh tasks, records provenance audit events, and writes its first checkpoint atomically. The source identifier is durable lineage rather than a foreign-key dependency, so source garbage collection does not delete the derived run.
 
 Artifact manifests contain logical path/name, media type, byte size, SHA-256 digest, and CAS-relative path. Blob bytes live under `<database-parent>/artifacts/sha256/`; identical content is stored once. A completed repair/replay receives its own references, so source-row and workspace deletion do not break it.
 

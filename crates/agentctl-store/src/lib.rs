@@ -25,7 +25,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 10;
+pub const DATABASE_SCHEMA_VERSION: u32 = 11;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -318,6 +318,10 @@ CREATE TABLE state_encryption (
 );
 "#;
 
+const MIGRATION_11: &str = r#"
+ALTER TABLE task_states ADD COLUMN execution_memory_json TEXT;
+"#;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
@@ -479,6 +483,8 @@ pub struct TaskRecord {
     pub state_delta_digest: Option<String>,
     pub artifact_manifest: Vec<ArtifactRecord>,
     pub reuse_decision: Option<Value>,
+    #[serde(skip)]
+    pub execution_memory: Option<Value>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -499,6 +505,26 @@ pub struct TaskCompletionMetadata {
     pub state_delta: Value,
     pub state_delta_digest: String,
     pub artifact_manifest: Vec<ArtifactRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskBatchOutcome {
+    Succeeded {
+        output: Value,
+        metadata: Box<TaskCompletionMetadata>,
+    },
+    Failed {
+        error: String,
+    },
+    RetryScheduled {
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskBatchResult {
+    pub task_id: String,
+    pub outcome: TaskBatchOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1546,7 +1572,7 @@ impl SqliteStore {
     pub fn list_tasks(&self, run_id: &str) -> Result<Vec<TaskRecord>, StoreError> {
         let connection = self.connection.lock();
         let mut statement = connection.prepare(
-            "SELECT task_id, position, state, attempt, output_json, error, updated_at, disposition, metadata_version, source_run_id, source_task_id, source_attempt, definition_fingerprint, input_digest, output_contract_fingerprint, output_digest, state_delta_json, state_delta_digest, artifact_manifest_json, reuse_decision_json FROM task_states WHERE run_id = ?1 ORDER BY position",
+            "SELECT task_id, position, state, attempt, output_json, error, updated_at, disposition, metadata_version, source_run_id, source_task_id, source_attempt, definition_fingerprint, input_digest, output_contract_fingerprint, output_digest, state_delta_json, state_delta_digest, artifact_manifest_json, reuse_decision_json, execution_memory_json FROM task_states WHERE run_id = ?1 ORDER BY position",
         )?;
         let rows = statement.query_map([run_id], |row| {
             Ok((
@@ -1570,6 +1596,7 @@ impl SqliteStore {
                 row.get::<_, Option<String>>(17)?,
                 row.get::<_, Option<String>>(18)?,
                 row.get::<_, Option<String>>(19)?,
+                row.get::<_, Option<String>>(20)?,
             ))
         })?;
         rows.map(|row| {
@@ -1621,6 +1648,16 @@ impl SqliteStore {
                         )
                     })
                     .transpose()?,
+                execution_memory: row
+                    .20
+                    .map(|value| {
+                        decode_protected(
+                            &self.protection,
+                            &value,
+                            "task_states.execution_memory_json",
+                        )
+                    })
+                    .transpose()?,
                 updated_at: parse_time(&row.6, "task.updated_at")?,
             })
         })
@@ -1657,7 +1694,7 @@ impl SqliteStore {
             .transition(next)
             .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
         transaction.execute(
-            "UPDATE task_states SET state = ?3, output_json = COALESCE(?4, output_json), error = ?5, attempt = attempt + ?7, updated_at = ?6 WHERE run_id = ?1 AND task_id = ?2",
+            "UPDATE task_states SET state = ?3, output_json = COALESCE(?4, output_json), error = ?5, attempt = attempt + ?7, execution_memory_json = CASE WHEN ?8 = 1 THEN NULL ELSE execution_memory_json END, updated_at = ?6 WHERE run_id = ?1 AND task_id = ?2",
             params![
                 run_id,
                 task_id,
@@ -1673,7 +1710,8 @@ impl SqliteStore {
                     .map(|value| protect_text(&self.protection, value, "task_states.error"))
                     .transpose()?,
                 now.to_rfc3339(),
-                i64::from(current == TaskState::Ready && next == TaskState::Running)
+                i64::from(current == TaskState::Ready && next == TaskState::Running),
+                i64::from(current == TaskState::RetryScheduled && next == TaskState::Ready),
             ],
         )?;
         if let Some(memory) = working_memory {
@@ -1711,10 +1749,11 @@ impl SqliteStore {
         run_id: &str,
         task_id: &str,
         metadata: &TaskExecutionMetadata,
+        execution_memory: &Value,
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
         let changed = self.connection.lock().execute(
-            "UPDATE task_states SET metadata_version = ?3, definition_fingerprint = ?4, input_digest = ?5, output_contract_fingerprint = ?6, updated_at = ?7 WHERE run_id = ?1 AND task_id = ?2 AND state = ?8",
+            "UPDATE task_states SET metadata_version = ?3, definition_fingerprint = ?4, input_digest = ?5, output_contract_fingerprint = ?6, execution_memory_json = ?7, updated_at = ?8 WHERE run_id = ?1 AND task_id = ?2 AND state = ?9",
             params![
                 run_id,
                 task_id,
@@ -1722,6 +1761,11 @@ impl SqliteStore {
                 metadata.definition_fingerprint,
                 metadata.input_digest,
                 metadata.output_contract_fingerprint,
+                encode_protected(
+                    &self.protection,
+                    execution_memory,
+                    "task_states.execution_memory_json"
+                )?,
                 now.to_rfc3339(),
                 encode_enum(TaskState::Running)?,
             ],
@@ -1745,93 +1789,293 @@ impl SqliteStore {
         now: DateTime<Utc>,
         trace_id: &str,
     ) -> Result<(), StoreError> {
+        self.commit_task_batch(
+            run_id,
+            &[TaskBatchResult {
+                task_id: task_id.to_owned(),
+                outcome: TaskBatchOutcome::Succeeded {
+                    output: output.clone(),
+                    metadata: Box::new(metadata.clone()),
+                },
+            }],
+            working_memory,
+            false,
+            now,
+            trace_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_task_batch(
+        &self,
+        run_id: &str,
+        results: &[TaskBatchResult],
+        working_memory: Option<&Value>,
+        fail_run: bool,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<(), StoreError> {
         let _artifact_guard = self.artifact_lock.lock();
         let _artifact_file_lock = self.artifact_store.lock_exclusive()?;
-        verify_artifact_manifest(self.artifact_store.as_ref(), &metadata.artifact_manifest)?;
+        for result in results {
+            if let TaskBatchOutcome::Succeeded { metadata, .. } = &result.outcome {
+                verify_artifact_manifest(
+                    self.artifact_store.as_ref(),
+                    &metadata.artifact_manifest,
+                )?;
+            }
+        }
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current: String = transaction
-            .query_row(
-                "SELECT state FROM task_states WHERE run_id = ?1 AND task_id = ?2",
-                params![run_id, task_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| StoreError::TaskNotFound {
-                run_id: run_id.to_owned(),
-                task_id: task_id.to_owned(),
-            })?;
-        let current: TaskState = decode_enum(&current, "task.state")?;
-        current
-            .transition(TaskState::Succeeded)
-            .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
-        transaction.execute(
-            "UPDATE task_states SET state = ?3, output_json = ?4, error = NULL, disposition = ?5, metadata_version = ?6, definition_fingerprint = ?7, input_digest = ?8, output_contract_fingerprint = ?9, output_digest = ?10, state_delta_json = ?11, state_delta_digest = ?12, artifact_manifest_json = ?13, updated_at = ?14 WHERE run_id = ?1 AND task_id = ?2",
-            params![
-                run_id,
-                task_id,
-                encode_enum(TaskState::Succeeded)?,
-                encode_protected(&self.protection, output, "task_states.output_json")?,
-                encode_enum(TaskDisposition::Executed)?,
-                metadata.execution.metadata_version,
-                metadata.execution.definition_fingerprint,
-                metadata.execution.input_digest,
-                metadata.execution.output_contract_fingerprint,
-                metadata.output_digest,
-                encode_protected(
+        for result in results {
+            let current: String = transaction
+                .query_row(
+                    "SELECT state FROM task_states WHERE run_id = ?1 AND task_id = ?2",
+                    params![run_id, result.task_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| StoreError::TaskNotFound {
+                    run_id: run_id.to_owned(),
+                    task_id: result.task_id.clone(),
+                })?;
+            let current: TaskState = decode_enum(&current, "task.state")?;
+            let next = match &result.outcome {
+                TaskBatchOutcome::Succeeded { .. } => TaskState::Succeeded,
+                TaskBatchOutcome::Failed { .. } => TaskState::Failed,
+                TaskBatchOutcome::RetryScheduled { .. } => TaskState::RetryScheduled,
+            };
+            current
+                .transition(next)
+                .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
+            match &result.outcome {
+                TaskBatchOutcome::Succeeded { output, metadata } => {
+                    transaction.execute(
+                        "UPDATE task_states SET state = ?3, output_json = ?4, error = NULL, disposition = ?5, metadata_version = ?6, definition_fingerprint = ?7, input_digest = ?8, output_contract_fingerprint = ?9, output_digest = ?10, state_delta_json = ?11, state_delta_digest = ?12, artifact_manifest_json = ?13, updated_at = ?14 WHERE run_id = ?1 AND task_id = ?2",
+                        params![
+                            run_id,
+                            result.task_id,
+                            encode_enum(TaskState::Succeeded)?,
+                            encode_protected(
+                                &self.protection,
+                                output,
+                                "task_states.output_json"
+                            )?,
+                            encode_enum(TaskDisposition::Executed)?,
+                            metadata.execution.metadata_version,
+                            metadata.execution.definition_fingerprint,
+                            metadata.execution.input_digest,
+                            metadata.execution.output_contract_fingerprint,
+                            metadata.output_digest,
+                            encode_protected(
+                                &self.protection,
+                                &metadata.state_delta,
+                                "task_states.state_delta_json"
+                            )?,
+                            metadata.state_delta_digest,
+                            encode(&metadata.artifact_manifest)?,
+                            now.to_rfc3339(),
+                        ],
+                    )?;
+                    record_artifact_references_tx(
+                        &transaction,
+                        run_id,
+                        &result.task_id,
+                        &metadata.artifact_manifest,
+                        None,
+                        None,
+                        now,
+                    )?;
+                    transaction.execute(
+                        "DELETE FROM artifact_ingests WHERE run_id = ?1 AND task_id = ?2",
+                        params![run_id, result.task_id],
+                    )?;
+                    append_audit_tx(
+                        &transaction,
+                        run_id,
+                        "task.transition",
+                        Some(&result.task_id),
+                        trace_id,
+                        &serde_json::json!({
+                            "from": current,
+                            "to": TaskState::Succeeded,
+                            "disposition": TaskDisposition::Executed,
+                            "outputDigest": metadata.output_digest,
+                            "stateDeltaDigest": metadata.state_delta_digest,
+                        }),
+                        now,
+                        &self.protection,
+                    )?;
+                }
+                TaskBatchOutcome::Failed { error } | TaskBatchOutcome::RetryScheduled { error } => {
+                    transaction.execute(
+                        "UPDATE task_states SET state = ?3, error = ?4, updated_at = ?5 WHERE run_id = ?1 AND task_id = ?2",
+                        params![
+                            run_id,
+                            result.task_id,
+                            encode_enum(next)?,
+                            protect_text(&self.protection, error, "task_states.error")?,
+                            now.to_rfc3339(),
+                        ],
+                    )?;
+                    append_audit_tx(
+                        &transaction,
+                        run_id,
+                        "task.transition",
+                        Some(&result.task_id),
+                        trace_id,
+                        &serde_json::json!({"from": current, "to": next, "error": error}),
+                        now,
+                        &self.protection,
+                    )?;
+                }
+            }
+        }
+
+        if fail_run {
+            let mut statement = transaction.prepare(
+                "SELECT task_id, state FROM task_states WHERE run_id = ?1 ORDER BY position",
+            )?;
+            let remaining = statement
+                .query_map([run_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            for (task_id, encoded) in remaining {
+                let current: TaskState = decode_enum(&encoded, "task.state")?;
+                if current.is_terminal() {
+                    continue;
+                }
+                current
+                    .transition(TaskState::Cancelled)
+                    .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
+                transaction.execute(
+                    "UPDATE task_states SET state = ?3, error = ?4, updated_at = ?5 WHERE run_id = ?1 AND task_id = ?2",
+                    params![
+                        run_id,
+                        task_id,
+                        encode_enum(TaskState::Cancelled)?,
+                        protect_text(
+                            &self.protection,
+                            "cancelled after a stop-on-failure task failed",
+                            "task_states.error"
+                        )?,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+                append_audit_tx(
+                    &transaction,
+                    run_id,
+                    "task.transition",
+                    Some(&task_id),
+                    trace_id,
+                    &serde_json::json!({
+                        "from": current,
+                        "to": TaskState::Cancelled,
+                        "error": "cancelled after a stop-on-failure task failed",
+                    }),
+                    now,
                     &self.protection,
-                    &metadata.state_delta,
-                    "task_states.state_delta_json"
-                )?,
-                metadata.state_delta_digest,
-                encode(&metadata.artifact_manifest)?,
-                now.to_rfc3339(),
-            ],
-        )?;
-        record_artifact_references_tx(
-            &transaction,
-            run_id,
-            task_id,
-            &metadata.artifact_manifest,
-            None,
-            None,
-            now,
-        )?;
-        transaction.execute(
-            "DELETE FROM artifact_ingests WHERE run_id = ?1 AND task_id = ?2",
-            params![run_id, task_id],
-        )?;
-        if let Some(memory) = working_memory {
+                )?;
+            }
             transaction.execute(
-                "UPDATE runs SET working_memory_json = ?2, updated_at = ?3 WHERE run_id = ?1",
+                "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE run_id = ?1 AND status IN (?5, ?6)",
                 params![
                     run_id,
-                    encode_protected(&self.protection, memory, "runs.working_memory_json")?,
-                    now.to_rfc3339()
+                    encode_enum(EffectStatus::Cancelled)?,
+                    protect_text(
+                        &self.protection,
+                        "cancelled after a stop-on-failure task failed",
+                        "effects.error"
+                    )?,
+                    now.to_rfc3339(),
+                    encode_enum(EffectStatus::Requested)?,
+                    encode_enum(EffectStatus::WaitingForApproval)?,
                 ],
             )?;
-        } else {
             transaction.execute(
-                "UPDATE runs SET updated_at = ?2 WHERE run_id = ?1",
-                params![run_id, now.to_rfc3339()],
+                "UPDATE approvals SET status = 'cancelled', resolved_at = ?2, resolved_by = 'runtime', resolution_reason = ?3 WHERE run_id = ?1 AND status = 'pending'",
+                params![
+                    run_id,
+                    now.to_rfc3339(),
+                    protect_text(
+                        &self.protection,
+                        "run stopped after task failure",
+                        "approvals.resolution_reason"
+                    )?,
+                ],
             )?;
         }
-        append_audit_tx(
-            &transaction,
-            run_id,
-            "task.transition",
-            Some(task_id),
-            trace_id,
-            &serde_json::json!({
-                "from": current,
-                "to": TaskState::Succeeded,
-                "disposition": TaskDisposition::Executed,
-                "outputDigest": metadata.output_digest,
-                "stateDeltaDigest": metadata.state_delta_digest,
-            }),
-            now,
-            &self.protection,
-        )?;
+
+        let current_run_state = if fail_run {
+            let encoded: String = transaction
+                .query_row(
+                    "SELECT state FROM runs WHERE run_id = ?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| StoreError::RunNotFound(run_id.to_owned()))?;
+            let current: RunState = decode_enum(&encoded, "run.state")?;
+            current
+                .transition(RunState::Failed)
+                .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
+            Some(current)
+        } else {
+            None
+        };
+        match (working_memory, fail_run) {
+            (Some(memory), true) => {
+                transaction.execute(
+                    "UPDATE runs SET working_memory_json = ?2, state = ?3, updated_at = ?4 WHERE run_id = ?1",
+                    params![
+                        run_id,
+                        encode_protected(
+                            &self.protection,
+                            memory,
+                            "runs.working_memory_json"
+                        )?,
+                        encode_enum(RunState::Failed)?,
+                        now.to_rfc3339()
+                    ],
+                )?;
+            }
+            (Some(memory), false) => {
+                transaction.execute(
+                    "UPDATE runs SET working_memory_json = ?2, updated_at = ?3 WHERE run_id = ?1",
+                    params![
+                        run_id,
+                        encode_protected(&self.protection, memory, "runs.working_memory_json")?,
+                        now.to_rfc3339()
+                    ],
+                )?;
+            }
+            (None, true) => {
+                transaction.execute(
+                    "UPDATE runs SET state = ?2, updated_at = ?3 WHERE run_id = ?1",
+                    params![run_id, encode_enum(RunState::Failed)?, now.to_rfc3339()],
+                )?;
+            }
+            (None, false) => {
+                transaction.execute(
+                    "UPDATE runs SET updated_at = ?2 WHERE run_id = ?1",
+                    params![run_id, now.to_rfc3339()],
+                )?;
+            }
+        }
+        if let Some(current) = current_run_state {
+            append_audit_tx(
+                &transaction,
+                run_id,
+                "run.state",
+                None,
+                trace_id,
+                &serde_json::json!({"from": current, "to": RunState::Failed}),
+                now,
+                &self.protection,
+            )?;
+        }
         checkpoint_tx(&transaction, run_id, now, &self.protection)?;
         transaction.commit()?;
         Ok(())
@@ -2098,45 +2342,10 @@ impl SqliteStore {
     ) -> Result<EffectRecord, StoreError> {
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "INSERT INTO effects (effect_id, format_version, run_id, task_id, task_attempt, ordinal, operation, effect_class, risk, idempotency, idempotency_key, input_digest, input_json, expected_effect, trace_id, status, effect_attempt, requested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17)",
-            params![
-                request.id,
-                request.format_version,
-                request.run_id,
-                request.task_id,
-                request.attempt,
-                request.ordinal,
-                request.operation,
-                encode_enum(request.effect_class)?,
-                encode_enum(request.risk)?,
-                encode_enum(request.idempotency)?,
-                request.idempotency_key,
-                request.input_digest,
-                encode_protected(&self.protection, &request.input, "effects.input_json")?,
-                protect_text(
-                    &self.protection,
-                    &request.expected_effect,
-                    "effects.expected_effect"
-                )?,
-                request.trace_id,
-                encode_enum(EffectStatus::Requested)?,
-                now.to_rfc3339(),
-            ],
-        )?;
-        append_audit_tx(
+        insert_effect_request_tx(
             &transaction,
-            &request.run_id,
-            "effect.requested",
-            Some(&request.task_id),
-            &request.trace_id,
-            &serde_json::json!({
-                "effectId": request.id,
-                "operation": request.operation,
-                "inputDigest": request.input_digest,
-                "effectClass": request.effect_class,
-                "risk": request.risk,
-            }),
+            request,
+            EffectStatus::Requested,
             now,
             &self.protection,
         )?;
@@ -2653,9 +2862,35 @@ impl SqliteStore {
         effect_id.map(|id| self.load_effect(&id)).transpose()
     }
 
-    pub fn create_approval(&self, request: &ApprovalRequest) -> Result<(), StoreError> {
+    pub fn create_approval(
+        &self,
+        effect: &EffectRequest,
+        request: &ApprovalRequest,
+    ) -> Result<(), StoreError> {
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: String = transaction
+            .query_row(
+                "SELECT state FROM task_states WHERE run_id = ?1 AND task_id = ?2",
+                params![request.run_id, request.task_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::TaskNotFound {
+                run_id: request.run_id.clone(),
+                task_id: request.task_id.clone(),
+            })?;
+        let current: TaskState = decode_enum(&current, "task.state")?;
+        current
+            .transition(TaskState::WaitingForApproval)
+            .map_err(|transition| StoreError::InvalidTransition(transition.to_string()))?;
+        insert_effect_request_tx(
+            &transaction,
+            effect,
+            EffectStatus::WaitingForApproval,
+            request.requested_at,
+            &self.protection,
+        )?;
         transaction.execute(
             "INSERT INTO approvals (approval_id, run_id, effect_id, task_id, agent, tool, capability, risk, redacted_input_json, expected_effect, reason, trace_id, status, requested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', ?13)",
             params![
@@ -2683,11 +2918,32 @@ impl SqliteStore {
             ],
         )?;
         transaction.execute(
-            "UPDATE effects SET status = ?2 WHERE effect_id = ?1",
+            "UPDATE task_states SET state = ?3, error = NULL, updated_at = ?4 WHERE run_id = ?1 AND task_id = ?2",
             params![
-                request.effect_id,
-                encode_enum(EffectStatus::WaitingForApproval)?
+                request.run_id,
+                request.task_id,
+                encode_enum(TaskState::WaitingForApproval)?,
+                request.requested_at.to_rfc3339(),
             ],
+        )?;
+        append_audit_tx(
+            &transaction,
+            &request.run_id,
+            "task.transition",
+            Some(&request.task_id),
+            &request.trace_id,
+            &serde_json::json!({
+                "from": current,
+                "to": TaskState::WaitingForApproval,
+            }),
+            request.requested_at,
+            &self.protection,
+        )?;
+        checkpoint_tx(
+            &transaction,
+            &request.run_id,
+            request.requested_at,
+            &self.protection,
         )?;
         transaction.commit()?;
         Ok(())
@@ -3753,6 +4009,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (8_u32, MIGRATION_8),
         (9_u32, MIGRATION_9),
         (10_u32, MIGRATION_10),
+        (11_u32, MIGRATION_11),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -3909,6 +4166,58 @@ fn append_audit_tx(
         ],
     )?;
     Ok(())
+}
+
+fn insert_effect_request_tx(
+    transaction: &Transaction<'_>,
+    request: &EffectRequest,
+    status: EffectStatus,
+    now: DateTime<Utc>,
+    protection: &SharedStateProtection,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO effects (effect_id, format_version, run_id, task_id, task_attempt, ordinal, operation, effect_class, risk, idempotency, idempotency_key, input_digest, input_json, expected_effect, trace_id, status, effect_attempt, requested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17)",
+        params![
+            request.id,
+            request.format_version,
+            request.run_id,
+            request.task_id,
+            request.attempt,
+            request.ordinal,
+            request.operation,
+            encode_enum(request.effect_class)?,
+            encode_enum(request.risk)?,
+            encode_enum(request.idempotency)?,
+            request.idempotency_key,
+            request.input_digest,
+            encode_protected(protection, &request.input, "effects.input_json")?,
+            protect_text(
+                protection,
+                &request.expected_effect,
+                "effects.expected_effect"
+            )?,
+            request.trace_id,
+            encode_enum(status)?,
+            now.to_rfc3339(),
+        ],
+    )?;
+    append_audit_tx(
+        transaction,
+        &request.run_id,
+        "effect.requested",
+        Some(&request.task_id),
+        &request.trace_id,
+        &serde_json::json!({
+            "effectId": request.id,
+            "operation": request.operation,
+            "inputDigest": request.input_digest,
+            "effectClass": request.effect_class,
+            "risk": request.risk,
+            "status": status,
+        }),
+        now,
+        protection,
+    )
 }
 
 fn append_trace_tx(
@@ -4381,6 +4690,7 @@ spec:
             MIGRATION_7,
             MIGRATION_8,
             MIGRATION_9,
+            MIGRATION_10,
         ]
         .into_iter()
         .enumerate()
@@ -4752,6 +5062,61 @@ spec:
         assert_eq!(tasks[0].state, TaskState::Succeeded);
         assert_eq!(tasks[0].attempt, 1);
         assert_eq!(store.checkpoint_count("run").expect("count"), 4);
+    }
+
+    #[test]
+    fn parallel_batch_commit_rolls_back_every_task_and_memory_on_failure() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        begin_task(&store, "run");
+        let metadata = TaskCompletionMetadata {
+            execution: TaskExecutionMetadata {
+                metadata_version: 1,
+                definition_fingerprint: "definition".to_owned(),
+                input_digest: "input".to_owned(),
+                output_contract_fingerprint: "contract".to_owned(),
+            },
+            output_digest: "output".to_owned(),
+            state_delta: serde_json::json!({
+                "formatVersion": 1,
+                "set": {"value": "changed"},
+                "remove": [],
+            }),
+            state_delta_digest: "delta".to_owned(),
+            artifact_manifest: Vec::new(),
+        };
+        let result = store.commit_task_batch(
+            "run",
+            &[
+                TaskBatchResult {
+                    task_id: "one".to_owned(),
+                    outcome: TaskBatchOutcome::Succeeded {
+                        output: serde_json::json!({"ok": true}),
+                        metadata: Box::new(metadata.clone()),
+                    },
+                },
+                TaskBatchResult {
+                    task_id: "missing".to_owned(),
+                    outcome: TaskBatchOutcome::Succeeded {
+                        output: serde_json::json!({"ok": true}),
+                        metadata: Box::new(metadata),
+                    },
+                },
+            ],
+            Some(&serde_json::json!({"value": "changed"})),
+            false,
+            Utc::now(),
+            "trace",
+        );
+        assert!(matches!(result, Err(StoreError::TaskNotFound { .. })));
+        assert_eq!(
+            store.list_tasks("run").expect("tasks")[0].state,
+            TaskState::Running
+        );
+        assert_eq!(
+            store.load_run("run").expect("run").working_memory,
+            serde_json::json!({})
+        );
     }
 
     #[test]

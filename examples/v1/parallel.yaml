@@ -1,0 +1,32 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: deterministic-parallel
+spec:
+  runtime:
+    maxConcurrency: 2
+  policy:
+    approval: never
+  memory:
+    working:
+      seed: durable
+  actions:
+    remember:
+      kind: builtin.memory.write
+    recall:
+      kind: builtin.memory.read
+  tasks:
+    - id: write-left
+      uses: action:remember
+      with: { key: left, value: one }
+    - id: write-right
+      uses: action:remember
+      with: { key: right, value: two }
+    - id: read-left
+      uses: action:recall
+      needs: [write-left, write-right]
+      with: { key: left }
+    - id: read-right
+      uses: action:recall
+      needs: [write-left, write-right]
+      with: { key: right }

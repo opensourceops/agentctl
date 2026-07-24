@@ -43,7 +43,7 @@ complete, every entry must have exactly one final disposition:
 | NET-001 | Network policy | open | implemented |
 | ISO-001 | Process isolation | open | redesigned |
 | BUD-001 | Resource and cost budgets | open | implemented |
-| SCH-001 | Deterministic parallel execution | open | implemented |
+| SCH-001 | Deterministic parallel execution | in progress | implemented |
 | DYN-001 | Foreach and matrix | open | implemented |
 | COND-001 | Conditions and routers | open | implemented |
 | LOOP-001 | Bounded loops | open | implemented |
@@ -207,7 +207,7 @@ complete, every entry must have exactly one final disposition:
 
 ### SCH-001: Deterministic parallel scheduling
 
-- Current behavior: `maxConcurrency` must be 1.
+- Current behavior: `maxConcurrency` accepts 1 through 64 and defaults to 1.
 - User impact: independent model and deterministic tasks cannot overlap.
 - Security or durability impact: naive concurrency would make state and effect
   order race-dependent.
@@ -217,13 +217,21 @@ complete, every entry must have exactly one final disposition:
 - Required implementation: concurrency semaphore, isolated task snapshots,
   ordered commit queue, failure/cancellation/approval behavior, effect and trace
   parentage, repair/retry/replay integration, and plan visibility.
-- Migration impact: runtime/plan format versions and DSL schema change.
+- Migration impact: additive DSL/plan fields retain sequential defaults.
+  Database migration 11 adds an encrypted-capable per-task execution-memory
+  snapshot so crashes and approvals preserve the original batch boundary.
 - Tests: real overlap, stable commit order, conflict rejection, cancellation,
   approval, failures, effects, replay, repair, and container execution.
 - Examples: parallel deterministic and agent branches.
 - Live evidence: two bounded OpenAI branches.
 - Documentation: scheduling and state conflict rules.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Deterministic verification covers real
+  overlap and the concurrency cap, compiled write-conflict rejection, runtime
+  declared-key enforcement before effects, atomic rollback injection,
+  plan-order audit assertions, disjoint state merge, stop/continue boundary
+  behavior, cancellation, multi-approval resume, failed-only retry, selective
+  repair, and offline replay. Program state remains in progress until the
+  bounded live OpenAI branch scenario and OCI gate execute.
 
 ### DYN-001: Bounded foreach and matrix expansion
 

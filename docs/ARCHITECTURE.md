@@ -11,7 +11,7 @@ CLI ───────┬────────> runtime ─────> c
 runtime ────────────> observability ─> core contracts
 ```
 
-`agentctl-core` owns deterministic domain behavior: strict parsing, migration, compilation, template resolution, effect identities, state machines, policy, and provider/tool interfaces. It knows no HTTP client, database, or CLI type. `agentctl-store` is the SQLite implementation. `agentctl-runtime` schedules one stable ready task at a time and coordinates injected clocks, IDs, executors, providers, protocols, persistence, and traces. Concrete network adapters and rendering stay at the edges.
+`agentctl-core` owns deterministic domain behavior: strict parsing, migration, compilation, template resolution, effect identities, state machines, policy, and provider/tool interfaces. It knows no HTTP client, database, or CLI type. `agentctl-store` is the SQLite implementation. `agentctl-runtime` schedules stable bounded ready batches and coordinates injected clocks, IDs, executors, providers, protocols, persistence, and traces. Concrete network adapters and rendering stay at the edges.
 
 ## Execution
 
@@ -23,7 +23,19 @@ State transitions, checkpoint creation, working-memory replacement, artifact ref
 
 ## Determinism and concurrency
 
-Ready tasks are ordered by YAML declaration order after dependencies. `maxConcurrency` currently must be `1`. Parallel execution, loops, matrix/foreach expansion, routers, sub-workflows, handlers, compensation execution, and event triggers are deferred because deterministic merge and recovery semantics are not yet frozen. The DSL carries optional compensation metadata on a tool contract, but the runtime does not execute compensation.
+Ready tasks are ordered by YAML declaration order after dependencies.
+`maxConcurrency` defaults to one and is bounded at 64. A parallel batch reads
+per-task durable memory snapshots, executes independently, then commits
+successful outputs, disjoint memory deltas, failures, artifact references,
+audit events, and the checkpoint in compiled order in one transaction.
+Unordered overlapping `memoryWrites` fail compilation. Effects and provider
+sessions remain task-local. See ADR 0008 and
+[Deterministic parallel tasks](guides/PARALLEL_TASKS.md).
+
+Loops, matrix/foreach expansion, routers, sub-workflows, handlers,
+compensation execution, and event triggers still require their own explicit
+state and recovery contracts. The DSL carries optional compensation metadata
+on a tool contract, but the runtime does not execute compensation.
 
 Clock and identifier generation are injected. Provider responses, tools, and external actions are injected interfaces. Cryptographic digests canonicalize identity; output maps use stable ordering where the public contract requires it.
 

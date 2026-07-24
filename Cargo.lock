@@ -139,6 +139,7 @@ dependencies = [
  "agentctl-store",
  "async-trait",
  "chrono",
+ "futures-util",
  "hex",
  "jsonschema",
  "nix",

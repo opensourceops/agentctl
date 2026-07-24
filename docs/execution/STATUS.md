@@ -22,7 +22,13 @@ The independent release-candidate review found and remediated one P0, five P1s, 
 
 ## Product boundary
 
-`agentctl` is a schedulable local runtime, not a scheduler or distributed control plane. The workflow API remains alpha and scheduling is sequential. Provider, filesystem, process, and network policy is not an OS sandbox. At-most-once external work can require manual reconciliation. See [Limitations](../LIMITATIONS.md) for the complete release-blocker/hardening/post-v1/non-goal classification.
+`agentctl` is a schedulable local runtime, not an external scheduler or
+distributed control plane. The workflow API remains alpha. One run may execute
+bounded independent tasks concurrently with deterministic plan-order commits;
+cross-run and cross-host overlap remains external. Provider, filesystem,
+process, and network policy is not an OS sandbox. At-most-once external work
+can require explicit reconciliation. See [Limitations](../LIMITATIONS.md) for
+the complete release-blocker/hardening/post-v1/non-goal classification.
 
 ## External evidence not claimed
 

@@ -31,7 +31,7 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `mcpServers` | `{}` | Pinned MCP Streamable HTTP peers. |
 | `a2aPeers` | `{}` | Pinned A2A Agent Card peers. |
 | `packs` | `[]` | Local reviewed pack references. |
-| `runtime` | sequential defaults | Runtime controls. `maxConcurrency` must be `1`. |
+| `runtime` | bounded defaults | Runtime controls. `maxConcurrency` defaults to `1` and accepts `1` through `64`. |
 | `output` | defaults | Output presentation contract. |
 
 ## Tasks
@@ -41,6 +41,7 @@ Each task requires `id` and `uses`. `uses` is `action:name` or `agent:name`.
 | Field | Default | Validation |
 | --- | --- | --- |
 | `needs` | `[]` | Every ID must exist; cycles fail. |
+| `memoryWrites` | inferred or `[]` | Working-memory keys. Literal memory-write keys are inferred; templated keys require an explicit set. Unordered overlaps fail when concurrency is greater than one. |
 | `when` | true | Constrained boolean/equality expression. |
 | `vars` | `{}` | Task-local JSON values. |
 | `with` | `{}` | Typed action or agent input. |
@@ -49,7 +50,10 @@ Each task requires `id` and `uses`. `uses` is `action:name` or `agent:name`.
 | `timeoutSeconds` | action or agent default | Must be within the implementation bound. |
 | failure behavior | fail | Unsupported dynamic control flow is rejected. |
 
-Ready tasks run in YAML declaration order. There is no `foreach`, matrix, loop, router, sub-workflow, handler, or parallel group in this version.
+Ready tasks are selected in YAML declaration order up to `maxConcurrency`.
+They read isolated durable snapshots and commit in compiled order. There is no
+`foreach`, matrix, loop, router, sub-workflow, handler, or separate parallel
+group in this version.
 
 ## Agents
 

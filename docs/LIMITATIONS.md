@@ -23,7 +23,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These are useful extensions but are not required by the product thesis. They need new deterministic state and compatibility contracts before implementation:
 
-- parallel task execution; `foreach` and matrix expansion; loops; routers; sub-workflows; compensation execution;
+- `foreach` and matrix expansion; loops; routers; sub-workflows; compensation execution;
 - structured agent teams and handoffs;
 - model token streaming into CLI/workflow state;
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
@@ -42,7 +42,7 @@ These are useful extensions but are not required by the product thesis. They nee
 ## Current operational limits
 
 - The document API is `v1alpha1`; pin the binary/image version and validate before upgrading.
-- Scheduling is sequential (`maxConcurrency: 1`). Separate runs may overlap safely in SQLite, but they can still target the same external resource. Use the external scheduler's overlap controls (`flock`, systemd unit serialization, or Kubernetes `concurrencyPolicy: Forbid`) when effects must not overlap.
+- Parallel scheduling is local to one run and process, bounded at 64 tasks, and defaults to sequential execution. Working-memory conflicts fail compilation, but tasks that target the same external resource still require explicit `needs` ordering or that system's concurrency controls. Separate runs also require external overlap controls when effects must not overlap.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
