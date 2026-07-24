@@ -2462,7 +2462,7 @@ impl Runtime {
                 {
                     continue;
                 }
-                if !matches!(task.uses, TaskUse::Aggregate(_))
+                if !matches!(task.uses, TaskUse::Aggregate(_) | TaskUse::LoopAggregate(_))
                     && dependencies.iter().any(|dependency| {
                         matches!(
                             dependency.state,
@@ -3002,7 +3002,7 @@ impl Runtime {
                 .iter()
                 .filter_map(|needed| tasks.iter().find(|candidate| &candidate.task_id == needed))
                 .collect();
-            if !matches!(task.uses, TaskUse::Aggregate(_))
+            if !matches!(task.uses, TaskUse::Aggregate(_) | TaskUse::LoopAggregate(_))
                 && dependencies.iter().any(|dependency| {
                     matches!(
                         dependency.state,
@@ -3453,6 +3453,65 @@ impl Runtime {
                         "selected": selected,
                         "matched": matched.is_some(),
                         "destinations": destinations,
+                    }),
+                    memory: None,
+                })
+            }
+            TaskUse::LoopAggregate(loop_aggregate) => {
+                let records = self.store.list_tasks(&run.run_id)?;
+                let items = loop_aggregate
+                    .children
+                    .iter()
+                    .enumerate()
+                    .map(|(index, child)| {
+                        let record = records
+                            .iter()
+                            .find(|candidate| &candidate.task_id == child)
+                            .ok_or_else(|| {
+                                RuntimeError::InvalidState(format!(
+                                    "loop iteration task `{child}` disappeared"
+                                ))
+                            })?;
+                        Ok(serde_json::json!({
+                            "index": index,
+                            "taskId": child,
+                            "state": record.state,
+                            "output": record.output,
+                            "error": record.error,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                if let Some(last_id) = loop_aggregate.children.last()
+                    && let Some(last) = records.iter().find(|record| &record.task_id == last_id)
+                    && last.state == TaskState::Succeeded
+                {
+                    let mut next_context = context.clone();
+                    next_context.vars.insert(
+                        "loopIndex".to_owned(),
+                        Value::from(loop_aggregate.children.len()),
+                    );
+                    next_context.vars.insert(
+                        "loopPrevious".to_owned(),
+                        last.output.clone().unwrap_or(Value::Null),
+                    );
+                    if evaluate_when(&loop_aggregate.condition, &next_context)? {
+                        return Err(RuntimeError::Task {
+                            task: task.id.clone(),
+                            message: format!(
+                                "loop reached maxIterations {} while its condition remained true",
+                                loop_aggregate.children.len()
+                            ),
+                        });
+                    }
+                }
+                let iterations = items
+                    .iter()
+                    .filter(|item| item["state"] != "skipped")
+                    .count();
+                Ok(TaskExecution::Complete {
+                    output: serde_json::json!({
+                        "iterations": iterations,
+                        "items": items,
                     }),
                     memory: None,
                 })
@@ -4941,6 +5000,15 @@ fn task_output_schema(workflow: &Workflow, task: &agentctl_core::CompiledTask) -
             },
             "additionalProperties": false
         })),
+        TaskUse::LoopAggregate(_) => Some(serde_json::json!({
+            "type": "object",
+            "required": ["iterations", "items"],
+            "properties": {
+                "iterations": {"type": "integer", "minimum": 0},
+                "items": {"type": "array"}
+            },
+            "additionalProperties": false
+        })),
     })
 }
 
@@ -5034,6 +5102,11 @@ fn task_definition_fingerprint(
             "kind": "router",
             "task": task,
             "router": router,
+        }),
+        TaskUse::LoopAggregate(loop_aggregate) => serde_json::json!({
+            "kind": "loop_aggregate",
+            "task": task,
+            "loop": loop_aggregate,
         }),
     };
     versioned_json_digest(&serde_json::json!({
@@ -9774,6 +9847,366 @@ spec:
                 .list_effects(&replay.run_id)
                 .expect("replay effects")
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_loop_records_iterations_and_supports_retry_repair_replay_and_cancellation() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: bounded-loop }
+spec:
+  policy: { approval: never }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: refine
+      uses: "action:assign"
+      loop:
+        maxIterations: 3
+        while: "${{ vars.loopIndex < 2 }}"
+        initial: { value: seed }
+      with:
+        previous: "${{ vars.loopPrevious }}"
+        iteration: "${{ vars.loopIndex }}"
+"#;
+        let (workflow, plan) = compile_fixture(source);
+        let children = match &plan.tasks["refine"].uses {
+            TaskUse::LoopAggregate(loop_aggregate) => loop_aggregate.children.clone(),
+            other => panic!("expected loop aggregate, got {other:?}"),
+        };
+        let source_outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("bounded loop succeeds");
+        assert_eq!(source_outcome.state, RunState::Succeeded);
+        let source_tasks = store
+            .list_tasks(&source_outcome.run_id)
+            .expect("source tasks");
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == children[0])
+                .expect("first iteration")
+                .state,
+            TaskState::Succeeded
+        );
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == children[1])
+                .expect("second iteration")
+                .state,
+            TaskState::Succeeded
+        );
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == children[2])
+                .expect("guarded iteration")
+                .state,
+            TaskState::Skipped
+        );
+        let aggregate = source_tasks
+            .iter()
+            .find(|task| task.task_id == "refine")
+            .and_then(|task| task.output.as_ref())
+            .expect("loop aggregate");
+        assert_eq!(aggregate["iterations"], 2);
+        assert_eq!(aggregate["items"][2]["state"], "skipped");
+        assert_eq!(
+            aggregate["items"][1]["output"]["output"]["iteration"],
+            serde_json::json!(1)
+        );
+
+        let retry_plan = runtime
+            .plan_retry(
+                &source_outcome.run_id,
+                &workflow,
+                &plan,
+                &[children[1].clone()],
+                false,
+                true,
+            )
+            .expect("loop retry plan");
+        assert!(retry_plan.compatible, "{:?}", retry_plan.blocked_reuse);
+        assert_eq!(retry_plan.reused_tasks, [children[0].clone()]);
+        assert!(retry_plan.rerun_tasks.contains(&children[1]));
+        assert!(retry_plan.rerun_tasks.contains(&children[2]));
+        assert!(retry_plan.rerun_tasks.contains(&"refine".to_owned()));
+        let retried = runtime
+            .retry(
+                &workflow,
+                &plan,
+                retry_plan,
+                Some("retry from iteration boundary"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("loop retry");
+        assert_eq!(retried.state, RunState::Succeeded);
+
+        let repair_plan = runtime
+            .plan_repair(
+                &source_outcome.run_id,
+                &workflow,
+                &plan,
+                &[children[1].clone()],
+                true,
+            )
+            .expect("loop repair plan");
+        assert!(repair_plan.compatible, "{:?}", repair_plan.blocked_reuse);
+        assert_eq!(repair_plan.reused_tasks, [children[0].clone()]);
+        let repaired = runtime
+            .repair(
+                &workflow,
+                &plan,
+                repair_plan,
+                Some("repair from iteration boundary"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("loop repair");
+        assert_eq!(repaired.state, RunState::Succeeded);
+        let replay = runtime
+            .replay(&repaired.run_id)
+            .await
+            .expect("offline loop replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert_eq!(replay.output, repaired.output);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("replay effects")
+                .is_empty()
+        );
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &cancellation,
+            )
+            .await
+            .expect("loop cancellation");
+        assert_eq!(cancelled.state, RunState::Cancelled);
+        assert!(
+            store
+                .list_tasks(&cancelled.run_id)
+                .expect("cancelled tasks")
+                .iter()
+                .all(|task| task.state == TaskState::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_loop_handles_zero_iterations_and_fails_closed_at_its_bound() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (zero_workflow, zero_plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: zero-loop }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: bounded
+      uses: "action:assign"
+      loop:
+        maxIterations: 2
+        while: "${{ vars.loopIndex < 0 }}"
+"#,
+        );
+        let zero = runtime
+            .start(
+                &zero_workflow,
+                &zero_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("zero-iteration loop succeeds");
+        assert_eq!(zero.state, RunState::Succeeded);
+        let zero_tasks = store.list_tasks(&zero.run_id).expect("zero tasks");
+        assert_eq!(
+            zero_tasks
+                .iter()
+                .find(|task| task.task_id == "bounded")
+                .and_then(|task| task.output.as_ref())
+                .expect("zero aggregate")["iterations"],
+            0
+        );
+
+        let (one_workflow, one_plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: one-loop }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: bounded
+      uses: "action:assign"
+      loop:
+        maxIterations: 2
+        while: "${{ vars.loopIndex < 1 }}"
+"#,
+        );
+        let one = runtime
+            .start(
+                &one_workflow,
+                &one_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("one-iteration loop succeeds");
+        assert_eq!(
+            store
+                .list_tasks(&one.run_id)
+                .expect("one tasks")
+                .iter()
+                .find(|task| task.task_id == "bounded")
+                .and_then(|task| task.output.as_ref())
+                .expect("one aggregate")["iterations"],
+            1
+        );
+
+        let (bound_workflow, bound_plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: exhausted-loop }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: bounded
+      uses: "action:assign"
+      loop:
+        maxIterations: 2
+        while: "${{ vars.loopIndex < 3 }}"
+"#,
+        );
+        let failed_run_id = match runtime
+            .start(
+                &bound_workflow,
+                &bound_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed {
+                run_id,
+                task,
+                message,
+                ..
+            }) => {
+                assert_eq!(task, "bounded");
+                assert!(message.contains("reached maxIterations 2"));
+                run_id
+            }
+            other => panic!("expected exhausted loop failure, got {other:?}"),
+        };
+        assert_eq!(
+            store
+                .list_tasks(&failed_run_id)
+                .expect("failed tasks")
+                .iter()
+                .find(|task| task.task_id == "bounded")
+                .expect("failed aggregate")
+                .state,
+            TaskState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_loop_cancellation_keeps_in_flight_provider_effect_uncertain() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(CancellationProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: loop-effect-cancellation }
+spec:
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: wait
+      maxTurns: 1
+  tasks:
+    - id: bounded
+      uses: "agent:worker"
+      loop:
+        maxIterations: 2
+        while: "${{ vars.loopIndex < 2 }}"
+      with:
+        prompt: "iteration ${{ vars.loopIndex }}"
+"#,
+        );
+        let cancellation = CancellationToken::new();
+        let run_cancellation = cancellation.clone();
+        let handle = tokio::spawn(async move {
+            runtime
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &run_cancellation,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while provider.started.load(Ordering::SeqCst) != 1 {
+                provider.notify.notified().await;
+            }
+        })
+        .await
+        .expect("first iteration started");
+        cancellation.cancel();
+        let outcome = handle.await.expect("join").expect("cancel outcome");
+        assert_eq!(outcome.state, RunState::Cancelled);
+        let effects = store.list_effects(&outcome.run_id).expect("effects");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].status, EffectStatus::Uncertain);
+        assert!(
+            store
+                .list_tasks(&outcome.run_id)
+                .expect("tasks")
+                .iter()
+                .all(|task| task.state == TaskState::Cancelled)
         );
     }
 

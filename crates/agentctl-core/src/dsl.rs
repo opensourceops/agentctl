@@ -426,6 +426,8 @@ pub struct TaskDefinition {
     pub matrix: Option<MatrixDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<RouteDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "loop")]
+    pub loop_definition: Option<LoopDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory_writes: Vec<String>,
     #[serde(default)]
@@ -487,6 +489,18 @@ pub struct RouteDefinition {
 pub struct RouteCaseDefinition {
     pub equals: Value,
     pub tasks: Vec<String>,
+}
+
+pub const MAX_LOOP_ITERATIONS: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoopDefinition {
+    pub max_iterations: usize,
+    #[serde(rename = "while")]
+    pub condition: String,
+    #[serde(default)]
+    pub initial: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1005,6 +1019,19 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
                 .with_path(format!("spec.tasks[{position}].matrix.maxItems")),
             );
         }
+        if let Some(loop_definition) = &task.loop_definition
+            && (loop_definition.max_iterations == 0
+                || loop_definition.max_iterations > MAX_LOOP_ITERATIONS)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("loop.maxIterations must be between 1 and {MAX_LOOP_ITERATIONS}"),
+                )
+                .with_path(format!("spec.tasks[{position}].loop.maxIterations")),
+            );
+        }
     }
     for (name, action) in &workflow.spec.actions {
         if let Err(message) = action.validate_process_bounds() {
@@ -1351,5 +1378,33 @@ spec:
         );
         let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("invalid bound");
         assert!(diagnostics[0].message.contains("between 1 and 16777216"));
+    }
+
+    #[test]
+    fn rejects_loop_iteration_bounds_outside_framework_limits() {
+        for max_iterations in [0, MAX_LOOP_ITERATIONS + 1] {
+            let source = format!(
+                r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: invalid-loop-bound }}
+spec:
+  actions:
+    assign: {{ kind: builtin.assign }}
+  tasks:
+    - id: bounded
+      uses: action:assign
+      loop:
+        maxIterations: {max_iterations}
+        while: "${{{{ vars.loopIndex < 1 }}}}"
+"#
+            );
+            let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("invalid loop bound");
+            assert!(diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .message
+                    .contains("loop.maxIterations must be between 1 and 64")
+            }));
+        }
     }
 }

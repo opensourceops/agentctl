@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::PLAN_FORMAT_VERSION;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::dsl::{
-    ActionKind, EffectClass, Idempotency, JsonMap, MAX_EXPANSION_ITEMS, ProviderKind,
-    RetryDefinition, TaskDefinition, ToolKind, Workflow,
+    ActionKind, EffectClass, Idempotency, JsonMap, MAX_EXPANSION_ITEMS, MAX_LOOP_ITERATIONS,
+    ProviderKind, RetryDefinition, TaskDefinition, ToolKind, Workflow,
 };
 use crate::template::{TemplateError, referenced_tasks, validate_expression};
 
@@ -72,12 +72,20 @@ pub struct RouteGuard {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledLoopAggregate {
+    pub children: Vec<String>,
+    pub condition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "name")]
 pub enum TaskUse {
     Action(String),
     Agent(String),
     Aggregate(Vec<String>),
     Router(CompiledRouter),
+    LoopAggregate(CompiledLoopAggregate),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,7 +183,7 @@ struct ExpandedTaskDefinition {
     definition: TaskDefinition,
     source_position: usize,
     expansion: Option<CompiledExpansion>,
-    aggregate_children: Option<Vec<String>>,
+    synthetic_use: Option<TaskUse>,
 }
 
 fn expand_tasks(
@@ -185,6 +193,161 @@ fn expand_tasks(
 ) -> Vec<ExpandedTaskDefinition> {
     let mut expanded = Vec::new();
     for (position, task) in workflow.spec.tasks.iter().enumerate() {
+        if let Some(loop_definition) = &task.loop_definition {
+            let loop_path = format!("spec.tasks[{position}].loop");
+            if task.foreach.is_some() || task.matrix.is_some() || task.route.is_some() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "loop task `{}` cannot also declare foreach, matrix, or route",
+                            task.id
+                        ),
+                    )
+                    .with_path(loop_path),
+                );
+                continue;
+            }
+            if task.uses == "router" {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!("router task `{}` cannot be a loop body", task.id),
+                    )
+                    .with_path(format!("spec.tasks[{position}].uses")),
+                );
+                continue;
+            }
+            if task.when.is_some() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "loop task `{}` uses loop.while as its iteration guard and cannot also declare when",
+                            task.id
+                        ),
+                    )
+                    .with_path(format!("spec.tasks[{position}].when")),
+                );
+                continue;
+            }
+            if task.vars.contains_key("loopIndex") || task.vars.contains_key("loopPrevious") {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!("loop task `{}` bindings conflict with task vars", task.id),
+                    )
+                    .with_path(format!("spec.tasks[{position}].vars")),
+                );
+                continue;
+            }
+            if loop_definition.max_iterations == 0
+                || loop_definition.max_iterations > MAX_LOOP_ITERATIONS
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "loop task `{}` maxIterations must be between 1 and {MAX_LOOP_ITERATIONS}",
+                            task.id
+                        ),
+                    )
+                    .with_path(format!("spec.tasks[{position}].loop.maxIterations")),
+                );
+                continue;
+            }
+            let condition = loop_definition
+                .condition
+                .replace("loop.output", "vars.loopPrevious");
+            if !is_exact_template(&condition) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::InvalidTemplate,
+                        file,
+                        format!(
+                            "loop task `{}` while must be one exact typed condition",
+                            task.id
+                        ),
+                    )
+                    .with_path(format!("spec.tasks[{position}].loop.while")),
+                );
+                continue;
+            }
+            if let Err(error) = validate_expression(&condition) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::InvalidTemplate,
+                        file,
+                        format!("loop task `{}`: {error}", task.id),
+                    )
+                    .with_path(format!("spec.tasks[{position}].loop.while")),
+                );
+                continue;
+            }
+
+            let mut children: Vec<String> = Vec::with_capacity(loop_definition.max_iterations);
+            for index in 0..loop_definition.max_iterations {
+                let mut bindings = JsonMap::new();
+                bindings.insert("loopIndex".to_owned(), Value::from(index));
+                bindings.insert(
+                    "loopPrevious".to_owned(),
+                    if let Some(previous) = children.last() {
+                        Value::String(format!("${{{{ tasks.{previous}.output }}}}"))
+                    } else {
+                        loop_definition.initial.clone()
+                    },
+                );
+                let id = expanded_task_id(&task.id, index, &bindings);
+                let mut child = task.clone();
+                child.id.clone_from(&id);
+                child.loop_definition = None;
+                child.vars.extend(bindings.clone());
+                child.when = Some(condition.clone());
+                if let Some(previous) = children.last() {
+                    child.needs.push(previous.clone());
+                }
+                children.push(id.clone());
+                expanded.push(ExpandedTaskDefinition {
+                    definition: child,
+                    source_position: position,
+                    expansion: Some(CompiledExpansion {
+                        parent: task.id.clone(),
+                        index,
+                        bindings,
+                    }),
+                    synthetic_use: None,
+                });
+            }
+
+            let mut aggregate = task.clone();
+            aggregate.needs.clone_from(&children);
+            aggregate.foreach = None;
+            aggregate.matrix = None;
+            aggregate.route = None;
+            aggregate.loop_definition = None;
+            aggregate.memory_writes.clear();
+            aggregate.when = None;
+            aggregate.vars.clear();
+            aggregate.input.clear();
+            aggregate.retry = RetryDefinition::default();
+            aggregate.timeout_seconds = None;
+            aggregate.output_schema = None;
+            expanded.push(ExpandedTaskDefinition {
+                definition: aggregate,
+                source_position: position,
+                expansion: None,
+                synthetic_use: Some(TaskUse::LoopAggregate(CompiledLoopAggregate {
+                    children,
+                    condition,
+                })),
+            });
+            continue;
+        }
         if task.route.is_some() && (task.foreach.is_some() || task.matrix.is_some()) {
             diagnostics.push(
                 Diagnostic::error(
@@ -202,7 +365,7 @@ fn expand_tasks(
                     definition: task.clone(),
                     source_position: position,
                     expansion: None,
-                    aggregate_children: None,
+                    synthetic_use: None,
                 });
                 continue;
             }
@@ -382,7 +545,7 @@ fn expand_tasks(
                     index,
                     bindings: values,
                 }),
-                aggregate_children: None,
+                synthetic_use: None,
             });
         }
 
@@ -402,7 +565,7 @@ fn expand_tasks(
             definition: aggregate,
             source_position: position,
             expansion: None,
-            aggregate_children: Some(children),
+            synthetic_use: Some(TaskUse::Aggregate(children)),
         });
     }
     expanded
@@ -412,6 +575,15 @@ fn expanded_task_id(parent: &str, index: usize, bindings: &JsonMap) -> String {
     let encoded = serde_json::to_vec(bindings).unwrap_or_default();
     let digest = sha256(&encoded);
     format!("{parent}--{index:04}-{}", &digest[..12])
+}
+
+fn is_exact_template(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("${{")
+        && trimmed
+            .get(3..)
+            .and_then(|value| value.find("}}"))
+            .is_some_and(|closing| closing + 3 == trimmed.len() - 2)
 }
 
 pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diagnostic>> {
@@ -448,8 +620,8 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .with_path(format!("spec.tasks[{position}].id")),
             );
         }
-        let task_use = if let Some(children) = &expanded.aggregate_children {
-            TaskUse::Aggregate(children.clone())
+        let task_use = if let Some(synthetic_use) = &expanded.synthetic_use {
+            synthetic_use.clone()
         } else if task.uses == "router" {
             let Some(route) = &task.route else {
                 diagnostics.push(
@@ -516,10 +688,16 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .get(name)
                 .map(|action| action.defaults.clone())
                 .unwrap_or_default(),
-            TaskUse::Agent(_) | TaskUse::Aggregate(_) | TaskUse::Router(_) => JsonMap::new(),
+            TaskUse::Agent(_)
+            | TaskUse::Aggregate(_)
+            | TaskUse::Router(_)
+            | TaskUse::LoopAggregate(_) => JsonMap::new(),
         };
         input.extend(task.input.clone());
-        let memory_writes = if matches!(task_use, TaskUse::Aggregate(_) | TaskUse::Router(_)) {
+        let memory_writes = if matches!(
+            task_use,
+            TaskUse::Aggregate(_) | TaskUse::Router(_) | TaskUse::LoopAggregate(_)
+        ) {
             Vec::new()
         } else {
             task_memory_writes(
@@ -539,7 +717,10 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .get(name)
                 .map(|agent| agent.vars.clone())
                 .unwrap_or_default(),
-            TaskUse::Action(_) | TaskUse::Aggregate(_) | TaskUse::Router(_) => JsonMap::new(),
+            TaskUse::Action(_)
+            | TaskUse::Aggregate(_)
+            | TaskUse::Router(_)
+            | TaskUse::LoopAggregate(_) => JsonMap::new(),
         };
         vars.extend(task.vars.clone());
         declaration_order.push(task.id.clone());
@@ -630,6 +811,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 }),
             TaskUse::Aggregate(_) => PlanPredictability::FullyPredictable,
             TaskUse::Router(_) => PlanPredictability::FullyPredictable,
+            TaskUse::LoopAggregate(_) => PlanPredictability::FullyPredictable,
         };
     }
     let predictability = tasks
@@ -724,7 +906,10 @@ fn task_memory_writes(
             .actions
             .get(name)
             .is_some_and(|action| action.kind == ActionKind::MemoryWrite),
-        TaskUse::Agent(_) | TaskUse::Aggregate(_) | TaskUse::Router(_) => false,
+        TaskUse::Agent(_)
+        | TaskUse::Aggregate(_)
+        | TaskUse::Router(_)
+        | TaskUse::LoopAggregate(_) => false,
     };
     if !is_memory_write {
         if !declared.is_empty() {
@@ -805,13 +990,7 @@ fn validate_routers(
             .copied()
             .unwrap_or_default();
         let route_path = format!("spec.tasks[{position}].route");
-        let trimmed = router.select.trim();
-        let exact_template = trimmed.starts_with("${{")
-            && trimmed
-                .get(3..)
-                .and_then(|value| value.find("}}"))
-                .is_some_and(|closing| closing + 3 == trimmed.len() - 2);
-        if !exact_template {
+        if !is_exact_template(&router.select) {
             diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::InvalidTemplate,
@@ -1093,7 +1272,7 @@ fn plan_requirements(
                     predictability: task.predictability,
                 }]
             }
-            TaskUse::Aggregate(_) | TaskUse::Router(_) => Vec::new(),
+            TaskUse::Aggregate(_) | TaskUse::Router(_) | TaskUse::LoopAggregate(_) => Vec::new(),
         })
         .collect();
     PlanRequirements {
@@ -1837,6 +2016,170 @@ spec:
             diagnostic
                 .message
                 .contains("foreach bindings conflict with existing task vars")
+        }));
+    }
+
+    #[test]
+    fn bounded_loop_expands_to_stable_sequential_iteration_tasks() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: bounded-loop }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: refine
+      uses: "action:assign"
+      loop:
+        maxIterations: 3
+        while: "${{ vars.loopIndex < 2 }}"
+        initial: { value: seed }
+      with:
+        previous: "${{ vars.loopPrevious }}"
+        iteration: "${{ vars.loopIndex }}"
+    - { id: done, uses: "action:assign", needs: [refine] }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("compiles");
+        let second = compile(&workflow, "fixture.yaml").expect("compiles deterministically");
+        assert_eq!(plan, second);
+
+        let loop_aggregate = match &plan.tasks["refine"].uses {
+            TaskUse::LoopAggregate(loop_aggregate) => loop_aggregate,
+            other => panic!("expected loop aggregate, got {other:?}"),
+        };
+        assert_eq!(loop_aggregate.children.len(), 3);
+        assert_eq!(loop_aggregate.condition, "${{ vars.loopIndex < 2 }}");
+        assert!(loop_aggregate.children[0].starts_with("refine--0000-"));
+        assert_eq!(
+            plan.tasks[&loop_aggregate.children[0]].vars["loopPrevious"],
+            serde_json::json!({"value": "seed"})
+        );
+        assert_eq!(
+            plan.tasks[&loop_aggregate.children[1]].vars["loopPrevious"],
+            Value::String(format!(
+                "${{{{ tasks.{}.output }}}}",
+                loop_aggregate.children[0]
+            ))
+        );
+        assert_eq!(
+            plan.tasks[&loop_aggregate.children[1]].needs,
+            [loop_aggregate.children[0].clone()]
+        );
+        assert_eq!(
+            plan.tasks[&loop_aggregate.children[2]].needs,
+            [loop_aggregate.children[1].clone()]
+        );
+        assert_eq!(plan.tasks["refine"].needs, loop_aggregate.children);
+        assert_eq!(plan.tasks["done"].needs, ["refine"]);
+    }
+
+    #[test]
+    fn bounded_loop_rejects_ambiguous_or_invalid_declarations() {
+        let invalid = [
+            (
+                r#"loop: { maxIterations: 2, while: "prefix ${{ vars.loopIndex < 1 }}" }"#,
+                "while must be one exact typed condition",
+            ),
+            (
+                r#"loop: { maxIterations: 2, while: "${{ vars.loopIndex < \"two\" }}" }"#,
+                "unsupported expression",
+            ),
+        ];
+        for (loop_definition, expected) in invalid {
+            let source = format!(
+                r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: invalid-loop }}
+spec:
+  actions:
+    assign: {{ kind: builtin.assign }}
+  tasks:
+    - id: refine
+      uses: "action:assign"
+      {loop_definition}
+"#
+            );
+            let workflow = parse(&source);
+            let diagnostics = compile(&workflow, "fixture.yaml").expect_err("loop rejected");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected)),
+                "{diagnostics:?}"
+            );
+        }
+
+        let collision = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-loop-collision }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: refine
+      uses: "action:assign"
+      vars: { loopIndex: 1 }
+      when: "${{ inputs.enabled }}"
+      foreach: { items: [a] }
+      loop: { maxIterations: 2, while: "${{ vars.loopIndex < 1 }}" }
+"#,
+        );
+        let diagnostics = compile(&collision, "fixture.yaml").expect_err("loop rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot also declare foreach, matrix, or route")
+        }));
+
+        let existing_when = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-loop-when }
+spec:
+  inputs: { enabled: true }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: refine
+      uses: "action:assign"
+      when: "${{ inputs.enabled }}"
+      loop: { maxIterations: 2, while: "${{ vars.loopIndex < 1 }}" }
+"#,
+        );
+        let diagnostics = compile(&existing_when, "fixture.yaml").expect_err("loop rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("uses loop.while as its iteration guard")
+        }));
+
+        let binding_collision = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-loop-binding }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: refine
+      uses: "action:assign"
+      vars: { loopPrevious: existing }
+      loop: { maxIterations: 2, while: "${{ vars.loopIndex < 1 }}" }
+"#,
+        );
+        let diagnostics = compile(&binding_collision, "fixture.yaml").expect_err("loop rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("bindings conflict with task vars")
         }));
     }
 

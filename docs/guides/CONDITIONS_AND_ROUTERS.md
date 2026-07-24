@@ -5,7 +5,7 @@ constrained template evaluator and cannot execute code.
 
 ## Conditions
 
-`when` accepts one path, optional `not`, or equality against a JSON value:
+`when` accepts one path, optional `not`, or a typed comparison:
 
 ```yaml
 vars:
@@ -30,6 +30,10 @@ sets the task to `skipped` with this durable output shape:
 
 For a true condition, the same decision is retained in the transition audit
 before the normal task output replaces the temporary decision value.
+
+`==` and `!=` accept JSON literals or strings. `<`, `<=`, `>`, and `>=` accept
+numeric literals and require a numeric path value. Arithmetic, functions,
+indexing, and path-to-path comparisons are rejected.
 
 ## Routers
 

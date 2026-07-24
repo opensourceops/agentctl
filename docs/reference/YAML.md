@@ -45,6 +45,7 @@ Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`, or
 | `foreach` | none | Static typed `items`, binding `as`, and `maxItems`. Mutually exclusive with `matrix`; maximum 256 children. |
 | `matrix` | none | Static `axes` Cartesian product and `maxItems`. Axis names are template-safe identifiers; maximum 256 children. |
 | `route` | required for `uses: router` | Exact typed `select`, unique typed cases, enumerated destinations, and optional default destinations. Every destination must depend on the router. |
+| `loop` | none | Required `maxIterations` from 1 through 64, exact typed `while`, and optional typed `initial` value. Mutually exclusive with `when`, `foreach`, `matrix`, and `route`. |
 | `memoryWrites` | inferred or `[]` | Working-memory keys. Literal memory-write keys are inferred; templated keys require an explicit set. Unordered overlaps fail when concurrency is greater than one. |
 | `when` | true | Constrained boolean/equality expression. |
 | `vars` | `{}` | Task-local JSON values. |
@@ -57,7 +58,8 @@ Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`, or
 Ready tasks are selected in YAML declaration order up to `maxConcurrency`.
 They read isolated durable snapshots and commit in compiled order. There is no
 runtime or model-controlled expansion. Static `foreach` and `matrix` tasks
-compile to inspectable child tasks and a parent aggregate. There is no loop,
+compile to inspectable child tasks and a parent aggregate. Bounded loops
+compile to a sequential child chain and parent aggregate. There is no
 sub-workflow, handler, or separate parallel group in this version.
 
 ## Agents
@@ -101,7 +103,7 @@ ${{ memory.path }}
 ${{ tasks.task-id.output.path }}
 ```
 
-An exact template preserves objects, arrays, booleans, numbers, strings, and null. Text interpolation accepts scalars. Conditions add `not` and equality against a JSON literal or string. There is no code execution, arithmetic, arbitrary function, indexing, or implicit dependency.
+An exact template preserves objects, arrays, booleans, numbers, strings, and null. Text interpolation accepts scalars. Conditions add `not`, type-sensitive `==` and `!=`, and numeric `<`, `<=`, `>`, and `>=`. There is no code execution, arithmetic, arbitrary function, indexing, or implicit dependency.
 
 ## Secret references
 
@@ -124,6 +126,7 @@ agentctl run examples/v1/dataflow.yaml --db /tmp/dataflow.db --output json --col
 
 Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Matrix
 and foreach](../guides/MATRIX_AND_FOREACH.md), [Conditions and
-routers](../guides/CONDITIONS_AND_ROUTERS.md), [Secret
+routers](../guides/CONDITIONS_AND_ROUTERS.md), [Bounded
+loops](../guides/BOUNDED_LOOPS.md), [Secret
 references](../guides/SECRET_REFERENCES.md), [Policies](../policies.md),
 [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).

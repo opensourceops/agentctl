@@ -36,9 +36,12 @@ Static foreach lists and matrix axes compile into ordinary namespaced child
 tasks followed by a pure aggregate. Their IDs, bindings, attempts, outputs,
 and recovery lineage use the same durable task model as authored nodes. Typed
 routers are pure tasks whose enumerated destination guards compile into the
-graph; condition and route decisions are durable and replayable. Loops,
-sub-workflows, handlers, compensation execution, and event triggers still
-require their own explicit state and recovery contracts. The DSL carries
+graph; condition and route decisions are durable and replayable. Bounded loops
+compile into sequential namespaced iteration tasks and a pure aggregate, so
+iteration attempts, effects, guard decisions, retry, repair, and replay use the
+ordinary durable task model. Sub-workflows, handlers, compensation execution,
+and event triggers still require their own explicit state and recovery
+contracts. The DSL carries
 optional compensation metadata on a tool contract, but the runtime does not
 execute compensation.
 

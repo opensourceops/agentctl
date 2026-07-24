@@ -1,0 +1,24 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: bounded-loop
+spec:
+  policy:
+    approval: never
+  outputs:
+    iterations: "${{ tasks.refine.output.iterations }}"
+    results: "${{ tasks.refine.output.items }}"
+  actions:
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: refine
+      uses: action:assign
+      loop:
+        maxIterations: 3
+        while: "${{ vars.loopIndex < 2 }}"
+        initial:
+          value: seed
+      with:
+        previous: "${{ vars.loopPrevious }}"
+        iteration: "${{ vars.loopIndex }}"

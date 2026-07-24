@@ -732,6 +732,16 @@
             }
           ]
         },
+        "loop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "memoryWrites": {
           "type": "array",
           "items": {
@@ -869,6 +879,27 @@
       "required": [
         "equals",
         "tasks"
+      ]
+    },
+    "LoopDefinition": {
+      "type": "object",
+      "properties": {
+        "maxIterations": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "while": {
+          "type": "string"
+        },
+        "initial": {
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "maxIterations",
+        "while"
       ]
     },
     "FailureBehavior": {

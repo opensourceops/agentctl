@@ -46,7 +46,7 @@ complete, every entry must have exactly one final disposition:
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
 | DYN-001 | Foreach and matrix | in progress | implemented |
 | COND-001 | Conditions and routers | in progress | implemented |
-| LOOP-001 | Bounded loops | open | implemented |
+| LOOP-001 | Bounded loops | in progress | implemented |
 | SUB-001 | Sub-workflows | open | implemented |
 | COMP-001 | Compensation | open | implemented |
 | TEAM-001 | Structured teams and handoffs | open | redesigned |
@@ -288,7 +288,8 @@ complete, every entry must have exactly one final disposition:
 
 ### LOOP-001: Bounded loops
 
-- Current behavior: loops are rejected.
+- Current behavior: a task-level loop compiles into a bounded sequential chain
+  of durable iteration tasks and one pure aggregate.
 - User impact: bounded refine/verify workflows require duplicated tasks.
 - Security or durability impact: an unbounded model-owned loop violates the
   runtime's bounded-execution thesis.
@@ -297,13 +298,23 @@ complete, every entry must have exactly one final disposition:
 - Required implementation: stable iteration IDs, durable iteration state,
   outputs, cancellation, effect identities, repair/retry at boundaries, replay,
   and loop/resource budgets.
-- Migration impact: plan, checkpoint, and task-attempt formats.
+- Migration impact: the DSL and compiled plan gain additive loop records.
+  Iterations use existing task, checkpoint, effect, and attempt storage, so no
+  SQLite migration is required.
 - Tests: zero/one/max iterations, bound exceeded, cancellation, uncertain
   effect, repair/retry, and replay.
 - Examples: bounded operational verification loop.
 - Live evidence: a two-iteration maximum agent scenario.
 - Documentation: loop safety and recovery.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Iteration IDs and bindings are stable,
+  `maxIterations` is required and capped at 64, typed guards run before each
+  iteration, false guards durably skip the remaining chain, and a still-true
+  final guard fails closed. Deterministic verification covers zero, one, and
+  maximum iterations, bound exhaustion, cancellation with an uncertain
+  in-flight provider effect, per-boundary retry and repair, offline replay, and
+  zero replay effects. Packaged CLI scenario 36 verifies plan, run, inspect,
+  and replay. Program state remains in progress until the bounded live agent
+  scenario executes.
 
 ### SUB-001: Reusable sub-workflows
 

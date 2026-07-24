@@ -23,7 +23,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These are useful extensions but are not required by the product thesis. They need new deterministic state and compatibility contracts before implementation:
 
-- loops; sub-workflows; compensation execution;
+- sub-workflows; compensation execution;
 - structured agent teams and handoffs;
 - model token streaming into CLI/workflow state;
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
@@ -46,9 +46,13 @@ These are useful extensions but are not required by the product thesis. They nee
 - Foreach and matrix expansion accepts only static workflow values, requires
   `maxItems`, and is capped at 256 children. Runtime or model-controlled graph
   growth is not supported.
-- Conditions support typed paths, equality, and `not`; routers support exact
-  typed selectors and enumerated destinations. Arbitrary expressions, implicit
-  dependencies, and model-owned hidden routing are rejected.
+- Conditions support typed paths, equality, inequality, numeric ordering, and
+  `not`; routers support exact typed selectors and enumerated destinations.
+  Arbitrary expressions, implicit dependencies, and model-owned hidden routing
+  are rejected.
+- Loops are sequential, require a maximum from 1 through 64, and compile all
+  iteration boundaries before execution. Runtime or model-controlled graph
+  growth and unbounded loops are rejected.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.

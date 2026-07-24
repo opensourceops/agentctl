@@ -2,7 +2,7 @@
 
 ## Preserved
 
-Declaration-order scheduling among ready tasks, `needs` dataflow, exact typed templates, deterministic assign/assert/file/memory use cases, bounded agent/tool turns, approval concepts, SQLite local persistence, and the useful top-level command names remain. The language-neutral fixture records the legacy assign workflow’s translated model, graph order, and task reference. Omitted `foreach` and `matrix` fields preserve the unchanged single-task graph; compiled expansion metadata is additive.
+Declaration-order scheduling among ready tasks, `needs` dataflow, exact typed templates, deterministic assign/assert/file/memory use cases, bounded agent/tool turns, approval concepts, SQLite local persistence, and the useful top-level command names remain. The language-neutral fixture records the legacy assign workflow’s translated model, graph order, and task reference. Omitted `foreach`, `matrix`, and `loop` fields preserve the unchanged single-task graph; compiled expansion metadata is additive.
 
 ## Migrated
 
@@ -20,6 +20,6 @@ Unversioned YAML is compatibility-only and warns. The TypeScript package exposes
 
 Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2A shape, MongoDB memory, provider-specific endpoint fields, or embedded credentials require manual conversion. The translator intentionally refuses to guess security-sensitive intent.
 
-## Deferred product decisions
+## Separate product decisions
 
-Loops, sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1.
+Sub-workflows, teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1. Bounded loops are additive; unbounded or model-controlled iteration is intentionally unsupported.

@@ -43,4 +43,9 @@ Pure router tasks retain their typed selected value and enumerated destination
 IDs. Skipped branch records are copied directly by recorded replay and never
 pass through a running state.
 
+Bounded loops compile into a fixed sequential chain of ordinary tasks plus a
+pure aggregate. Each iteration retains its guard decision, output, effects,
+artifacts, attempts, and recovery identity. A false guard skips the remaining
+chain. A guard that remains true after the declared maximum fails closed.
+
 The artifact root is `artifacts/` beside the database. `agentctl artifacts` lists references and blobs, verifies hashes, exports bytes atomically, and performs reachability-based collection. GC excludes referenced blobs and active ingestion leases, recovers interrupted quarantine operations on startup, and cleans stale untracked blobs and partial temporary files.

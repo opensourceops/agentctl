@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 35;
+const ACCEPTANCE_SCENARIOS: usize = 36;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1489,6 +1489,69 @@ pub fn run(root: &Path) -> Result<()> {
     let router_replay_id = string_at(&router_replay, "/data/runId")?;
     let router_replay_inspect = inspect(&binary, root, &router_db, router_replay_id)?;
     ensure!(array_len(&router_replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        36,
+        "packaged CLI runs, inspects, and replays bounded durable loop iterations",
+    );
+    let loop_workflow = root.join("examples/v1/loop.yaml");
+    let loop_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "plan",
+            path(&loop_workflow)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&loop_plan, "/data/tasks/refine/uses/kind", "loop_aggregate")?;
+    let loop_children = loop_plan
+        .pointer("/data/tasks/refine/uses/name/children")
+        .and_then(Value::as_array)
+        .context("loop iteration child list")?;
+    ensure!(loop_children.len() == 3);
+    let first_loop_child = loop_children[0]
+        .as_str()
+        .context("first loop iteration ID")?;
+    ensure!(first_loop_child.starts_with("refine--0000-"));
+    let loop_db = directory.path().join("loop.db");
+    let loop_run = successful_json(
+        &binary,
+        root,
+        &run_args(&loop_workflow, &loop_db, root, &[]),
+    )?;
+    ensure_eq(&loop_run, "/data/state", "succeeded")?;
+    ensure_eq(&loop_run, "/data/output/iterations", 2_u64)?;
+    ensure_eq(
+        &loop_run,
+        "/data/output/results/1/output/output/iteration",
+        1_u64,
+    )?;
+    ensure_eq(&loop_run, "/data/output/results/2/state", "skipped")?;
+    let loop_run_id = string_at(&loop_run, "/data/runId")?;
+    let loop_inspect = inspect(&binary, root, &loop_db, loop_run_id)?;
+    ensure!(array_len(&loop_inspect, "/data/tasks")? == 4);
+    let loop_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            loop_run_id,
+            "--db",
+            path(&loop_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&loop_replay, "/data/state", "succeeded")?;
+    let loop_replay_id = string_at(&loop_replay, "/data/runId")?;
+    let loop_replay_inspect = inspect(&binary, root, &loop_db, loop_replay_id)?;
+    ensure!(array_len(&loop_replay_inspect, "/data/effects")? == 0);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

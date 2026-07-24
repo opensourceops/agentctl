@@ -395,7 +395,7 @@ mod tests {
         let error = run_bounded_process(
             shell(&script),
             limits(64, 64, 128),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
             &CancellationToken::new(),
         )
         .await

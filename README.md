@@ -61,6 +61,7 @@ For environment, mounted-file, and policy-gated process credentials, use [Secret
 For bounded independent branches and working-memory conflict rules, use [Deterministic parallel tasks](docs/guides/PARALLEL_TASKS.md).
 For bounded static task expansion and child-level recovery, use [Matrix and foreach tasks](docs/guides/MATRIX_AND_FOREACH.md).
 For typed branching and durable decisions, use [Conditions and routers](docs/guides/CONDITIONS_AND_ROUTERS.md).
+For iterative work with a hard execution ceiling and iteration-level recovery, use [Bounded loops](docs/guides/BOUNDED_LOOPS.md).
 
 ## Safety boundary
 

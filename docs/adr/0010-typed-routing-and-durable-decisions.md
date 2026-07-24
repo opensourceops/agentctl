@@ -4,7 +4,7 @@ Status: accepted
 
 ## Decision
 
-Conditions remain a constrained path, equality, and `not` language. Router
+Conditions remain a constrained path, typed comparison, and `not` language. Router
 tasks are pure compiled nodes with one exact typed selector, unique JSON case
 values, enumerated destination tasks, and optional default destinations.
 Every destination declares the router as a dependency.
