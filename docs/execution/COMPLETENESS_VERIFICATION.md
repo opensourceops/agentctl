@@ -1,0 +1,92 @@
+# Framework completeness verification
+
+This record accumulates sanitized evidence for the framework-completeness
+program. It contains no credentials, raw provider responses, prompt
+transcripts, runtime databases, private certificates, or artifact bytes.
+
+## Baseline
+
+Branch point: `af9b4ae`, including independently reviewed selective workflow
+repair.
+
+Date: 2026-07-23, Asia/Kolkata.
+
+| Gate | Baseline result |
+| --- | --- |
+| `cargo xtask verify` | passed all 12 stages |
+| `cargo xtask acceptance` | passed 28 scenarios |
+| `cargo xtask examples-verify` | passed |
+| `cargo xtask docs-verify` | passed all 6 stages |
+| `cargo xtask package` | passed for macOS arm64 |
+| `cargo xtask secret-scan` | passed |
+| `env -u OPENAI_API_KEY cargo xtask acceptance-container` | reached the OCI CLI, then failed because `/artifacts/report.txt` escaped the authorized workspace root |
+
+The installed container runtime is Podman 5.8.2 with a libkrun machine. In this
+execution environment, Podman's VM and forwarding processes survive only while
+the starting terminal remains open. Keeping that terminal active made the
+engine reachable without deleting a machine, changing TLS, or weakening
+configuration.
+
+No OpenAI request was made during baseline verification.
+
+## Evidence rules
+
+- Deterministic gates run without provider credentials.
+- Live gates use only `gpt-5.6`, at most 80 Responses API requests for this
+  program, and a target aggregate cost below USD 15.
+- Live records retain only scenario, model, request/tool counts, token counts,
+  run ID, outcome, and recovery/replay reuse status.
+- Raw model content, databases, and keys stay in ignored local evidence.
+- Configured hosted jobs are not described as executed.
+- Native and emulated container architecture results are labeled explicitly.
+- Every verified limitation links to focused tests plus at least one public
+  product path.
+
+## Required deterministic gates
+
+```console
+cargo xtask verify
+cargo xtask acceptance
+cargo xtask examples-verify
+cargo xtask docs-verify
+cargo xtask package
+cargo xtask secret-scan
+cargo xtask artifact-store-verify
+cargo xtask migration-verify
+cargo xtask protocol-resilience
+cargo xtask completeness
+```
+
+## Required opt-in gates
+
+```console
+cargo xtask examples-verify-live-openai
+cargo xtask acceptance-container
+```
+
+## Workstream evidence
+
+| Workstream | Focused evidence | Composite evidence | Status |
+| --- | --- | --- | --- |
+| Artifact CAS | pending | pending | open |
+| Legacy upgrades | pending | pending | open |
+| Reconciliation | pending | pending | open |
+| Terminal retry | pending | pending | open |
+| Parallel/dynamic workflows | pending | pending | open |
+| Conditions/loops/sub-workflows | pending | pending | open |
+| Compensation/handoffs/streaming | pending | pending | open |
+| MCP/A2A resilience | pending | pending | open |
+| Packs/trust/extensions | pending | pending | open |
+| Semantic memory | pending | pending | open |
+| Encryption/secrets | pending | pending | open |
+| Network/isolation/budgets | pending | pending | open |
+| Container/cross-platform | baseline defect recorded | pending | in progress |
+| OpenAI live matrix | retained selective-repair evidence only | pending | open |
+| Canonical and Pages docs | limitation register created | pending | in progress |
+
+## Final adversarial review
+
+No final review result is recorded yet. Completion requires a clean review pass
+over security, migrations, effects, artifacts, concurrency, recovery,
+protocols, pack trust, encryption, budgets, containers, examples, and live
+evidence, followed by remediation of every P0/P1 and scoped P2 finding.
