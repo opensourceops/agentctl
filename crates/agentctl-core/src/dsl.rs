@@ -424,6 +424,8 @@ pub struct TaskDefinition {
     pub foreach: Option<ForeachDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matrix: Option<MatrixDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory_writes: Vec<String>,
     #[serde(default)]
@@ -469,6 +471,22 @@ pub struct MatrixDefinition {
     pub axes: BTreeMap<String, Vec<Value>>,
     #[serde(default = "default_max_expansion_items")]
     pub max_items: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouteDefinition {
+    pub select: String,
+    pub cases: Vec<RouteCaseDefinition>,
+    #[serde(default)]
+    pub default: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouteCaseDefinition {
+    pub equals: Value,
+    pub tasks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

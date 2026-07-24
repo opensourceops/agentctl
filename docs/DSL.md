@@ -2,9 +2,15 @@
 
 The current document version is `agentctl.dev/v1alpha1`, with `kind: Workflow`. The generated, authoritative JSON Schema is [`schemas/workflow.schema.json`](../schemas/workflow.schema.json). YAML documents are limited to 1 MiB and reject unknown fields.
 
-`metadata` contains the name, description, and labels. `spec` contains typed inputs/outputs; providers; bounded agents; actions; tool contracts; ordered tasks; policy; memory; MCP servers; A2A peers; packs; runtime; and output settings. A task `uses` either `action:<name>` or `agent:<name>`, declares `needs`, optional bounded `foreach` or `matrix` expansion, optional working-memory `memoryWrites`, an optional `when`, local `vars`, typed `with` input, optional `outputSchema`, retry, timeout, and failure behavior.
+`metadata` contains the name, description, and labels. `spec` contains typed inputs/outputs; providers; bounded agents; actions; tool contracts; ordered tasks; policy; memory; MCP servers; A2A peers; packs; runtime; and output settings. A task `uses` `action:<name>`, `agent:<name>`, or the pure `router` construct. Tasks declare `needs`, optional bounded `foreach` or `matrix` expansion, optional working-memory `memoryWrites`, an optional `when`, local `vars`, typed `with` input, optional `outputSchema`, retry, timeout, and failure behavior.
 
 Templates use only `${{ inputs.path }}`, `${{ vars.path }}`, `${{ memory.path }}`, and `${{ tasks.task-id.output.path }}`. Conditions additionally allow `not` and equality against a JSON literal or string. Exact templates preserve their JSON type; interpolation into text accepts only scalars. Missing and explicit `null` are different. There is no code execution, function call, indexing, arithmetic, or implicit task dependency.
+
+`when` decisions retain the expression, boolean result, and a digest of the
+evaluated context in durable task/audit state. A `router` selects one exact
+typed template, compares it with type-sensitive enumerated cases, and records
+the selected value and explicit destinations. Unselected destinations are
+durably skipped. See [Conditions and routers](guides/CONDITIONS_AND_ROUTERS.md).
 
 Task output is JSON. Built-in actions own an object contract, agents can declare provider-enforced `structuredOutput`, and a task can override the complete contract with `outputSchema`. The compiler validates schemas; the runtime validates completed and selectively reused values.
 
@@ -28,4 +34,4 @@ select the visible child IDs. See [Matrix and foreach tasks](guides/MATRIX_AND_F
 
 The parser translates a limited unversioned `playbook:` document and emits a migration warning. Use `agentctl migrate old.yaml --write new.yaml`. Legacy pack-backed, MCP, A2A, provider-specific, and broad module configurations need manual migration; see [Migrating from TypeScript](MIGRATING_FROM_TYPESCRIPT.md).
 
-Not implemented in v1alpha1: routers, loops, sub-workflows, `finally`, handlers, event triggers, or compensation execution. Parallelism is expressed by independent graph tasks rather than a separate parallel-group construct.
+Not implemented in v1alpha1: loops, sub-workflows, `finally`, handlers, event triggers, or compensation execution. Parallelism is expressed by independent graph tasks rather than a separate parallel-group construct.

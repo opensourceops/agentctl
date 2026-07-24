@@ -60,6 +60,7 @@ For confidential workflow history, use [Sensitive-state encryption](docs/guides/
 For environment, mounted-file, and policy-gated process credentials, use [Secret references](docs/guides/SECRET_REFERENCES.md).
 For bounded independent branches and working-memory conflict rules, use [Deterministic parallel tasks](docs/guides/PARALLEL_TASKS.md).
 For bounded static task expansion and child-level recovery, use [Matrix and foreach tasks](docs/guides/MATRIX_AND_FOREACH.md).
+For typed branching and durable decisions, use [Conditions and routers](docs/guides/CONDITIONS_AND_ROUTERS.md).
 
 ## Safety boundary
 

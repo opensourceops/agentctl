@@ -37,4 +37,10 @@ fingerprint, output, retry/repair identity, and replay record. The parent is a
 pure aggregate task that records child IDs, states, outputs, and errors in
 stable expansion order.
 
+Condition transitions retain the expression, boolean result, and a canonical
+digest of the evaluated inputs, variables, memory, and dependency outputs.
+Pure router tasks retain their typed selected value and enumerated destination
+IDs. Skipped branch records are copied directly by recorded replay and never
+pass through a running state.
+
 The artifact root is `artifacts/` beside the database. `agentctl artifacts` lists references and blobs, verifies hashes, exports bytes atomically, and performs reachability-based collection. GC excludes referenced blobs and active ingestion leases, recovers interrupted quarantine operations on startup, and cleans stale untracked blobs and partial temporary files.

@@ -782,26 +782,28 @@ impl Runtime {
             &trace_id,
         )?;
         for (task, terminal) in source_tasks {
-            self.store.transition_task(
-                &replay_id,
-                &task.task_id,
-                TaskState::Ready,
-                None,
-                None,
-                None,
-                self.clock.now(),
-                &trace_id,
-            )?;
-            self.store.transition_task(
-                &replay_id,
-                &task.task_id,
-                TaskState::Running,
-                None,
-                None,
-                None,
-                self.clock.now(),
-                &trace_id,
-            )?;
+            if terminal != TaskState::Skipped {
+                self.store.transition_task(
+                    &replay_id,
+                    &task.task_id,
+                    TaskState::Ready,
+                    None,
+                    None,
+                    None,
+                    self.clock.now(),
+                    &trace_id,
+                )?;
+                self.store.transition_task(
+                    &replay_id,
+                    &task.task_id,
+                    TaskState::Running,
+                    None,
+                    None,
+                    None,
+                    self.clock.now(),
+                    &trace_id,
+                )?;
+            }
             self.store.transition_task(
                 &replay_id,
                 &task.task_id,
@@ -2436,7 +2438,6 @@ impl Runtime {
                 });
             }
 
-            let context = context_for(&run, &tasks)?;
             let mut prepared_pending = false;
             for task_id in &run.plan.order {
                 let Some(record) = tasks.iter().find(|record| &record.task_id == task_id) else {
@@ -2482,14 +2483,13 @@ impl Runtime {
                     prepared_pending = true;
                     continue;
                 }
-                if let Some(condition) = &task.when
-                    && !evaluate_when(condition, &context)?
-                {
+                let context = context_for_task(&run, &tasks, task)?;
+                if let Some(decision) = route_skip_decision(task, &context)? {
                     self.store.transition_task(
                         run_id,
                         task_id,
                         TaskState::Skipped,
-                        Some(&serde_json::json!({"reason": "when condition was false"})),
+                        Some(&decision),
                         None,
                         None,
                         self.clock.now(),
@@ -2498,11 +2498,35 @@ impl Runtime {
                     prepared_pending = true;
                     continue;
                 }
+                let condition_decision = if let Some(condition) = &task.when {
+                    let result = evaluate_when(condition, &context)?;
+                    let decision = condition_decision(condition, result, &context)?;
+                    if !result {
+                        self.store.transition_task(
+                            run_id,
+                            task_id,
+                            TaskState::Skipped,
+                            Some(&serde_json::json!({
+                                "reason": "when condition was false",
+                                "condition": decision["condition"],
+                            })),
+                            None,
+                            None,
+                            self.clock.now(),
+                            trace_id,
+                        )?;
+                        prepared_pending = true;
+                        continue;
+                    }
+                    Some(decision)
+                } else {
+                    None
+                };
                 self.store.transition_task(
                     run_id,
                     task_id,
                     TaskState::Ready,
-                    None,
+                    condition_decision.as_ref(),
                     None,
                     None,
                     self.clock.now(),
@@ -3004,15 +3028,13 @@ impl Runtime {
                 .map(|record| record.state)
                 .ok_or_else(|| RuntimeError::InvalidState(format!("task `{}` missing", task.id)))?;
             if ready_state == TaskState::Pending {
-                let context = context_for(&run, &tasks)?;
-                if let Some(condition) = &task.when
-                    && !evaluate_when(condition, &context)?
-                {
+                let context = context_for_task(&run, &tasks, task)?;
+                if let Some(decision) = route_skip_decision(task, &context)? {
                     self.store.transition_task(
                         run_id,
                         &task.id,
                         TaskState::Skipped,
-                        Some(&serde_json::json!({"reason": "when condition was false"})),
+                        Some(&decision),
                         None,
                         None,
                         self.clock.now(),
@@ -3020,11 +3042,34 @@ impl Runtime {
                     )?;
                     continue;
                 }
+                let condition_decision = if let Some(condition) = &task.when {
+                    let result = evaluate_when(condition, &context)?;
+                    let decision = condition_decision(condition, result, &context)?;
+                    if !result {
+                        self.store.transition_task(
+                            run_id,
+                            &task.id,
+                            TaskState::Skipped,
+                            Some(&serde_json::json!({
+                                "reason": "when condition was false",
+                                "condition": decision["condition"],
+                            })),
+                            None,
+                            None,
+                            self.clock.now(),
+                            trace_id,
+                        )?;
+                        continue;
+                    }
+                    Some(decision)
+                } else {
+                    None
+                };
                 self.store.transition_task(
                     run_id,
                     &task.id,
                     TaskState::Ready,
-                    None,
+                    condition_decision.as_ref(),
                     None,
                     None,
                     self.clock.now(),
@@ -3312,12 +3357,7 @@ impl Runtime {
         cancellation: &CancellationToken,
     ) -> Result<TaskExecution, RuntimeError> {
         let tasks = self.store.list_tasks(&run.run_id)?;
-        let mut context = context_for(run, &tasks)?;
-        context.vars = task
-            .vars
-            .iter()
-            .map(|(name, value)| render(value, &context).map(|value| (name.clone(), value)))
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let context = context_for_task(run, &tasks, task)?;
         let raw_input = serde_json::to_value(&task.input)?;
         let input = render(&raw_input, &context)?;
         match &task.uses {
@@ -3400,6 +3440,20 @@ impl Runtime {
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 Ok(TaskExecution::Complete {
                     output: serde_json::json!({"items": items}),
+                    memory: None,
+                })
+            }
+            TaskUse::Router(router) => {
+                let selected = render(&Value::String(router.select.clone()), &context)?;
+                let matched = router.cases.iter().find(|case| case.equals == selected);
+                let destinations =
+                    matched.map_or_else(|| router.default.clone(), |case| case.tasks.clone());
+                Ok(TaskExecution::Complete {
+                    output: serde_json::json!({
+                        "selected": selected,
+                        "matched": matched.is_some(),
+                        "destinations": destinations,
+                    }),
                     memory: None,
                 })
             }
@@ -4874,6 +4928,19 @@ fn task_output_schema(workflow: &Workflow, task: &agentctl_core::CompiledTask) -
             "properties": {"items": {"type": "array"}},
             "additionalProperties": false
         })),
+        TaskUse::Router(_) => Some(serde_json::json!({
+            "type": "object",
+            "required": ["selected", "matched", "destinations"],
+            "properties": {
+                "selected": {},
+                "matched": {"type": "boolean"},
+                "destinations": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            },
+            "additionalProperties": false
+        })),
     })
 }
 
@@ -4962,6 +5029,11 @@ fn task_definition_fingerprint(
             "kind": "aggregate",
             "task": task,
             "children": children,
+        }),
+        TaskUse::Router(router) => serde_json::json!({
+            "kind": "router",
+            "task": task,
+            "router": router,
         }),
     };
     versioned_json_digest(&serde_json::json!({
@@ -5700,6 +5772,77 @@ fn context_for(
             .collect(),
         tasks: task_outputs,
     })
+}
+
+fn context_for_task(
+    run: &agentctl_store::RunRecord,
+    tasks: &[TaskRecord],
+    task: &agentctl_core::CompiledTask,
+) -> Result<EvalContext, RuntimeError> {
+    let mut context = context_for(run, tasks)?;
+    context.vars = task
+        .vars
+        .iter()
+        .map(|(name, value)| render(value, &context).map(|value| (name.clone(), value)))
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(context)
+}
+
+fn condition_decision(
+    expression: &str,
+    result: bool,
+    context: &EvalContext,
+) -> Result<Value, RuntimeError> {
+    let context_digest = versioned_json_digest(&serde_json::json!({
+        "inputs": context.inputs,
+        "vars": context.vars,
+        "memory": context.memory,
+        "tasks": context.tasks,
+    }))?;
+    Ok(serde_json::json!({
+        "condition": {
+            "expression": expression,
+            "contextDigest": context_digest,
+            "result": result,
+        }
+    }))
+}
+
+fn route_skip_decision(
+    task: &agentctl_core::CompiledTask,
+    context: &EvalContext,
+) -> Result<Option<Value>, RuntimeError> {
+    for guard in &task.route_guards {
+        let decision = context.tasks.get(&guard.router).ok_or_else(|| {
+            RuntimeError::InvalidState(format!(
+                "router `{}` has no durable output for task `{}`",
+                guard.router, task.id
+            ))
+        })?;
+        let destinations = decision
+            .get("destinations")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "router `{}` output has no destinations",
+                    guard.router
+                ))
+            })?;
+        if !destinations
+            .iter()
+            .any(|destination| destination.as_str() == Some(task.id.as_str()))
+        {
+            return Ok(Some(serde_json::json!({
+                "reason": "route not selected",
+                "route": {
+                    "router": guard.router,
+                    "selected": decision.get("selected"),
+                    "matched": decision.get("matched"),
+                }
+            })));
+        }
+    }
+    Ok(None)
 }
 
 fn collect_outputs(
@@ -9471,6 +9614,166 @@ spec:
         assert_eq!(
             store.load_run(&outcome.run_id).expect("run").working_memory["result"],
             "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_router_persists_decisions_and_recovers_when_the_route_changes() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: typed-routing }
+spec:
+  policy: { approval: never }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: decide, uses: "action:assign", with: { route: ship } }
+    - id: route
+      uses: router
+      needs: [decide]
+      route:
+        select: "${{ tasks.decide.output.output.route }}"
+        cases:
+          - { equals: ship, tasks: [ship] }
+        default: [hold]
+    - id: ship
+      uses: action:assign
+      needs: [route]
+      vars: { enabled: true }
+      when: "${{ vars.enabled == true }}"
+      with: { result: shipped }
+    - { id: hold, uses: "action:assign", needs: [route], with: { result: held } }
+"#;
+        let (source_workflow, source_plan) = compile_fixture(source);
+        let source_outcome = runtime
+            .start(
+                &source_workflow,
+                &source_plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("source route");
+        assert_eq!(source_outcome.state, RunState::Succeeded);
+        let source_tasks = store
+            .list_tasks(&source_outcome.run_id)
+            .expect("source tasks");
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == "route")
+                .and_then(|task| task.output.as_ref())
+                .expect("route output")["destinations"],
+            serde_json::json!(["ship"])
+        );
+        assert_eq!(
+            source_tasks
+                .iter()
+                .find(|task| task.task_id == "hold")
+                .expect("hold")
+                .state,
+            TaskState::Skipped
+        );
+        let condition_audit = store
+            .audit_events(&source_outcome.run_id)
+            .expect("audit")
+            .into_iter()
+            .find(|event| {
+                event.event_type == "task.transition"
+                    && event.task_id.as_deref() == Some("ship")
+                    && event.payload["to"] == "ready"
+            })
+            .expect("condition decision audit");
+        assert_eq!(
+            condition_audit.payload["decision"]["condition"]["result"],
+            true
+        );
+        assert!(
+            condition_audit.payload["decision"]["condition"]["contextDigest"]
+                .as_str()
+                .is_some_and(|digest| digest.starts_with("sha256:v1:"))
+        );
+
+        let retry_plan = runtime
+            .plan_retry(
+                &source_outcome.run_id,
+                &source_workflow,
+                &source_plan,
+                &["route".to_owned()],
+                false,
+                true,
+            )
+            .expect("router retry plan");
+        assert_eq!(retry_plan.reused_tasks, ["decide"]);
+        let retried = runtime
+            .retry(
+                &source_workflow,
+                &source_plan,
+                retry_plan,
+                Some("re-evaluate typed route"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("router retry");
+        assert_eq!(retried.state, RunState::Succeeded);
+
+        let target = source.replacen("with: { route: ship }", "with: { route: hold }", 1);
+        let (target_workflow, target_plan) = compile_fixture(&target);
+        let repair_plan = runtime
+            .plan_repair(
+                &source_outcome.run_id,
+                &target_workflow,
+                &target_plan,
+                &["decide".to_owned()],
+                true,
+            )
+            .expect("route repair plan");
+        assert!(repair_plan.compatible, "{:?}", repair_plan.blocked_reuse);
+        let repaired = runtime
+            .repair(
+                &target_workflow,
+                &target_plan,
+                repair_plan,
+                Some("change typed route"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("route repair");
+        assert_eq!(repaired.state, RunState::Succeeded);
+        let repaired_tasks = store.list_tasks(&repaired.run_id).expect("repaired tasks");
+        assert_eq!(
+            repaired_tasks
+                .iter()
+                .find(|task| task.task_id == "ship")
+                .expect("ship")
+                .state,
+            TaskState::Skipped
+        );
+        assert_eq!(
+            repaired_tasks
+                .iter()
+                .find(|task| task.task_id == "hold")
+                .expect("hold")
+                .state,
+            TaskState::Succeeded
+        );
+        let replay = runtime
+            .replay(&repaired.run_id)
+            .await
+            .expect("route replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("replay effects")
+                .is_empty()
         );
     }
 

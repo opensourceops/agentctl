@@ -1,0 +1,43 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: typed-router
+spec:
+  inputs:
+    selected: ship
+  outputs:
+    selected: "${{ tasks.route.output.selected }}"
+    ship: "${{ tasks.ship.output }}"
+    hold: "${{ tasks.hold.output }}"
+  policy:
+    approval: never
+  actions:
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: decide
+      uses: action:assign
+      with:
+        route: "${{ inputs.selected }}"
+    - id: route
+      uses: router
+      needs: [decide]
+      route:
+        select: "${{ tasks.decide.output.output.route }}"
+        cases:
+          - equals: ship
+            tasks: [ship]
+        default: [hold]
+    - id: ship
+      uses: action:assign
+      needs: [route]
+      vars:
+        enabled: true
+      when: "${{ vars.enabled == true }}"
+      with:
+        result: shipped
+    - id: hold
+      uses: action:assign
+      needs: [route]
+      with:
+        result: held

@@ -29,6 +29,8 @@ pub struct CompiledTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expansion: Option<CompiledExpansion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route_guards: Vec<RouteGuard>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory_writes: Vec<String>,
     pub when: Option<String>,
     pub vars: JsonMap,
@@ -48,12 +50,34 @@ pub struct CompiledExpansion {
     pub bindings: JsonMap,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledRouter {
+    pub select: String,
+    pub cases: Vec<CompiledRouteCase>,
+    pub default: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledRouteCase {
+    pub equals: Value,
+    pub tasks: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteGuard {
+    pub router: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "name")]
 pub enum TaskUse {
     Action(String),
     Agent(String),
     Aggregate(Vec<String>),
+    Router(CompiledRouter),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +185,17 @@ fn expand_tasks(
 ) -> Vec<ExpandedTaskDefinition> {
     let mut expanded = Vec::new();
     for (position, task) in workflow.spec.tasks.iter().enumerate() {
+        if task.route.is_some() && (task.foreach.is_some() || task.matrix.is_some()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("router task `{}` cannot be expanded", task.id),
+                )
+                .with_path(format!("spec.tasks[{position}]")),
+            );
+            continue;
+        }
         let bindings = match (&task.foreach, &task.matrix) {
             (None, None) => {
                 expanded.push(ExpandedTaskDefinition {
@@ -355,6 +390,7 @@ fn expand_tasks(
         aggregate.needs.clone_from(&children);
         aggregate.foreach = None;
         aggregate.matrix = None;
+        aggregate.route = None;
         aggregate.memory_writes.clear();
         aggregate.when = None;
         aggregate.vars.clear();
@@ -414,7 +450,45 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         }
         let task_use = if let Some(children) = &expanded.aggregate_children {
             TaskUse::Aggregate(children.clone())
+        } else if task.uses == "router" {
+            let Some(route) = &task.route else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!("router task `{}` requires route configuration", task.id),
+                    )
+                    .with_path(format!("spec.tasks[{position}].route")),
+                );
+                continue;
+            };
+            TaskUse::Router(CompiledRouter {
+                select: route.select.clone(),
+                cases: route
+                    .cases
+                    .iter()
+                    .map(|case| CompiledRouteCase {
+                        equals: case.equals.clone(),
+                        tasks: case.tasks.clone(),
+                    })
+                    .collect(),
+                default: route.default.clone(),
+            })
         } else {
+            if task.route.is_some() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "task `{}` declares route configuration but does not use `router`",
+                            task.id
+                        ),
+                    )
+                    .with_path(format!("spec.tasks[{position}].route")),
+                );
+                continue;
+            }
             match parse_use(&task.uses) {
                 Some(TaskUse::Action(name)) if workflow.spec.actions.contains_key(&name) => {
                     TaskUse::Action(name)
@@ -442,10 +516,10 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .get(name)
                 .map(|action| action.defaults.clone())
                 .unwrap_or_default(),
-            TaskUse::Agent(_) | TaskUse::Aggregate(_) => JsonMap::new(),
+            TaskUse::Agent(_) | TaskUse::Aggregate(_) | TaskUse::Router(_) => JsonMap::new(),
         };
         input.extend(task.input.clone());
-        let memory_writes = if matches!(task_use, TaskUse::Aggregate(_)) {
+        let memory_writes = if matches!(task_use, TaskUse::Aggregate(_) | TaskUse::Router(_)) {
             Vec::new()
         } else {
             task_memory_writes(
@@ -465,7 +539,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 .get(name)
                 .map(|agent| agent.vars.clone())
                 .unwrap_or_default(),
-            TaskUse::Action(_) | TaskUse::Aggregate(_) => JsonMap::new(),
+            TaskUse::Action(_) | TaskUse::Aggregate(_) | TaskUse::Router(_) => JsonMap::new(),
         };
         vars.extend(task.vars.clone());
         declaration_order.push(task.id.clone());
@@ -477,6 +551,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 uses: task_use,
                 needs: task.needs.clone(),
                 expansion: expanded.expansion.clone(),
+                route_guards: Vec::new(),
                 memory_writes,
                 when: task.when.clone(),
                 vars,
@@ -524,6 +599,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         }
     }
 
+    validate_routers(&mut tasks, &source_positions, file, &mut diagnostics);
     validate_tools(workflow, file, &mut diagnostics);
     validate_agents(workflow, file, &mut diagnostics);
     if !diagnostics.is_empty() {
@@ -553,6 +629,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                     action_predictability(action.kind)
                 }),
             TaskUse::Aggregate(_) => PlanPredictability::FullyPredictable,
+            TaskUse::Router(_) => PlanPredictability::FullyPredictable,
         };
     }
     let predictability = tasks
@@ -647,7 +724,7 @@ fn task_memory_writes(
             .actions
             .get(name)
             .is_some_and(|action| action.kind == ActionKind::MemoryWrite),
-        TaskUse::Agent(_) | TaskUse::Aggregate(_) => false,
+        TaskUse::Agent(_) | TaskUse::Aggregate(_) | TaskUse::Router(_) => false,
     };
     if !is_memory_write {
         if !declared.is_empty() {
@@ -707,6 +784,169 @@ fn task_memory_writes(
         );
     }
     writes.into_iter().collect()
+}
+
+fn validate_routers(
+    tasks: &mut BTreeMap<String, CompiledTask>,
+    source_positions: &BTreeMap<String, usize>,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let routers = tasks
+        .iter()
+        .filter_map(|(id, task)| match &task.uses {
+            TaskUse::Router(router) => Some((id.clone(), router.clone(), task.needs.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (router_id, router, needs) in routers {
+        let position = source_positions
+            .get(&router_id)
+            .copied()
+            .unwrap_or_default();
+        let route_path = format!("spec.tasks[{position}].route");
+        let trimmed = router.select.trim();
+        let exact_template = trimmed.starts_with("${{")
+            && trimmed
+                .get(3..)
+                .and_then(|value| value.find("}}"))
+                .is_some_and(|closing| closing + 3 == trimmed.len() - 2);
+        if !exact_template {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::InvalidTemplate,
+                    file,
+                    format!("router task `{router_id}` select must be one exact typed template"),
+                )
+                .with_path(format!("{route_path}.select")),
+            );
+        } else if let Err(error) = validate_expression(&router.select) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::InvalidTemplate,
+                    file,
+                    format!("router task `{router_id}`: {error}"),
+                )
+                .with_path(format!("{route_path}.select")),
+            );
+        }
+        for reference in referenced_tasks(&router.select) {
+            if !tasks.contains_key(&reference) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::MissingReference,
+                        file,
+                        format!(
+                            "router task `{router_id}` selector refers to unknown task `{reference}`"
+                        ),
+                    )
+                    .with_path(format!("{route_path}.select")),
+                );
+            } else if !needs.contains(&reference) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::InvalidTemplate,
+                        file,
+                        format!(
+                            "router task `{router_id}` must declare `{reference}` in needs before selecting from its output"
+                        ),
+                    )
+                    .with_path(format!("{route_path}.select")),
+                );
+            }
+        }
+        if router.cases.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("router task `{router_id}` requires at least one case"),
+                )
+                .with_path(format!("{route_path}.cases")),
+            );
+        }
+        for (index, case) in router.cases.iter().enumerate() {
+            if case.tasks.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!("router task `{router_id}` case {index} has no destinations"),
+                    )
+                    .with_path(format!("{route_path}.cases[{index}].tasks")),
+                );
+            }
+            if router.cases[..index]
+                .iter()
+                .any(|previous| previous.equals == case.equals)
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "router task `{router_id}` has duplicate typed case value {}",
+                            case.equals
+                        ),
+                    )
+                    .with_path(format!("{route_path}.cases[{index}].equals")),
+                );
+            }
+        }
+
+        let mut destinations = BTreeSet::new();
+        for destination in router
+            .cases
+            .iter()
+            .flat_map(|case| case.tasks.iter())
+            .chain(router.default.iter())
+        {
+            if !destinations.insert(destination.clone()) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "router task `{router_id}` destination `{destination}` is declared more than once"
+                        ),
+                    )
+                    .with_path(route_path.clone()),
+                );
+                continue;
+            }
+            let Some(target) = tasks.get(destination) else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::MissingReference,
+                        file,
+                        format!(
+                            "router task `{router_id}` refers to unknown destination `{destination}`"
+                        ),
+                    )
+                    .with_path(route_path.clone()),
+                );
+                continue;
+            };
+            if !target.needs.contains(&router_id) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "routed task `{destination}` must declare router `{router_id}` in needs"
+                        ),
+                    )
+                    .with_path(route_path.clone()),
+                );
+                continue;
+            }
+            if let Some(target) = tasks.get_mut(destination) {
+                target.route_guards.push(RouteGuard {
+                    router: router_id.clone(),
+                });
+            }
+        }
+    }
 }
 
 fn validate_parallel_memory_writes(
@@ -853,7 +1093,7 @@ fn plan_requirements(
                     predictability: task.predictability,
                 }]
             }
-            TaskUse::Aggregate(_) => Vec::new(),
+            TaskUse::Aggregate(_) | TaskUse::Router(_) => Vec::new(),
         })
         .collect();
     PlanRequirements {
@@ -1597,6 +1837,89 @@ spec:
             diagnostic
                 .message
                 .contains("foreach bindings conflict with existing task vars")
+        }));
+    }
+
+    #[test]
+    fn typed_router_cases_compile_to_explicit_destination_guards() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: typed-router }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: decide, uses: "action:assign", with: { route: ship } }
+    - id: route
+      uses: router
+      needs: [decide]
+      route:
+        select: "${{ tasks.decide.output.output.route }}"
+        cases:
+          - { equals: ship, tasks: [ship] }
+          - { equals: 1, tasks: [numeric] }
+        default: [hold]
+    - { id: ship, uses: "action:assign", needs: [route] }
+    - { id: numeric, uses: "action:assign", needs: [route] }
+    - { id: hold, uses: "action:assign", needs: [route] }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("compiles");
+        let router = match &plan.tasks["route"].uses {
+            TaskUse::Router(router) => router,
+            other => panic!("expected router, got {other:?}"),
+        };
+        assert_eq!(router.cases[0].equals, "ship");
+        assert_eq!(router.cases[1].equals, 1);
+        assert_eq!(
+            plan.tasks["ship"].route_guards,
+            [RouteGuard {
+                router: "route".to_owned()
+            }]
+        );
+        assert_eq!(plan.order, ["decide", "route", "ship", "numeric", "hold"]);
+    }
+
+    #[test]
+    fn router_rejects_ambiguous_cases_and_implicit_dependencies() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-router }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: decide, uses: "action:assign", with: { route: ship } }
+    - id: route
+      uses: router
+      needs: [decide]
+      route:
+        select: "${{ tasks.decide.output.output.route }}"
+        cases:
+          - { equals: ship, tasks: [ship] }
+          - { equals: ship, tasks: [ship] }
+    - { id: ship, uses: "action:assign" }
+"#,
+        );
+        let diagnostics = compile(&workflow, "fixture.yaml").expect_err("router rejected");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("duplicate typed case value"))
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("must declare router `route` in needs")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("destination `ship` is declared more than once")
         }));
     }
 

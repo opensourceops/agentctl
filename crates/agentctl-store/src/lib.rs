@@ -1735,7 +1735,12 @@ impl SqliteStore {
             "task.transition",
             Some(task_id),
             trace_id,
-            &serde_json::json!({"from": current, "to": next, "error": error}),
+            &serde_json::json!({
+                "from": current,
+                "to": next,
+                "error": error,
+                "decision": output,
+            }),
             now,
             &self.protection,
         )?;

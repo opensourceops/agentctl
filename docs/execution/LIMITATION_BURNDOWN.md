@@ -45,7 +45,7 @@ complete, every entry must have exactly one final disposition:
 | BUD-001 | Resource and cost budgets | open | implemented |
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
 | DYN-001 | Foreach and matrix | in progress | implemented |
-| COND-001 | Conditions and routers | open | implemented |
+| COND-001 | Conditions and routers | in progress | implemented |
 | LOOP-001 | Bounded loops | open | implemented |
 | SUB-001 | Sub-workflows | open | implemented |
 | COMP-001 | Compensation | open | implemented |
@@ -261,8 +261,8 @@ complete, every entry must have exactly one final disposition:
 
 ### COND-001: Typed conditions and routers
 
-- Current behavior: constrained `not` and equality conditions exist, but there
-  is no explicit router or complete skipped-output contract.
+- Current behavior: constrained typed conditions and explicit pure router tasks
+  persist decisions and skip only enumerated destinations.
 - User impact: nontrivial deterministic branching is awkward.
 - Security or durability impact: expanding to arbitrary expressions would add
   code execution and ambiguous dependencies.
@@ -277,7 +277,14 @@ complete, every entry must have exactly one final disposition:
 - Examples: structured agent output routed to deterministic branches.
 - Live evidence: one structured-output routing scenario.
 - Documentation: expression grammar and skip semantics.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Conditions use the constrained typed
+  evaluator and retain expression, context digest, and result. Routers compare
+  one exact typed selector against unique JSON cases, record selected value and
+  destinations, and durably skip unselected branches. Deterministic
+  verification covers strict typing, malformed routes, local vars, plan
+  guards, retry, changed-decision repair, skipped-task replay, and zero replay
+  effects. Program state remains in progress until the structured OpenAI
+  routing scenario executes.
 
 ### LOOP-001: Bounded loops
 

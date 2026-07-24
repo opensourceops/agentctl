@@ -36,13 +36,15 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 
 ## Tasks
 
-Each task requires `id` and `uses`. `uses` is `action:name` or `agent:name`.
+Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`, or
+`router`.
 
 | Field | Default | Validation |
 | --- | --- | --- |
 | `needs` | `[]` | Every ID must exist; cycles fail. |
 | `foreach` | none | Static typed `items`, binding `as`, and `maxItems`. Mutually exclusive with `matrix`; maximum 256 children. |
 | `matrix` | none | Static `axes` Cartesian product and `maxItems`. Axis names are template-safe identifiers; maximum 256 children. |
+| `route` | required for `uses: router` | Exact typed `select`, unique typed cases, enumerated destinations, and optional default destinations. Every destination must depend on the router. |
 | `memoryWrites` | inferred or `[]` | Working-memory keys. Literal memory-write keys are inferred; templated keys require an explicit set. Unordered overlaps fail when concurrency is greater than one. |
 | `when` | true | Constrained boolean/equality expression. |
 | `vars` | `{}` | Task-local JSON values. |
@@ -56,7 +58,7 @@ Ready tasks are selected in YAML declaration order up to `maxConcurrency`.
 They read isolated durable snapshots and commit in compiled order. There is no
 runtime or model-controlled expansion. Static `foreach` and `matrix` tasks
 compile to inspectable child tasks and a parent aggregate. There is no loop,
-router, sub-workflow, handler, or separate parallel group in this version.
+sub-workflow, handler, or separate parallel group in this version.
 
 ## Agents
 
@@ -121,6 +123,7 @@ agentctl run examples/v1/dataflow.yaml --db /tmp/dataflow.db --output json --col
 ```
 
 Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Matrix
-and foreach](../guides/MATRIX_AND_FOREACH.md), [Secret
+and foreach](../guides/MATRIX_AND_FOREACH.md), [Conditions and
+routers](../guides/CONDITIONS_AND_ROUTERS.md), [Secret
 references](../guides/SECRET_REFERENCES.md), [Policies](../policies.md),
 [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).

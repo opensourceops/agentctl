@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 34;
+const ACCEPTANCE_SCENARIOS: usize = 35;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1430,6 +1430,65 @@ pub fn run(root: &Path) -> Result<()> {
     let matrix_replay_id = string_at(&matrix_replay, "/data/runId")?;
     let matrix_replay_inspect = inspect(&binary, root, &matrix_db, matrix_replay_id)?;
     ensure!(array_len(&matrix_replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        35,
+        "packaged CLI persists, inspects, and replays a typed route decision",
+    );
+    let router = root.join("examples/v1/router.yaml");
+    let router_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "plan",
+            path(&router)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&router_plan, "/data/tasks/route/uses/kind", "router")?;
+    ensure_eq(
+        &router_plan,
+        "/data/tasks/ship/routeGuards/0/router",
+        "route",
+    )?;
+    let router_db = directory.path().join("router.db");
+    let router_run = successful_json(&binary, root, &run_args(&router, &router_db, root, &[]))?;
+    ensure_eq(&router_run, "/data/state", "succeeded")?;
+    ensure_eq(&router_run, "/data/output/selected", "ship")?;
+    ensure_eq(&router_run, "/data/output/ship/output/result", "shipped")?;
+    ensure_eq(
+        &router_run,
+        "/data/output/hold/reason",
+        "route not selected",
+    )?;
+    let router_run_id = string_at(&router_run, "/data/runId")?;
+    let router_inspect = inspect(&binary, root, &router_db, router_run_id)?;
+    ensure_eq(
+        &router_inspect,
+        "/data/tasks/3/output/route/router",
+        "route",
+    )?;
+    let router_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            router_run_id,
+            "--db",
+            path(&router_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&router_replay, "/data/state", "succeeded")?;
+    let router_replay_id = string_at(&router_replay, "/data/runId")?;
+    let router_replay_inspect = inspect(&binary, root, &router_db, router_replay_id)?;
+    ensure!(array_len(&router_replay_inspect, "/data/effects")? == 0);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

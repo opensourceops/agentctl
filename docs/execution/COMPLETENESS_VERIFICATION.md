@@ -76,7 +76,8 @@ cargo xtask acceptance-container
 | Secret references | environment compatibility, file bounds/missing/symlink containment, process allowlist/timeout/output/cancellation, zeroizing values, adapter redaction, and raw-database absence tests passed | packaged CLI scenario 32 and the 12-stage verification gate passed | verified |
 | Parallel scheduling | overlap, caps, conflicts, ordered atomic commits, approvals, cancellation, retry, repair, and replay tests passed | packaged CLI scenario 33 and OCI parallel run/replay passed | deterministic verified; live pending |
 | Foreach/matrix | compiler bounds/identity tests and runtime partial-failure, child retry, sibling reuse, aggregation, and replay tests passed | packaged CLI scenario 34 pending | deterministic in progress |
-| Conditions/loops/sub-workflows | pending | pending | open |
+| Conditions/routers | compiler typed-case/guard failures and runtime durable condition, route, retry, changed-input repair, and skipped replay tests passed | packaged CLI scenario 35 pending | deterministic in progress |
+| Loops/sub-workflows | pending | pending | open |
 | Compensation/handoffs/streaming | pending | pending | open |
 | MCP/A2A resilience | pending | pending | open |
 | Packs/trust/extensions | pending | pending | open |

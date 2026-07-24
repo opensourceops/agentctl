@@ -5,6 +5,7 @@ The deterministic examples are exercised by `cargo xtask verify` and never requi
 - `hello.yaml`: deterministic hello world and declared output.
 - `dataflow.yaml`: typed scalar/object templates.
 - `condition.yaml`: safe `when` equality and skipping.
+- `router.yaml`: typed route selection, explicit destinations, and durable skip decisions.
 - `check-diff.yaml`: predictable file diff without mutation under `run --check --diff`.
 - `approval.yaml`: durable approval-gated workspace mutation.
 - `policy-denial.yaml`: an explicit tool-policy denial.

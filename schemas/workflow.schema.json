@@ -722,6 +722,16 @@
             }
           ]
         },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "memoryWrites": {
           "type": "array",
           "items": {
@@ -816,6 +826,49 @@
       "additionalProperties": false,
       "required": [
         "axes"
+      ]
+    },
+    "RouteDefinition": {
+      "type": "object",
+      "properties": {
+        "select": {
+          "type": "string"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteCaseDefinition"
+          }
+        },
+        "default": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "select",
+        "cases"
+      ]
+    },
+    "RouteCaseDefinition": {
+      "type": "object",
+      "properties": {
+        "equals": true,
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "equals",
+        "tasks"
       ]
     },
     "FailureBehavior": {
