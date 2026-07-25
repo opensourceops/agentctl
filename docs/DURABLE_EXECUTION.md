@@ -8,6 +8,7 @@ SQLite is the local history and correctness boundary. Run, task, effect, approva
 - Recorded replay creates a replay record from terminal stored outputs and calls no provider, tool, network, process, or filesystem executor.
 - Terminal retry creates a new source-linked run for an identical workflow, materializes compatible successful boundaries, and executes failed or explicitly selected roots plus their descendants with fresh attempts.
 - Selective repair creates a new source-linked run, materializes compatible successful task outputs and committed state deltas, then executes selected roots and descendants with fresh effects from a target workflow.
+- Compensation creates a source-linked sequential run for explicitly declared inverse actions. Confirmed inverse effects append `compensated` reconciliations to immutable source effects; partial failures remain independently retryable.
 - Fork creates a new run linked to the old run and intentionally permits fresh effects.
 - A task's `retry` policy creates another attempt inside the same run only within its explicit bound. An unsafe unresolved effect is not retried.
 
@@ -52,5 +53,13 @@ Sub-workflows also compile before run creation. Typed input and output boundary
 tasks surround namespaced child tasks, so child attempts, effects, artifacts,
 approvals, retry/repair lineage, cancellation, and replay stay in the ordinary
 run graph.
+
+Compensation planning is effect-free. Only confirmed successful mutations or
+effects reconciled as applied are eligible. Started and uncertain effects
+require operator reconciliation. The generated compensation run uses reverse
+compiled order, ordinary effect identities, policy, approvals, retries,
+checkpoints, audit, and traces. A repeated plan excludes source effects already
+reconciled as compensated. This is best-effort inverse execution, not
+transactional rollback.
 
 The artifact root is `artifacts/` beside the database. `agentctl artifacts` lists references and blobs, verifies hashes, exports bytes atomically, and performs reachability-based collection. GC excludes referenced blobs and active ingestion leases, recovers interrupted quarantine operations on startup, and cleans stale untracked blobs and partial temporary files.

@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 37;
+const ACCEPTANCE_SCENARIOS: usize = 38;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1616,6 +1616,109 @@ pub fn run(root: &Path) -> Result<()> {
     let subworkflow_replay_inspect =
         inspect(&binary, root, &subworkflow_db, subworkflow_replay_id)?;
     ensure!(array_len(&subworkflow_replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        38,
+        "packaged CLI plans, executes, inspects, and replays compensation",
+    );
+    let compensation_workflow = workspace.join("compensation.yaml");
+    write(&compensation_workflow, COMPENSATION_WORKFLOW)?;
+    let compensation_db = directory.path().join("compensation.db");
+    let source = json_with_code(
+        &binary,
+        root,
+        &run_args(&compensation_workflow, &compensation_db, &workspace, &[]),
+        4,
+    )?;
+    let source_run_id = string_at(&source, "/error/runId")?;
+    let compensation_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "compensate",
+            source_run_id,
+            "--plan",
+            "--db",
+            path(&compensation_db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&compensation_plan, "/data/executable", true)?;
+    ensure_eq(
+        &compensation_plan,
+        "/data/tasks/0/sourceTaskId",
+        "provision",
+    )?;
+    let compensation = successful_json(
+        &binary,
+        root,
+        &strings([
+            "compensate",
+            source_run_id,
+            "--db",
+            path(&compensation_db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&compensation, "/data/state", "succeeded")?;
+    ensure_eq(&compensation, "/data/compensatedTasks/0", "provision")?;
+    ensure!(fs::read_to_string(workspace.join("artifacts/compensation.txt"))? == "compensated");
+    let compensation_run_id = string_at(&compensation, "/data/runId")?;
+    let compensation_inspect = inspect(&binary, root, &compensation_db, compensation_run_id)?;
+    ensure_eq(
+        &compensation_inspect,
+        "/data/run/sourceRunId",
+        source_run_id,
+    )?;
+    ensure_eq(&compensation_inspect, "/data/run/mode", "compensation")?;
+    let source_inspect = inspect(&binary, root, &compensation_db, source_run_id)?;
+    ensure_eq(
+        &source_inspect,
+        "/data/effectReconciliations/0/status",
+        "compensated",
+    )?;
+    let compensation_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            compensation_run_id,
+            "--db",
+            path(&compensation_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&compensation_replay, "/data/state", "succeeded")?;
+    let repeat_plan = successful_json(
+        &binary,
+        root,
+        &strings([
+            "compensate",
+            source_run_id,
+            "--plan",
+            "--db",
+            path(&compensation_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&repeat_plan, "/data/executable", false)?;
+    ensure!(array_len(&repeat_plan, "/data/alreadyCompensatedEffects")? == 1);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
@@ -3637,6 +3740,34 @@ spec:
     assign: { kind: builtin.assign }
   tasks:
     - { id: work, uses: "action:assign", with: { recovered: true } }
+"#;
+
+const COMPENSATION_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: compensation-acceptance }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: provision
+      uses: action:write
+      with:
+        path: artifacts/compensation.txt
+        content: provisioned
+      compensate:
+        uses: action:write
+        with:
+          path: artifacts/compensation.txt
+          content: compensated
+    - id: fail
+      uses: action:assert
+      needs: [provision]
+      with: { that: false, message: expected acceptance failure }
 "#;
 
 const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

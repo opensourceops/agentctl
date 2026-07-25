@@ -14,6 +14,7 @@ The deterministic examples are exercised by `cargo xtask verify` and never requi
 - `matrix.yaml`: bounded static matrix expansion, stable child identities, and ordered aggregation.
 - `loop.yaml`: bounded sequential iteration, stable boundaries, aggregation, and fail-closed exhaustion.
 - `subworkflow.yaml`: typed reusable graph expansion and namespaced recovery boundaries.
+- `compensation.yaml`: expected downstream failure followed by explicit source-linked compensation.
 - `working-memory.yaml` and `long-term-memory.yaml`: separate memory lifecycles.
 - `fake-provider.yaml`: deterministic model-provider path.
 - `mcp.yaml` and `a2a.yaml`: local protocol fixtures, backed by the protocol crate's mock-server tests.

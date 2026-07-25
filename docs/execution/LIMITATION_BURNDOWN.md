@@ -48,7 +48,7 @@ complete, every entry must have exactly one final disposition:
 | COND-001 | Conditions and routers | in progress | implemented |
 | LOOP-001 | Bounded loops | in progress | implemented |
 | SUB-001 | Sub-workflows | in progress | implemented |
-| COMP-001 | Compensation | open | implemented |
+| COMP-001 | Compensation | in progress | implemented |
 | TEAM-001 | Structured teams and handoffs | open | redesigned |
 | STR-001 | Streaming | open | implemented |
 | MCP-001 | MCP resilience | open | implemented |
@@ -350,23 +350,35 @@ complete, every entry must have exactly one final disposition:
 
 ### COMP-001: Explicit compensation
 
-- Current behavior: tool contracts carry compensation metadata but runtime does
-  not execute it.
+- Current behavior: compensable tasks declare a named effectful inverse action.
+  `agentctl compensate` plans and executes eligible source effects through a
+  separate source-linked run.
 - User impact: operators cannot durably coordinate best-effort reversal.
 - Security or durability impact: documentation-shaped metadata can be mistaken
   for transactional rollback.
-- Product decision: compensation is an explicit new run phase in reverse
-  dependency order, never a transactional rollback claim.
+- Product decision: compensation is an explicit sequential run in reverse
+  compiled graph order, never a transactional rollback claim.
 - Required implementation: declaration validation, manual trigger, opt-in
   automatic trigger, approval, idempotency, partial failure, linkage to effects
   and reconciliation, audit, trace, retry/repair behavior.
-- Migration impact: effect links, run phase, and checkpoints.
-- Tests: order, approval, idempotency, partial failure, contradictory
-  reconciliation, cancellation, and replay.
+- Migration impact: the additive `compensation` run mode reuses existing source
+  lineage, task, effect, approval, checkpoint, audit, trace, and reconciliation
+  storage. No database schema migration is required.
+- Tests: order, approval, idempotency, partial failure, source and inverse
+  uncertainty reconciliation, terminal inverse-run blocking, cancellation,
+  retry/repair invalidation, and replay.
 - Examples: operational workflow compensation.
 - Live evidence: deterministic tool compensation only.
 - Documentation: guarantees and non-guarantees.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Source effects remain immutable; eligible
+  confirmed mutations execute declared action-based compensation in reverse
+  order. Successful inverse effects append linked `compensated`
+  reconciliations. Manual and explicitly automatic triggers, approval,
+  uncertainty blocking, bounded retries, partial continuation, repeat planning,
+  selected tasks, repair/retry invalidation, and effect-free replay use the
+  ordinary durable runtime. Focused compiler/runtime tests, all 38 packaged CLI
+  scenarios, the 12-stage verification gate, examples, docs, packaging, and
+  secret scanning pass.
 
 ### TEAM-001: Structured teams and handoffs
 

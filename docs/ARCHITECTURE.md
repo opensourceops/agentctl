@@ -42,10 +42,11 @@ iteration attempts, effects, guard decisions, retry, repair, and replay use the
 ordinary durable task model. Reusable sub-workflows compile into a typed input
 boundary, namespaced ordinary tasks, and a typed output aggregate. Their policy
 and providers come from the invoking workflow, while deterministic memory keys
-are invocation-prefixed. Handlers, compensation execution, and event triggers
-still require their own explicit state and recovery contracts. The DSL carries
-optional compensation metadata on a tool contract, but the runtime does not
-execute compensation.
+are invocation-prefixed. Explicit compensation plans eligible applied effects
+in reverse graph order and executes ordinary actions in a separate
+source-linked run. Confirmed inverse effects append immutable reconciliation
+records to the source. Handlers and event triggers remain outside the runtime
+surface.
 
 Clock and identifier generation are injected. Provider responses, tools, and external actions are injected interfaces. Cryptographic digests canonicalize identity; output maps use stable ordering where the public contract requires it.
 

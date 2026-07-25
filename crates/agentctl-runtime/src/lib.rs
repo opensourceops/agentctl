@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentctl_core::compiler::{CompiledPlan, PlanPredictability, TaskUse};
+use agentctl_core::compiler::{CompiledPlan, PlanPredictability, TaskUse, compile};
 use agentctl_core::dsl::{
-    API_VERSION, ActionDefinition, ActionKind, ApprovalRequirement, EffectClass, FailureBehavior,
-    Idempotency, Risk, ToolDefinition, ToolKind, Workflow,
+    API_VERSION, ActionDefinition, ActionKind, ApprovalRequirement, CompensationTrigger,
+    EffectClass, FailureBehavior, Idempotency, Risk, TaskDefinition, ToolDefinition, ToolKind,
+    Workflow,
 };
 use agentctl_core::effect::{
     ActionResult, ChangeStatus, EffectRecord, EffectRequest, EffectStatus,
@@ -118,7 +119,6 @@ impl BuiltinToolExecutor {
                 network_requirements: definition.network.clone(),
                 approval: definition.approval,
                 observability: Value::Null,
-                compensation: definition.compensation.clone(),
             },
             kind: definition.kind,
             policy,
@@ -373,6 +373,56 @@ pub struct RetryOutcome {
     pub output: Option<Value>,
 }
 
+pub const COMPENSATION_PLAN_VERSION: &str = "agentctl.dev/compensation-plan/v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompensationBlock {
+    pub task_id: String,
+    pub effect_id: Option<String>,
+    pub rule: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompensationTaskPlan {
+    pub source_task_id: String,
+    pub compensation_task_id: String,
+    pub action: String,
+    pub source_effect_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompensationPlan {
+    pub api_version: String,
+    pub source_run_id: String,
+    pub executable: bool,
+    pub complete: bool,
+    pub automatic: bool,
+    pub selected_tasks: Vec<String>,
+    pub tasks: Vec<CompensationTaskPlan>,
+    pub blocked: Vec<CompensationBlock>,
+    pub already_compensated_effects: Vec<String>,
+    #[serde(skip_serializing)]
+    workflow: Workflow,
+    #[serde(skip_serializing)]
+    compiled: CompiledPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompensationOutcome {
+    pub run_id: Option<String>,
+    pub source_run_id: String,
+    pub trace_id: Option<String>,
+    pub state: Option<RunState>,
+    pub compensated_tasks: Vec<String>,
+    pub failed_tasks: Vec<String>,
+    pub blocked: Vec<CompensationBlock>,
+}
+
 pub const LEGACY_UPGRADE_ANALYSIS_VERSION: &str = "agentctl.dev/legacy-upgrade/v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -542,6 +592,7 @@ impl Runtime {
             &Value::Object(workflow.spec.memory.working.clone().into_iter().collect()),
             mode,
             None,
+            None,
             &self.base_path,
             self.clock.now(),
             &trace_id,
@@ -655,7 +706,11 @@ impl Runtime {
                 &trace_id,
             )?;
         }
-        self.drive(run_id, &trace_id, options, cancellation).await
+        let outcome = self.drive(run_id, &trace_id, options, cancellation).await?;
+        if run.mode == RunMode::Compensation {
+            self.finalize_compensation_run(run_id)?;
+        }
+        Ok(outcome)
     }
 
     fn prepare_reconciled_resume(&self, run_id: &str, trace_id: &str) -> Result<(), RuntimeError> {
@@ -769,6 +824,7 @@ impl Runtime {
             &source.working_memory,
             RunMode::Replay,
             Some(source_run_id),
+            None,
             Path::new(source.base_path.as_deref().unwrap_or(".")),
             self.clock.now(),
             &trace_id,
@@ -1222,6 +1278,7 @@ impl Runtime {
             &serde_json::to_value(&workflow.spec.memory.working)?,
             RunMode::Fork,
             Some(source_run_id),
+            None,
             &self.base_path,
             self.clock.now(),
             &trace_id,
@@ -2210,6 +2267,512 @@ impl Runtime {
         })
     }
 
+    pub fn plan_compensation(
+        &self,
+        source_run_id: &str,
+        selected_tasks: &[String],
+    ) -> Result<CompensationPlan, RuntimeError> {
+        let source = self.store.load_run(source_run_id)?;
+        if !source.state.is_terminal() {
+            return Err(RuntimeError::InvalidState(format!(
+                "compensation source run `{source_run_id}` is not terminal ({:?})",
+                source.state
+            )));
+        }
+        let compensation_runs = self.store.compensation_runs(source_run_id)?;
+        for (run_id, state) in &compensation_runs {
+            if state.is_terminal() {
+                self.finalize_compensation_run(run_id)?;
+            }
+        }
+
+        let source_workflow: Workflow = serde_json::from_value(source.workflow.clone())?;
+        let automatic =
+            source_workflow.spec.compensation.on_failure == CompensationTrigger::Automatic;
+        let source_tasks = self.store.list_tasks(source_run_id)?;
+        let source_effects = self.store.list_effects(source_run_id)?;
+        let selected = selected_tasks.iter().cloned().collect::<BTreeSet<_>>();
+        let mut blocked = Vec::new();
+        for task_id in &selected {
+            match source.plan.tasks.get(task_id) {
+                None => blocked.push(CompensationBlock {
+                    task_id: task_id.clone(),
+                    effect_id: None,
+                    rule: "unknown_task".to_owned(),
+                    message: format!("source run has no task `{task_id}`"),
+                }),
+                Some(task) if task.compensate.is_none() => blocked.push(CompensationBlock {
+                    task_id: task_id.clone(),
+                    effect_id: None,
+                    rule: "undeclared_compensation".to_owned(),
+                    message: format!("task `{task_id}` has no compensation declaration"),
+                }),
+                Some(_) => {}
+            }
+        }
+        let mut blocked_source_tasks = BTreeSet::new();
+        for (run_id, state) in &compensation_runs {
+            if !state.is_terminal() {
+                blocked.push(CompensationBlock {
+                    task_id: "*".to_owned(),
+                    effect_id: None,
+                    rule: "compensation_in_progress".to_owned(),
+                    message: format!(
+                        "compensation run `{run_id}` is {state:?}; resume or reconcile it before starting another"
+                    ),
+                });
+                continue;
+            }
+            let prior = self.store.load_run(run_id)?;
+            let workflow: Workflow = serde_json::from_value(prior.workflow)?;
+            let mappings = workflow
+                .spec
+                .inputs
+                .get("__agentctlCompensation")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "compensation run `{run_id}` has no durable source mapping"
+                    ))
+                })?;
+            for (compensation_task_id, mapping) in mappings {
+                let Some(effect) = self
+                    .store
+                    .latest_effect_for_task(run_id, compensation_task_id)?
+                else {
+                    continue;
+                };
+                let reconciliation = self
+                    .store
+                    .latest_effect_reconciliation(&effect.request.id)?;
+                let rule = match reconciliation.as_ref().map(|record| record.status) {
+                    Some(ReconciliationStatus::Applied | ReconciliationStatus::NotApplied) => None,
+                    Some(ReconciliationStatus::Compensated) => Some("compensation_effect_reversed"),
+                    None if matches!(
+                        effect.status,
+                        EffectStatus::Started | EffectStatus::Uncertain
+                    ) =>
+                    {
+                        Some("unreconciled_compensation_effect")
+                    }
+                    None if effect.status == EffectStatus::Succeeded && !effect.confirmed => {
+                        Some("unconfirmed_compensation_effect")
+                    }
+                    None => None,
+                };
+                let Some(rule) = rule else {
+                    continue;
+                };
+                let source_task_id = mapping
+                    .get("sourceTaskId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidState(format!(
+                            "compensation task `{compensation_task_id}` has no source task mapping"
+                        ))
+                    })?;
+                blocked_source_tasks.insert(source_task_id.to_owned());
+                blocked.push(CompensationBlock {
+                    task_id: source_task_id.to_owned(),
+                    effect_id: Some(effect.request.id.clone()),
+                    rule: rule.to_owned(),
+                    message: format!(
+                        "compensation effect `{}` must be reconciled before task `{source_task_id}` can be compensated again",
+                        effect.request.id
+                    ),
+                });
+            }
+        }
+
+        let mut generated_tasks = Vec::new();
+        let mut task_plans = Vec::new();
+        let mut mappings = serde_json::Map::new();
+        let mut already_compensated_effects = Vec::new();
+        for task_id in source.plan.order.iter().rev() {
+            if !selected.is_empty() && !selected.contains(task_id) {
+                continue;
+            }
+            let Some(source_task) = source.plan.tasks.get(task_id) else {
+                continue;
+            };
+            let Some(compensate) = &source_task.compensate else {
+                continue;
+            };
+            if blocked_source_tasks.contains(task_id) {
+                continue;
+            }
+            let mut applied_effects = Vec::new();
+            for effect in source_effects
+                .iter()
+                .filter(|effect| effect.request.task_id == *task_id)
+                .filter(|effect| compensation_relevant_effect(effect.request.effect_class))
+            {
+                let reconciliation = self
+                    .store
+                    .latest_effect_reconciliation(&effect.request.id)?;
+                match reconciliation.as_ref().map(|record| record.status) {
+                    Some(ReconciliationStatus::Compensated) => {
+                        already_compensated_effects.push(effect.request.id.clone());
+                    }
+                    Some(ReconciliationStatus::NotApplied) => {}
+                    Some(ReconciliationStatus::Applied) => {
+                        applied_effects.push(effect.request.id.clone());
+                    }
+                    None if matches!(
+                        effect.status,
+                        EffectStatus::Started | EffectStatus::Uncertain
+                    ) =>
+                    {
+                        blocked.push(CompensationBlock {
+                            task_id: task_id.clone(),
+                            effect_id: Some(effect.request.id.clone()),
+                            rule: "unreconciled_source_effect".to_owned(),
+                            message: format!(
+                                "effect `{}` must be reconciled as applied or not-applied before compensation",
+                                effect.request.id
+                            ),
+                        });
+                    }
+                    None if effect.status == EffectStatus::Succeeded && effect.confirmed => {
+                        applied_effects.push(effect.request.id.clone());
+                    }
+                    None if effect.status == EffectStatus::Succeeded => {
+                        blocked.push(CompensationBlock {
+                            task_id: task_id.clone(),
+                            effect_id: Some(effect.request.id.clone()),
+                            rule: "unconfirmed_source_effect".to_owned(),
+                            message: format!(
+                                "effect `{}` succeeded without confirmed application",
+                                effect.request.id
+                            ),
+                        });
+                    }
+                    None => {}
+                }
+            }
+            if applied_effects.is_empty() {
+                continue;
+            }
+            let context = context_for_task(&source, &source_tasks, source_task)?;
+            let rendered = match render(&serde_json::to_value(&compensate.input)?, &context) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    blocked.push(CompensationBlock {
+                        task_id: task_id.clone(),
+                        effect_id: None,
+                        rule: "compensation_input_unavailable".to_owned(),
+                        message: format!(
+                            "task `{task_id}` compensation input cannot be reconstructed: {error}"
+                        ),
+                    });
+                    continue;
+                }
+            };
+            let input = rendered.as_object().cloned().ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "task `{task_id}` compensation input is not an object"
+                ))
+            })?;
+            let compensation_task_id = format!("compensate--{task_id}");
+            generated_tasks.push(TaskDefinition {
+                id: compensation_task_id.clone(),
+                uses: compensate.uses.clone(),
+                needs: Vec::new(),
+                foreach: None,
+                matrix: None,
+                route: None,
+                loop_definition: None,
+                memory_writes: Vec::new(),
+                when: None,
+                vars: BTreeMap::new(),
+                input: input.into_iter().collect(),
+                retry: compensate.retry.clone(),
+                timeout_seconds: Some(compensate.timeout_seconds),
+                failure: FailureBehavior::Continue,
+                compensate: None,
+                output_schema: None,
+            });
+            mappings.insert(
+                compensation_task_id.clone(),
+                serde_json::json!({
+                    "sourceTaskId": task_id,
+                    "sourceEffectIds": applied_effects,
+                }),
+            );
+            task_plans.push(CompensationTaskPlan {
+                source_task_id: task_id.clone(),
+                compensation_task_id,
+                action: compensate.uses.clone(),
+                source_effect_ids: applied_effects,
+            });
+        }
+
+        let mut workflow = source_workflow;
+        workflow.metadata.name = format!("{}-compensation", workflow.metadata.name);
+        workflow.metadata.labels.insert(
+            "agentctl.dev/compensation-source".to_owned(),
+            source_run_id.to_owned(),
+        );
+        workflow.spec.tasks = generated_tasks;
+        workflow.spec.outputs.clear();
+        workflow.spec.inputs =
+            BTreeMap::from([("__agentctlCompensation".to_owned(), Value::Object(mappings))]);
+        workflow.spec.runtime.max_concurrency = 1;
+        match workflow.spec.compensation.approval {
+            ApprovalRequirement::Policy => {}
+            ApprovalRequirement::Never => {
+                workflow.spec.policy.approval = agentctl_core::dsl::ApprovalMode::Never;
+            }
+            ApprovalRequirement::Always => {
+                workflow.spec.policy.approval = agentctl_core::dsl::ApprovalMode::Always;
+            }
+        }
+        workflow.spec.compensation.on_failure = CompensationTrigger::Manual;
+        workflow.spec.memory.working = source
+            .working_memory
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let compiled = if workflow.spec.tasks.is_empty() {
+            CompiledPlan {
+                format_version: source.plan.format_version,
+                workflow_name: workflow.metadata.name.clone(),
+                workflow_digest: String::new(),
+                plan_digest: String::new(),
+                order: Vec::new(),
+                max_concurrency: 1,
+                tasks: BTreeMap::new(),
+                predictability: PlanPredictability::FullyPredictable,
+                requirements: agentctl_core::compiler::PlanRequirements {
+                    providers: Vec::new(),
+                    tools: Vec::new(),
+                    effects: Vec::new(),
+                },
+            }
+        } else {
+            compile(&workflow, "<generated-compensation>").map_err(|diagnostics| {
+                RuntimeError::InvalidState(format!(
+                    "generated compensation workflow is invalid: {}",
+                    diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.message.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ))
+            })?
+        };
+        let executable = !task_plans.is_empty()
+            && !blocked
+                .iter()
+                .any(|block| block.rule == "compensation_in_progress");
+        Ok(CompensationPlan {
+            api_version: COMPENSATION_PLAN_VERSION.to_owned(),
+            source_run_id: source_run_id.to_owned(),
+            executable,
+            complete: blocked.is_empty(),
+            automatic,
+            selected_tasks: selected.into_iter().collect(),
+            tasks: task_plans,
+            blocked,
+            already_compensated_effects,
+            workflow,
+            compiled,
+        })
+    }
+
+    pub async fn compensate(
+        &self,
+        plan: CompensationPlan,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<CompensationOutcome, RuntimeError> {
+        let plan = self.plan_compensation(&plan.source_run_id, &plan.selected_tasks)?;
+        if !plan.executable {
+            return Ok(CompensationOutcome {
+                run_id: None,
+                source_run_id: plan.source_run_id,
+                trace_id: None,
+                state: None,
+                compensated_tasks: Vec::new(),
+                failed_tasks: Vec::new(),
+                blocked: plan.blocked,
+            });
+        }
+        let source = self.store.load_run(&plan.source_run_id)?;
+        let run_id = self.ids.next_id("compensation");
+        let trace_id = self.ids.next_id("trace");
+        let inputs = Value::Object(plan.workflow.spec.inputs.clone().into_iter().collect());
+        self.store.create_run(
+            &run_id,
+            API_VERSION,
+            &serde_json::to_value(&plan.workflow)?,
+            &plan.compiled,
+            &inputs,
+            &source.working_memory,
+            RunMode::Compensation,
+            None,
+            Some(&plan.source_run_id),
+            &self.base_path,
+            self.clock.now(),
+            &trace_id,
+        )?;
+        self.trace(
+            TraceEvent::new(
+                SpanKind::Run,
+                TracePhase::Started,
+                "run.compensate",
+                &trace_id,
+                &run_id,
+                self.clock.now(),
+            )
+            .attributes(
+                serde_json::json!({
+                    "sourceRunId": plan.source_run_id,
+                    "tasks": plan.tasks,
+                    "blocked": plan.blocked,
+                }),
+                &[],
+            ),
+        )?;
+        let result = self
+            .drive_inner(&run_id, &trace_id, options, cancellation)
+            .await;
+        self.finalize_compensation_run(&run_id)?;
+        let outcome = result?;
+        let records = self.store.list_tasks(&run_id)?;
+        let source_by_task = plan
+            .tasks
+            .iter()
+            .map(|task| {
+                (
+                    task.compensation_task_id.as_str(),
+                    task.source_task_id.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let compensated_tasks = records
+            .iter()
+            .filter(|task| task.state == TaskState::Succeeded)
+            .filter_map(|task| source_by_task.get(task.task_id.as_str()).cloned())
+            .collect();
+        let failed_tasks = records
+            .iter()
+            .filter(|task| task.state == TaskState::Failed)
+            .filter_map(|task| source_by_task.get(task.task_id.as_str()).cloned())
+            .collect();
+        Ok(CompensationOutcome {
+            run_id: Some(run_id),
+            source_run_id: plan.source_run_id,
+            trace_id: Some(outcome.trace_id),
+            state: Some(outcome.state),
+            compensated_tasks,
+            failed_tasks,
+            blocked: plan.blocked,
+        })
+    }
+
+    fn finalize_compensation_run(&self, run_id: &str) -> Result<(), RuntimeError> {
+        let run = self.store.load_run(run_id)?;
+        if run.mode != RunMode::Compensation {
+            return Ok(());
+        }
+        let source_run_id = run.source_run_id.as_deref().ok_or_else(|| {
+            RuntimeError::InvalidState(format!("compensation run `{run_id}` has no source run"))
+        })?;
+        let workflow: Workflow = serde_json::from_value(run.workflow)?;
+        let mappings = workflow
+            .spec
+            .inputs
+            .get("__agentctlCompensation")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "compensation run `{run_id}` has no durable source mapping"
+                ))
+            })?;
+        let tasks = self
+            .store
+            .list_tasks(run_id)?
+            .into_iter()
+            .map(|task| (task.task_id.clone(), task))
+            .collect::<BTreeMap<_, _>>();
+        for (compensation_task_id, mapping) in mappings {
+            let task = tasks.get(compensation_task_id);
+            let Some(compensation_effect) = self
+                .store
+                .latest_effect_for_task(run_id, compensation_task_id)?
+            else {
+                if task.is_some_and(|task| task.state == TaskState::Succeeded) {
+                    return Err(RuntimeError::InvalidState(format!(
+                        "successful compensation task `{compensation_task_id}` has no effect"
+                    )));
+                }
+                continue;
+            };
+            let compensation_reconciliation = self
+                .store
+                .latest_effect_reconciliation(&compensation_effect.request.id)?;
+            let compensation_applied = compensation_effect.status == EffectStatus::Succeeded
+                && compensation_effect.confirmed
+                || compensation_reconciliation
+                    .as_ref()
+                    .is_some_and(|record| record.status == ReconciliationStatus::Applied);
+            if !compensation_applied {
+                continue;
+            }
+            let source_effect_ids = mapping
+                .get("sourceEffectIds")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "compensation task `{compensation_task_id}` has no source effect mapping"
+                    ))
+                })?;
+            for source_effect_id in source_effect_ids {
+                let source_effect_id = source_effect_id.as_str().ok_or_else(|| {
+                    RuntimeError::InvalidState(
+                        "compensation source effect ID is not a string".to_owned(),
+                    )
+                })?;
+                if self
+                    .store
+                    .latest_effect_reconciliation(source_effect_id)?
+                    .as_ref()
+                    .is_some_and(|record| record.status == ReconciliationStatus::Compensated)
+                {
+                    continue;
+                }
+                self.store.reconcile_effect(
+                    &EffectReconciliationRequest {
+                        reconciliation_id: self.ids.next_id("reconciliation"),
+                        effect_id: source_effect_id.to_owned(),
+                        status: ReconciliationStatus::Compensated,
+                        actor: "agentctl-runtime".to_owned(),
+                        reason: "declared compensation completed".to_owned(),
+                        evidence: serde_json::json!({
+                            "source": "declared-compensation",
+                            "sourceRunId": source_run_id,
+                            "compensationRunId": run_id,
+                            "compensationTaskId": compensation_task_id,
+                        }),
+                        result: None,
+                        result_schema: None,
+                        authorization: serde_json::json!({
+                            "kind": "workflow-declaration",
+                            "sourceRunId": source_run_id,
+                        }),
+                        compensation_effect_id: Some(compensation_effect.request.id.clone()),
+                        trace_id: self.ids.next_id("trace"),
+                    },
+                    self.clock.now(),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn repair(
         &self,
@@ -2332,6 +2895,31 @@ impl Runtime {
     }
 
     async fn drive(
+        &self,
+        run_id: &str,
+        trace_id: &str,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<RunOutcome, RuntimeError> {
+        let run = self.store.load_run(run_id)?;
+        let workflow: Workflow = serde_json::from_value(run.workflow)?;
+        let automatic = run.mode != RunMode::Compensation
+            && workflow.spec.compensation.on_failure == CompensationTrigger::Automatic;
+        let result = self
+            .drive_inner(run_id, trace_id, options, cancellation)
+            .await;
+        let failed = matches!(&result, Ok(outcome) if outcome.state == RunState::Failed)
+            || matches!(&result, Err(RuntimeError::RunFailed { .. }));
+        if automatic && failed {
+            let plan = self.plan_compensation(run_id, &[])?;
+            if plan.executable {
+                self.compensate(plan, options, cancellation).await?;
+            }
+        }
+        result
+    }
+
+    async fn drive_inner(
         &self,
         run_id: &str,
         trace_id: &str,
@@ -3722,7 +4310,7 @@ impl Runtime {
                     "path": path,
                     "predictability": "fully_predictable",
                 });
-                if options.check || !changed {
+                if options.check || (!changed && run.mode != RunMode::Compensation) {
                     return Ok(TaskExecution::Complete {
                         output,
                         memory: None,
@@ -4907,6 +5495,13 @@ fn repair_effect_is_unsafe(
                 effect.request.idempotency,
                 Idempotency::AtMostOnce | Idempotency::Unknown
             )))
+}
+
+const fn compensation_relevant_effect(effect_class: EffectClass) -> bool {
+    !matches!(
+        effect_class,
+        EffectClass::Pure | EffectClass::Observe | EffectClass::Model
+    )
 }
 
 fn unresolved_reuse_effects(
@@ -6666,7 +7261,6 @@ mod tests {
                     network_requirements: Vec::new(),
                     approval: ApprovalRequirement::Never,
                     observability: Value::Null,
-                    compensation: None,
                 },
                 malformed,
                 delay: Duration::ZERO,
@@ -7410,6 +8004,7 @@ spec:
                 &serde_json::json!({"value": "old"}),
                 RunMode::Execute,
                 None,
+                None,
                 base,
                 FixedClock.now(),
                 "trace-source",
@@ -7670,6 +8265,7 @@ spec:
                 &serde_json::json!({}),
                 &serde_json::json!({}),
                 RunMode::Execute,
+                None,
                 None,
                 directory.path(),
                 FixedClock.now(),
@@ -11627,6 +12223,709 @@ spec:
                 .await,
             Err(RuntimeError::UncertainEffect { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn compensation_runs_in_reverse_order_reconciles_and_replays() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: compensation }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:write
+      with: { path: first.txt, content: created-first }
+      compensate:
+        uses: action:write
+        with: { path: first.txt, content: compensated-first }
+    - id: second
+      uses: action:write
+      needs: [first]
+      with: { path: second.txt, content: created-second }
+      compensate:
+        uses: action:write
+        with: { path: second.txt, content: compensated-second }
+    - id: fail
+      uses: action:assert
+      needs: [second]
+      with: { that: false, message: expected }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed source, got {other:?}"),
+        };
+        let compensation_plan = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("compensation plan");
+        assert!(compensation_plan.executable);
+        assert!(compensation_plan.complete);
+        assert_eq!(
+            compensation_plan
+                .tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["second", "first"]
+        );
+
+        let outcome = runtime
+            .compensate(
+                compensation_plan,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("compensation");
+        assert_eq!(outcome.state, Some(RunState::Succeeded));
+        assert_eq!(outcome.compensated_tasks, ["second", "first"]);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("first.txt")).expect("first"),
+            "compensated-first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("second.txt")).expect("second"),
+            "compensated-second"
+        );
+        let compensation_run_id = outcome.run_id.expect("compensation run");
+        let compensation_run = store
+            .load_run(&compensation_run_id)
+            .expect("compensation record");
+        assert_eq!(compensation_run.mode, RunMode::Compensation);
+        assert_eq!(
+            compensation_run.source_run_id.as_deref(),
+            Some(source_run_id.as_str())
+        );
+        assert_eq!(
+            store
+                .audit_events(&compensation_run_id)
+                .expect("compensation audit")
+                .iter()
+                .filter(|event| event.event_type == "effect.requested")
+                .filter_map(|event| event.task_id.as_deref())
+                .collect::<Vec<_>>(),
+            ["compensate--second", "compensate--first"]
+        );
+        for effect in store.list_effects(&source_run_id).expect("source effects") {
+            if compensation_relevant_effect(effect.request.effect_class) {
+                let reconciliation = store
+                    .latest_effect_reconciliation(&effect.request.id)
+                    .expect("reconciliation")
+                    .expect("compensated");
+                assert_eq!(reconciliation.status, ReconciliationStatus::Compensated);
+                assert!(reconciliation.compensation_effect_id.is_some());
+            }
+        }
+
+        let repeated = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("repeat plan");
+        assert!(!repeated.executable);
+        assert!(repeated.complete);
+        assert_eq!(repeated.already_compensated_effects.len(), 2);
+
+        let blocked_retry = runtime
+            .plan_retry(&source_run_id, &workflow, &plan, &[], true, false)
+            .expect("failed-only retry plan");
+        assert!(!blocked_retry.compatible);
+        let safe_retry = runtime
+            .plan_retry(
+                &source_run_id,
+                &workflow,
+                &plan,
+                &["first".to_owned()],
+                false,
+                true,
+            )
+            .expect("explicit restart retry");
+        assert!(safe_retry.compatible);
+        assert_eq!(safe_retry.rerun_tasks, ["first", "second", "fail"]);
+
+        let mut repaired_workflow = workflow.clone();
+        repaired_workflow.spec.tasks[2]
+            .input
+            .insert("that".to_owned(), Value::Bool(true));
+        let repaired_plan =
+            compile(&repaired_workflow, "repaired.yaml").expect("repaired workflow compiles");
+        let safe_repair = runtime
+            .plan_repair(
+                &source_run_id,
+                &repaired_workflow,
+                &repaired_plan,
+                &["first".to_owned()],
+                true,
+            )
+            .expect("explicit restart repair");
+        assert!(safe_repair.compatible);
+        assert_eq!(safe_repair.rerun_tasks, ["first", "second", "fail"]);
+
+        let replay = runtime
+            .replay(&compensation_run_id)
+            .await
+            .expect("offline compensation replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn compensation_continues_after_failure_and_retries_only_remaining_effects() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: partial-compensation }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: first
+      uses: action:write
+      with: { path: first.txt, content: created-first }
+      compensate:
+        uses: action:write
+        with: { path: first.txt, content: compensated-first }
+    - id: second
+      uses: action:write
+      needs: [first]
+      with: { path: second.txt, content: created-second }
+      compensate:
+        uses: action:write
+        with: { path: blocked/result.txt, content: compensated-second }
+        retry: { maxAttempts: 2 }
+    - id: fail
+      uses: action:assert
+      needs: [second]
+      with: { that: false }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed source, got {other:?}"),
+        };
+        std::fs::write(directory.path().join("blocked"), "not-a-directory").expect("blocking file");
+        let outcome = runtime
+            .compensate(
+                runtime
+                    .plan_compensation(&source_run_id, &[])
+                    .expect("plan"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("partial compensation");
+        assert_eq!(outcome.state, Some(RunState::Failed));
+        assert_eq!(outcome.compensated_tasks, ["first"]);
+        assert_eq!(outcome.failed_tasks, ["second"]);
+        let compensation_run = outcome.run_id.expect("compensation run");
+        assert_eq!(
+            store
+                .list_tasks(&compensation_run)
+                .expect("tasks")
+                .into_iter()
+                .find(|task| task.task_id == "compensate--second")
+                .expect("failed compensation")
+                .attempt,
+            2
+        );
+
+        std::fs::remove_file(directory.path().join("blocked")).expect("remove blocker");
+        let retry_plan = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("retry plan");
+        assert_eq!(
+            retry_plan
+                .tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["second"]
+        );
+        let retry = runtime
+            .compensate(retry_plan, RunOptions::default(), &CancellationToken::new())
+            .await
+            .expect("compensation retry");
+        assert_eq!(retry.state, Some(RunState::Succeeded));
+        assert_eq!(retry.compensated_tasks, ["second"]);
+        assert_eq!(
+            runtime
+                .plan_compensation(&source_run_id, &[])
+                .expect("complete")
+                .already_compensated_effects
+                .len(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uncertain_compensation_blocks_repeat_until_reconciled() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: uncertain-compensation }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+    uncertain:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, "sleep 2"]
+      timeoutSeconds: 1
+  tasks:
+    - id: create
+      uses: action:write
+      with: { path: resource.txt, content: created }
+      compensate:
+        uses: action:uncertain
+    - id: fail
+      uses: action:assert
+      needs: [create]
+      with: { that: false }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed source, got {other:?}"),
+        };
+        let outcome = runtime
+            .compensate(
+                runtime
+                    .plan_compensation(&source_run_id, &[])
+                    .expect("initial plan"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("uncertain compensation outcome");
+        assert_eq!(outcome.state, Some(RunState::Failed));
+        let compensation_run_id = outcome.run_id.expect("compensation run");
+        let compensation_effect = store
+            .list_effects(&compensation_run_id)
+            .expect("compensation effects")
+            .pop()
+            .expect("uncertain compensation effect");
+        assert_eq!(compensation_effect.status, EffectStatus::Uncertain);
+
+        let blocked = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("blocked repeat plan");
+        assert!(!blocked.executable);
+        assert!(blocked.blocked.iter().any(|block| {
+            block.task_id == "create"
+                && block.rule == "unreconciled_compensation_effect"
+                && block.effect_id.as_deref() == Some(compensation_effect.request.id.as_str())
+        }));
+
+        store
+            .reconcile_effect(
+                &EffectReconciliationRequest {
+                    reconciliation_id: "compensation-applied".to_owned(),
+                    effect_id: compensation_effect.request.id.clone(),
+                    status: ReconciliationStatus::Applied,
+                    actor: "operator".to_owned(),
+                    reason: "external evidence confirms inverse application".to_owned(),
+                    evidence: serde_json::json!({"ticket": "INC-2"}),
+                    result: Some(serde_json::json!({"status": "applied"})),
+                    result_schema: None,
+                    authorization: serde_json::json!({"kind": "test-operator"}),
+                    compensation_effect_id: None,
+                    trace_id: "trace-compensation-reconciliation".to_owned(),
+                },
+                FixedClock.now(),
+            )
+            .expect("reconcile compensation applied");
+        let complete = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("complete after reconciliation");
+        assert!(!complete.executable);
+        assert!(complete.complete);
+        assert_eq!(complete.already_compensated_effects.len(), 1);
+        let source_effect = store
+            .list_effects(&source_run_id)
+            .expect("source effects")
+            .into_iter()
+            .find(|effect| compensation_relevant_effect(effect.request.effect_class))
+            .expect("source effect");
+        assert_eq!(
+            store
+                .latest_effect_reconciliation(&source_effect.request.id)
+                .expect("source reconciliation")
+                .expect("compensated source")
+                .compensation_effect_id
+                .as_deref(),
+            Some(compensation_effect.request.id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_compensation_dispatches_no_effect_and_remains_retryable() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: cancelled-compensation }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: create
+      uses: action:write
+      with: { path: resource.txt, content: created }
+      compensate:
+        uses: action:write
+        with: { path: resource.txt, content: compensated }
+    - id: fail
+      uses: action:assert
+      needs: [create]
+      with: { that: false }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed source, got {other:?}"),
+        };
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let outcome = runtime
+            .compensate(
+                runtime
+                    .plan_compensation(&source_run_id, &[])
+                    .expect("initial plan"),
+                RunOptions::default(),
+                &cancellation,
+            )
+            .await
+            .expect("cancelled outcome");
+        assert_eq!(outcome.state, Some(RunState::Cancelled));
+        assert!(
+            store
+                .list_effects(outcome.run_id.as_deref().expect("compensation run"))
+                .expect("compensation effects")
+                .is_empty()
+        );
+        let retry = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("retryable plan");
+        assert!(retry.executable);
+        assert!(retry.blocked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn automatic_compensation_is_opt_in_and_uses_a_linked_run() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: automatic-compensation }
+spec:
+  compensation: { onFailure: automatic }
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: create
+      uses: action:write
+      with: { path: resource.txt, content: created }
+      compensate:
+        uses: action:write
+        with: { path: resource.txt, content: compensated }
+    - id: fail
+      uses: action:assert
+      needs: [create]
+      with: { that: false }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed source, got {other:?}"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("resource.txt")).expect("resource"),
+            "compensated"
+        );
+        let compensation_runs = store
+            .compensation_runs(&source_run_id)
+            .expect("compensation lineage");
+        assert_eq!(compensation_runs.len(), 1);
+        assert_eq!(compensation_runs[0].1, RunState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn compensation_approval_is_durable_and_resume_finalizes_source_effects() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: compensation-approval }
+spec:
+  compensation: { approval: always }
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    approval: never
+    nonInteractive: pause
+  actions:
+    write: { kind: builtin.write }
+    assert: { kind: builtin.assert }
+  tasks:
+    - id: create
+      uses: action:write
+      with: { path: resource.txt, content: created }
+      compensate:
+        uses: action:write
+        with: { path: resource.txt, content: compensated }
+    - id: fail
+      uses: action:assert
+      needs: [create]
+      with: { that: false }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected failed source, got {other:?}"),
+        };
+        let paused = runtime
+            .compensate(
+                runtime
+                    .plan_compensation(&source_run_id, &[])
+                    .expect("plan"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("paused compensation");
+        assert_eq!(paused.state, Some(RunState::Paused));
+        let compensation_run_id = paused.run_id.expect("compensation run");
+        let approval = store
+            .pending_approvals(&compensation_run_id)
+            .expect("approvals")
+            .pop()
+            .expect("approval");
+        store
+            .resolve_approval(
+                &approval.approval_id,
+                ApprovalResolution::Approved,
+                "operator",
+                "approved declared compensation",
+                FixedClock.now(),
+            )
+            .expect("approve");
+        let resumed = runtime
+            .resume(
+                &compensation_run_id,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resume compensation");
+        assert_eq!(resumed.state, RunState::Succeeded);
+        let source_effect = store
+            .list_effects(&source_run_id)
+            .expect("source effects")
+            .pop()
+            .expect("source effect");
+        assert_eq!(
+            store
+                .latest_effect_reconciliation(&source_effect.request.id)
+                .expect("reconciliation")
+                .expect("compensated")
+                .status,
+            ReconciliationStatus::Compensated
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn compensation_waits_for_uncertain_source_reconciliation() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: reconciled-compensation }
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots: [.]
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    uncertain:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, "sleep 2"]
+      timeoutSeconds: 1
+    write: { kind: builtin.write }
+  tasks:
+    - id: uncertain
+      uses: action:uncertain
+      compensate:
+        uses: action:write
+        with: { path: reconciled.txt, content: compensated }
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected uncertain failure, got {other:?}"),
+        };
+        let blocked = runtime
+            .plan_compensation(&source_run_id, &[])
+            .expect("blocked plan");
+        assert!(!blocked.executable);
+        assert!(blocked.blocked.iter().any(|block| {
+            block.task_id == "uncertain" && block.rule == "unreconciled_source_effect"
+        }));
+        let source_effect = store
+            .list_effects(&source_run_id)
+            .expect("effects")
+            .pop()
+            .expect("uncertain effect");
+        store
+            .reconcile_effect(
+                &EffectReconciliationRequest {
+                    reconciliation_id: "source-applied".to_owned(),
+                    effect_id: source_effect.request.id,
+                    status: ReconciliationStatus::Applied,
+                    actor: "operator".to_owned(),
+                    reason: "external evidence confirms application".to_owned(),
+                    evidence: serde_json::json!({"ticket": "INC-1"}),
+                    result: Some(serde_json::json!({"status": "applied"})),
+                    result_schema: None,
+                    authorization: serde_json::json!({"kind": "test-operator"}),
+                    compensation_effect_id: None,
+                    trace_id: "trace-source-reconciliation".to_owned(),
+                },
+                FixedClock.now(),
+            )
+            .expect("reconcile source applied");
+        let compensation = runtime
+            .compensate(
+                runtime
+                    .plan_compensation(&source_run_id, &[])
+                    .expect("unblocked plan"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("compensate reconciled source");
+        assert_eq!(compensation.state, Some(RunState::Succeeded));
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("reconciled.txt"))
+                .expect("compensated output"),
+            "compensated"
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ Commands:
   fork        Create a new run from a prior workflow with fresh effects
   repair      Create a new run that reuses compatible upstream results and executes a repaired suffix
   retry       Retry failed or selected boundaries of an identical terminal workflow
+  compensate  Execute explicitly declared best-effort compensation for a terminal run
   runs        Analyze or upgrade retained legacy run records for selective reuse
   cancel      Durably request cancellation
   inspect     Inspect durable run, task, and audit state

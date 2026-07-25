@@ -52,6 +52,8 @@ pub struct WorkflowSpec {
     pub tools: BTreeMap<String, ToolDefinition>,
     #[serde(default)]
     pub subworkflows: BTreeMap<String, SubworkflowDefinition>,
+    #[serde(default)]
+    pub compensation: CompensationPolicyDefinition,
     pub tasks: Vec<TaskDefinition>,
     #[serde(default)]
     pub policy: PolicyDefinition,
@@ -359,8 +361,6 @@ pub struct ToolDefinition {
     pub network: Vec<String>,
     #[serde(default)]
     pub approval: ApprovalRequirement,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compensation: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -445,7 +445,38 @@ pub struct TaskDefinition {
     #[serde(default)]
     pub failure: FailureBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensate: Option<CompensationDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompensationDefinition {
+    pub uses: String,
+    #[serde(default, rename = "with")]
+    pub input: JsonMap,
+    #[serde(default)]
+    pub retry: RetryDefinition,
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompensationTrigger {
+    #[default]
+    Manual,
+    Automatic,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompensationPolicyDefinition {
+    #[serde(default)]
+    pub on_failure: CompensationTrigger,
+    #[serde(default)]
+    pub approval: ApprovalRequirement,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1171,6 +1202,43 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
                 .with_path(format!("spec.tasks[{position}].retry.backoffMs")),
             );
         }
+        if let Some(compensate) = &task.compensate {
+            if compensate
+                .timeout_seconds
+                .is_some_and(|value| value == 0 || value > MAX_PROCESS_TIMEOUT_SECONDS)
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        "compensate.timeoutSeconds must be between 1 and 86400",
+                    )
+                    .with_path(format!("spec.tasks[{position}].compensate.timeoutSeconds")),
+                );
+            }
+            if compensate.retry.max_attempts == 0 || compensate.retry.max_attempts > 20 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        "compensate.retry.maxAttempts must be between 1 and 20",
+                    )
+                    .with_path(format!(
+                        "spec.tasks[{position}].compensate.retry.maxAttempts"
+                    )),
+                );
+            }
+            if compensate.retry.backoff_ms > 60_000 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        "compensate.retry.backoffMs must not exceed 60000",
+                    )
+                    .with_path(format!("spec.tasks[{position}].compensate.retry.backoffMs")),
+                );
+            }
+        }
     }
     for (name, server) in &workflow.spec.mcp_servers {
         for (header, secret) in &server.headers {
@@ -1319,6 +1387,31 @@ spec:
                 .as_deref()
                 .is_some_and(|path| path.contains("metadata"))
         );
+    }
+
+    #[test]
+    fn rejects_removed_tool_level_compensation_metadata() {
+        let source = MINIMAL.replace(
+            "  actions:",
+            r#"  tools:
+    legacy:
+      kind: builtin.echo
+      description: echo
+      inputSchema: { type: object }
+      outputSchema: { type: object }
+      capability: observe
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      compensation: undo
+  actions:"#,
+        );
+        let diagnostics =
+            parse_workflow(&source, "legacy-compensation.yaml").expect_err("removed field");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::SchemaViolation);
+        assert!(diagnostics[0].message.contains("compensation"));
     }
 
     #[test]

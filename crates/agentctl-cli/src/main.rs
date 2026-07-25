@@ -93,6 +93,8 @@ enum Command {
     Repair(RepairArgs),
     /// Retry failed or selected boundaries of an identical terminal workflow.
     Retry(RetryArgs),
+    /// Execute explicitly declared best-effort compensation for a terminal run.
+    Compensate(CompensateArgs),
     /// Analyze or upgrade retained legacy run records for selective reuse.
     Runs(RunsArgs),
     /// Durably request cancellation.
@@ -236,6 +238,25 @@ struct RetryArgs {
     restart_successful: bool,
     #[arg(long)]
     reason: Option<String>,
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct CompensateArgs {
+    source_run_id: String,
+    #[arg(long = "task")]
+    task: Vec<String>,
+    #[arg(long)]
+    plan: bool,
     #[arg(long, default_value = ".agentctl/runtime.db")]
     db: PathBuf,
     #[arg(long)]
@@ -722,6 +743,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
         }
         Command::Repair(args) => repair_workflow(output, args).await,
         Command::Retry(args) => retry_workflow(output, args).await,
+        Command::Compensate(args) => compensate_workflow(output, args).await,
         Command::Runs(args) => runs_command(output, args),
         Command::Cancel(args) => {
             let store = open_store(&args.db)?;
@@ -783,7 +805,10 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 audit.len(),
                 traces.len(),
             );
-            let human = if matches!(run.mode, RunMode::Repair | RunMode::Retry) {
+            let human = if matches!(
+                run.mode,
+                RunMode::Repair | RunMode::Retry | RunMode::Compensation
+            ) {
                 let reused = tasks
                     .iter()
                     .filter(|task| task.disposition == TaskDisposition::Reused)
@@ -1146,6 +1171,103 @@ async fn retry_workflow(output: OutputFormat, args: RetryArgs) -> Result<u8, Cli
         ),
     )?;
     Ok(outcome_exit_code(outcome.state))
+}
+
+async fn compensate_workflow(output: OutputFormat, args: CompensateArgs) -> Result<u8, CliError> {
+    if !args.plan {
+        validate_interactive(args.interactive)?;
+    }
+    let store = open_store(&args.db)?;
+    let source = store
+        .load_run(&args.source_run_id)
+        .map_err(CliError::persistence)?;
+    let workflow: Workflow = serde_json::from_value(source.workflow.clone())
+        .map_err(|error| CliError::persistence(error.to_string()))?;
+    let base = resolve_base_path(
+        args.workspace
+            .as_deref()
+            .or_else(|| source.base_path.as_deref().map(Path::new)),
+    )?;
+    let planner = Runtime::new(store.clone(), &base);
+    let plan = planner
+        .plan_compensation(&args.source_run_id, &args.task)
+        .map_err(map_runtime_error)?;
+    if args.plan || !plan.executable {
+        let human = format!(
+            "compensation plan: {}\nsource: {}\nexecute: {}\nalready compensated: {}\nblocked: {}",
+            if plan.complete {
+                "complete"
+            } else if plan.executable {
+                "partial"
+            } else {
+                "blocked"
+            },
+            plan.source_run_id,
+            plan.tasks
+                .iter()
+                .map(|task| format!("{}->{}", task.source_task_id, task.compensation_task_id))
+                .collect::<Vec<_>>()
+                .join(", "),
+            plan.already_compensated_effects.join(", "),
+            plan.blocked
+                .iter()
+                .map(|block| format!("{}: {}", block.task_id, block.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        let complete = plan.complete;
+        let executable = plan.executable;
+        print_value(output, "CompensationPlan", &plan, Vec::new(), human)?;
+        return Ok(if complete || (!executable && plan.blocked.is_empty()) {
+            EXIT_OK
+        } else {
+            EXIT_POLICY
+        });
+    }
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let registry = build_registry(&workflow, &base, &cancellation, None).await?;
+    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let outcome = runtime
+        .compensate(
+            plan,
+            RunOptions {
+                check: false,
+                diff: args.diff,
+                interactive: args.interactive,
+            },
+            &cancellation,
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    let human = format!(
+        "compensation {} source={} state={} compensated={} failed={} blocked={}",
+        outcome.run_id.as_deref().unwrap_or("not-created"),
+        outcome.source_run_id,
+        outcome
+            .state
+            .map_or_else(|| "not-run".to_owned(), |state| format!("{state:?}")),
+        outcome.compensated_tasks.join(","),
+        outcome.failed_tasks.join(","),
+        outcome
+            .blocked
+            .iter()
+            .map(|block| block.task_id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    print_value(output, "CompensationOutcome", &outcome, Vec::new(), human)?;
+    Ok(match outcome.state {
+        Some(state) => {
+            let code = outcome_exit_code(state);
+            if code == EXIT_OK && !outcome.blocked.is_empty() {
+                EXIT_POLICY
+            } else {
+                code
+            }
+        }
+        None if outcome.blocked.is_empty() => EXIT_OK,
+        None => EXIT_POLICY,
+    })
 }
 
 fn print_outcome(
@@ -2137,6 +2259,11 @@ fn qualify_pack_task(
             break;
         }
     }
+    if let Some(compensate) = &mut task.compensate
+        && let Some(name) = compensate.uses.strip_prefix("action:")
+    {
+        compensate.uses = format!("action:{}", qualify(name));
+    }
 }
 
 fn insert_pack_item<T>(
@@ -2180,7 +2307,7 @@ async fn build_registry(
         .filter_map(|agent| workflow.spec.agents.get(agent))
         .map(|agent| agent.provider.as_str())
         .collect::<BTreeSet<_>>();
-    let selected_action_kinds = workflow
+    let mut selected_action_kinds = workflow
         .spec
         .tasks
         .iter()
@@ -2189,6 +2316,27 @@ async fn build_registry(
         .filter_map(|action| workflow.spec.actions.get(action))
         .map(|action| action.kind)
         .collect::<Vec<_>>();
+    selected_action_kinds.extend(
+        workflow
+            .spec
+            .tasks
+            .iter()
+            .filter_map(|task| task.compensate.as_ref())
+            .filter_map(|compensate| compensate.uses.strip_prefix("action:"))
+            .filter_map(|action| workflow.spec.actions.get(action))
+            .map(|action| action.kind),
+    );
+    selected_action_kinds.extend(
+        workflow
+            .spec
+            .subworkflows
+            .values()
+            .flat_map(|definition| definition.tasks.iter())
+            .filter_map(|task| task.compensate.as_ref())
+            .filter_map(|compensate| compensate.uses.strip_prefix("action:"))
+            .filter_map(|action| workflow.spec.actions.get(action))
+            .map(|action| action.kind),
+    );
     for (name, definition) in &workflow.spec.providers {
         let credential = definition.credential.clone().unwrap_or_else(|| {
             SecretReference::environment(default_credential_env(definition.kind.clone()))

@@ -26,6 +26,7 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `actions` | `{}` | Named deterministic or protocol actions. |
 | `tools` | `{}` | Strict model-callable tool contracts. |
 | `subworkflows` | `{}` | Semantically versioned reusable task graphs with typed input and output boundaries. |
+| `compensation` | manual, policy approval | Best-effort compensation trigger and approval behavior. |
 | `tasks` | required list | Ordered graph nodes. |
 | `policy` | safe defaults | Filesystem, process, network, provider, tool, and approval rules. |
 | `memory` | empty | Initial working memory and optional SQLite long-term namespace. |
@@ -54,6 +55,7 @@ Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`,
 | `outputSchema` | action-owned object or agent structured contract | Valid JSON Schema checked at task completion and selective-repair reuse. |
 | `retry` | bounded default | Only definitive retry-safe failures may repeat. |
 | `timeoutSeconds` | action or agent default | Must be within the implementation bound. |
+| `compensate` | none | Named effectful action, typed `with`, bounded retry, and timeout. Valid only on a potentially mutating task. |
 | failure behavior | fail | Unsupported dynamic control flow is rejected. |
 
 Ready tasks are selected in YAML declaration order up to `maxConcurrency`.
@@ -62,7 +64,9 @@ runtime or model-controlled expansion. Static `foreach` and `matrix` tasks
 compile to inspectable child tasks and a parent aggregate. Bounded loops
 compile to a sequential child chain and parent aggregate. Sub-workflows compile
 to namespaced ordinary tasks with typed input and output boundaries. There is
-no handler or separate parallel group in this version.
+no handler or separate parallel group in this version. Compensation is planned
+after a terminal run and executes declared inverse actions in reverse graph
+order through an ordinary source-linked durable run.
 
 ## Agents
 
@@ -130,6 +134,7 @@ Related guides: [Workflow authoring](../guides/WORKFLOW_AUTHORING.md), [Matrix
 and foreach](../guides/MATRIX_AND_FOREACH.md), [Conditions and
 routers](../guides/CONDITIONS_AND_ROUTERS.md), [Bounded
 loops](../guides/BOUNDED_LOOPS.md), [Reusable
-sub-workflows](../guides/SUB_WORKFLOWS.md), [Secret
+sub-workflows](../guides/SUB_WORKFLOWS.md),
+[Compensation](../guides/COMPENSATION.md), [Secret
 references](../guides/SECRET_REFERENCES.md), [Policies](../policies.md),
 [Tools](../TOOLS.md), and [Workflow DSL](../DSL.md).

@@ -400,6 +400,7 @@ pub enum RunMode {
     Fork,
     Repair,
     Retry,
+    Compensation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1016,6 +1017,7 @@ impl SqliteStore {
         working_memory: &Value,
         mode: RunMode,
         parent_run_id: Option<&str>,
+        source_run_id: Option<&str>,
         base_path: &Path,
         now: DateTime<Utc>,
         trace_id: &str,
@@ -1023,7 +1025,7 @@ impl SqliteStore {
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
-            "INSERT INTO runs (run_id, runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, state, mode, parent_run_id, base_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+            "INSERT INTO runs (run_id, runtime_state_version, workflow_digest, workflow_schema_version, plan_digest, plan_format_version, workflow_json, plan_json, inputs_json, working_memory_json, state, mode, parent_run_id, source_run_id, base_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
             params![
                 run_id,
                 RUNTIME_STATE_VERSION,
@@ -1042,6 +1044,7 @@ impl SqliteStore {
                 encode_enum(RunState::Running)?,
                 encode_enum(mode)?,
                 parent_run_id,
+                source_run_id,
                 base_path.display().to_string(),
                 now.to_rfc3339(),
             ],
@@ -1061,7 +1064,11 @@ impl SqliteStore {
             "run.created",
             None,
             trace_id,
-            &serde_json::json!({"mode": mode, "planDigest": plan.plan_digest}),
+            &serde_json::json!({
+                "mode": mode,
+                "planDigest": plan.plan_digest,
+                "sourceRunId": source_run_id,
+            }),
             now,
             &self.protection,
         )?;
@@ -1514,6 +1521,28 @@ impl SqliteStore {
                     updated_at: parse_time(&row.15, "updated_at")?,
                 })
             })
+    }
+
+    pub fn compensation_runs(
+        &self,
+        source_run_id: &str,
+    ) -> Result<Vec<(String, RunState)>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT run_id, state FROM runs
+             WHERE source_run_id = ?1 AND mode = ?2
+             ORDER BY created_at, run_id",
+        )?;
+        statement
+            .query_map(
+                params![source_run_id, encode_enum(RunMode::Compensation)?],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .map(|row| {
+                let (run_id, state) = row?;
+                Ok((run_id, decode_enum(&state, "run.state")?))
+            })
+            .collect()
     }
 
     pub fn record_replay_effects_reused(
@@ -2623,17 +2652,32 @@ impl SqliteStore {
                     "an effect cannot compensate itself".to_owned(),
                 ));
             }
-            let compensation: (String, String, bool) = transaction
+            let compensation: (String, String, bool, Option<String>, String) = transaction
                 .query_row(
-                    "SELECT run_id, status, confirmed FROM effects WHERE effect_id = ?1",
+                    "SELECT e.run_id, e.status, e.confirmed, r.source_run_id, r.mode
+                     FROM effects e
+                     JOIN runs r ON r.run_id = e.run_id
+                     WHERE e.effect_id = ?1",
                     [compensation_effect_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .optional()?
                 .ok_or_else(|| StoreError::EffectNotFound(compensation_effect_id.clone()))?;
-            if compensation.0 != source.0 {
+            let compensation_mode: RunMode = decode_enum(&compensation.4, "compensation_run.mode")?;
+            let linked_compensation_run = compensation_mode == RunMode::Compensation
+                && compensation.3.as_deref() == Some(source.0.as_str());
+            if compensation.0 != source.0 && !linked_compensation_run {
                 return Err(StoreError::Incompatible(
-                    "compensation effect must belong to the same run".to_owned(),
+                    "compensation effect must belong to the same run or a source-linked compensation run"
+                        .to_owned(),
                 ));
             }
             let compensation_status: EffectStatus =
@@ -4624,6 +4668,7 @@ spec:
                 &serde_json::json!({}),
                 RunMode::Execute,
                 None,
+                None,
                 Path::new("."),
                 Utc::now(),
                 "trace",
@@ -4771,6 +4816,7 @@ spec:
                 &serde_json::json!({"secret": marker}),
                 &serde_json::json!({"working": marker}),
                 RunMode::Execute,
+                None,
                 None,
                 directory.path(),
                 Utc::now(),

@@ -30,6 +30,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/approval.yaml` | Approval-paused mutation | deterministic | paused | 0 | 0 | Acceptance equivalent | N/A | N/A | N/A | No write before approval | Canonical | passed |
 | `examples/v1/capability-failure.yaml` | Negative capability contract | deterministic | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON diagnostics | passed |
 | `examples/v1/check-diff.yaml` | Non-mutating check and diff | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | No mutation | Canonical | passed |
+| `examples/v1/compensation.yaml` | Explicit source-linked best-effort compensation | deterministic | expected source failure then compensation | 0 | 0 | Acceptance scenario 38 | N/A | N/A | Pending composite OCI | Source effect reconciliation | Reverse order and compensated file | passed |
 | `examples/v1/condition.yaml` | Conditional scheduling | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Canonical | passed |
 | `examples/v1/crash-resume.yaml` | Durable interruption fixture | fake | resumable | 0 | 0 | Acceptance equivalent | Canonical | N/A | N/A | N/A | Durable state | passed |
 | `examples/v1/dataflow.yaml` | Typed task dataflow | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Canonical | passed |

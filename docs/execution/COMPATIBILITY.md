@@ -26,7 +26,13 @@ The TypeScript oracle is commit `be9d0ae`; the detailed public policy is [docs/C
 ## Removed
 
 - Direct API-key flags, YAML machine output, legacy profiles, placeholder provider/memory support, optimistic replay, implicit full environment inheritance, and obsolete provider/cache fields.
+- Non-executable tool-level `compensation` metadata. Declare the inverse action
+  on an effectful task with `compensate`.
 
-## Manual migration/deferred
+## Manual migration
 
-Legacy pack-backed workflows, custom TypeScript executors, MongoDB/vector memory, and old MCP/A2A shapes require manual conversion. Parallel/dynamic workflows, sub-workflows, teams/handoffs, compensation execution, registry resolution, and automatic remote resubmission are deferred product decisions.
+Legacy custom TypeScript executors, MongoDB memory, and old MCP/A2A shapes
+require manual conversion. Bounded parallel and dynamic tasks, sub-workflows,
+and source-linked compensation are additive. A public registry is an explicit
+non-goal. Structured handoffs and safe remote continuation remain tracked in
+the limitation burn-down until their product paths are verified.

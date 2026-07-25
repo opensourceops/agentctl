@@ -18,8 +18,12 @@ Schema 5 adds selective-repair metadata without changing resume, replay, retry, 
 
 Unversioned YAML is compatibility-only and warns. The TypeScript package exposes no `bin` or `main` and is archived. Placeholder memory adapters, provider environment-name-only “support,” YAML output, legacy profiles, automatic endpoint overrides, old prompt-cache fields, and optimistic replay semantics are removed from production.
 
+Tool-level `compensation` metadata was never executable and is rejected. Declare
+an effectful inverse action on each source task with `compensate`; see
+[Compensation](guides/COMPENSATION.md).
+
 Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2A shape, MongoDB memory, provider-specific endpoint fields, or embedded credentials require manual conversion. The translator intentionally refuses to guess security-sensitive intent.
 
 ## Separate product decisions
 
-Teams/handoffs, compensation execution, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1. Bounded loops and namespaced sub-workflows are additive; unbounded or model-controlled graph growth is intentionally unsupported.
+Teams/handoffs, a public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1. Bounded loops, namespaced sub-workflows, and explicit source-linked compensation are additive; unbounded or model-controlled graph growth is intentionally unsupported.

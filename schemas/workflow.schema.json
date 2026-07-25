@@ -102,6 +102,13 @@
           },
           "default": {}
         },
+        "compensation": {
+          "$ref": "#/$defs/CompensationPolicyDefinition",
+          "default": {
+            "onFailure": "manual",
+            "approval": "policy"
+          }
+        },
         "tasks": {
           "type": "array",
           "items": {
@@ -622,12 +629,6 @@
         "approval": {
           "$ref": "#/$defs/ApprovalRequirement",
           "default": "policy"
-        },
-        "compensation": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "additionalProperties": false,
@@ -825,6 +826,16 @@
           "$ref": "#/$defs/FailureBehavior",
           "default": "stop"
         },
+        "compensate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompensationDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "outputSchema": true
       },
       "additionalProperties": false,
@@ -947,6 +958,60 @@
       "enum": [
         "stop",
         "continue"
+      ]
+    },
+    "CompensationDefinition": {
+      "type": "object",
+      "properties": {
+        "uses": {
+          "type": "string"
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryDefinition",
+          "default": {
+            "maxAttempts": 1,
+            "backoffMs": 0
+          }
+        },
+        "timeoutSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uses"
+      ]
+    },
+    "CompensationPolicyDefinition": {
+      "type": "object",
+      "properties": {
+        "onFailure": {
+          "$ref": "#/$defs/CompensationTrigger",
+          "default": "manual"
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalRequirement",
+          "default": "policy"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CompensationTrigger": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "automatic"
       ]
     },
     "PolicyDefinition": {

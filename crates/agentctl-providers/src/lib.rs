@@ -1219,7 +1219,6 @@ mod tests {
                 network_requirements: Vec::new(),
                 approval: ApprovalRequirement::Never,
                 observability: Value::Null,
-                compensation: None,
             }],
             max_output_tokens: 64,
             reasoning: None,

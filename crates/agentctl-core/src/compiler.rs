@@ -38,8 +38,19 @@ pub struct CompiledTask {
     pub retry: RetryDefinition,
     pub timeout_seconds: u64,
     pub failure: crate::dsl::FailureBehavior,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensate: Option<CompiledCompensation>,
     pub output_schema: Option<Value>,
     pub predictability: PlanPredictability,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledCompensation {
+    pub uses: String,
+    pub input: JsonMap,
+    pub retry: RetryDefinition,
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -363,6 +374,7 @@ fn expand_tasks(
             aggregate.input.clear();
             aggregate.retry = RetryDefinition::default();
             aggregate.timeout_seconds = None;
+            aggregate.compensate = None;
             aggregate.output_schema = None;
             expanded.push(ExpandedTaskDefinition {
                 definition: aggregate,
@@ -587,6 +599,7 @@ fn expand_tasks(
         aggregate.input.clear();
         aggregate.retry = RetryDefinition::default();
         aggregate.timeout_seconds = None;
+        aggregate.compensate = None;
         aggregate.output_schema = None;
         expanded.push(ExpandedTaskDefinition {
             definition: aggregate,
@@ -701,6 +714,7 @@ fn instantiate_subworkflow_task(
         || !task.memory_writes.is_empty()
         || task.retry != RetryDefinition::default()
         || task.timeout_seconds.is_some()
+        || task.compensate.is_some()
         || task.output_schema.is_some()
     {
         diagnostics.push(Diagnostic::error(
@@ -823,6 +837,7 @@ fn synthetic_task(source: &TaskDefinition, id: String, needs: Vec<String>) -> Ta
     task.when = None;
     task.vars.clear();
     task.input.clear();
+    task.compensate = None;
     task.retry = RetryDefinition::default();
     task.timeout_seconds = None;
     task.output_schema = None;
@@ -836,7 +851,39 @@ fn namespace_subworkflow_action_state(
     file: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let Some(name) = task.uses.strip_prefix("action:") else {
+    namespace_subworkflow_action_input(
+        workflow,
+        &task.id,
+        &task.uses,
+        &mut task.input,
+        prefix,
+        file,
+        diagnostics,
+    );
+    if let Some(compensate) = &mut task.compensate {
+        namespace_subworkflow_action_input(
+            workflow,
+            &task.id,
+            &compensate.uses,
+            &mut compensate.input,
+            prefix,
+            file,
+            diagnostics,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn namespace_subworkflow_action_input(
+    workflow: &Workflow,
+    task_id: &str,
+    uses: &str,
+    input: &mut JsonMap,
+    prefix: &str,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(name) = uses.strip_prefix("action:") else {
         return;
     };
     let Some(action) = workflow.spec.actions.get(name) else {
@@ -847,17 +894,14 @@ fn namespace_subworkflow_action_state(
         ActionKind::LongTermMemoryRead | ActionKind::LongTermMemoryWrite => "namespace",
         _ => return,
     };
-    let Some(Value::String(value)) = task.input.get_mut(field) else {
+    let Some(Value::String(value)) = input.get_mut(field) else {
         return;
     };
     if value.contains("${{") {
         diagnostics.push(Diagnostic::error(
             DiagnosticCode::UnsupportedCapability,
             file,
-            format!(
-                "sub-workflow task `{}` requires a static `{field}` for isolated state",
-                task.id
-            ),
+            format!("sub-workflow task `{task_id}` requires a static `{field}` for isolated state"),
         ));
     } else {
         value.insert_str(0, prefix);
@@ -876,6 +920,10 @@ fn rewrite_subworkflow_task(
         .map(|value| rewrite_subworkflow_string(value, local_ids, input_id, memory_prefix));
     task.vars = rewrite_subworkflow_map(&task.vars, local_ids, input_id, memory_prefix);
     task.input = rewrite_subworkflow_map(&task.input, local_ids, input_id, memory_prefix);
+    if let Some(compensate) = &mut task.compensate {
+        compensate.input =
+            rewrite_subworkflow_map(&compensate.input, local_ids, input_id, memory_prefix);
+    }
     task.memory_writes = task
         .memory_writes
         .iter()
@@ -1135,6 +1183,8 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             | TaskUse::SubworkflowAggregate(_) => JsonMap::new(),
         };
         vars.extend(task.vars.clone());
+        let compensate =
+            compile_compensation(&workflow, task, &task_use, file, position, &mut diagnostics);
         declaration_order.push(task.id.clone());
         source_positions.insert(task.id.clone(), position);
         tasks.insert(
@@ -1154,6 +1204,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                     .timeout_seconds
                     .unwrap_or(workflow.spec.runtime.default_timeout_seconds),
                 failure: task.failure,
+                compensate,
                 output_schema: task.output_schema.clone(),
                 predictability: PlanPredictability::FullyPredictable,
             },
@@ -1178,6 +1229,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             }
         }
         validate_task_templates(task, &tasks, file, position, &mut diagnostics);
+        validate_compensation_templates(task, &tasks, file, position, &mut diagnostics);
         if let Some(schema) = &task.output_schema
             && let Err(error) = jsonschema::validator_for(schema)
         {
@@ -1647,32 +1699,58 @@ fn plan_requirements(
         .collect();
     let effects = tasks
         .values()
-        .flat_map(|task| match &task.uses {
-            TaskUse::Agent(agent_name) => {
-                let mut effects = vec![EffectRequirement {
-                    task: task.id.clone(),
-                    operation: format!("agent:{agent_name}"),
-                    effect_class: EffectClass::Model,
-                    approval_possible: workflow.spec.policy.approval
-                        != crate::dsl::ApprovalMode::Never,
-                    predictability: task.predictability,
-                }];
-                if let Some(agent) = workflow.spec.agents.get(agent_name) {
-                    effects.extend(agent.tools.iter().filter_map(|name| {
-                        workflow.spec.tools.get(name).map(|tool| EffectRequirement {
-                            task: task.id.clone(),
-                            operation: format!("tool:{name}"),
-                            effect_class: tool.effect_class,
-                            approval_possible: tool.approval
-                                != crate::dsl::ApprovalRequirement::Never
-                                || workflow.spec.policy.approval != crate::dsl::ApprovalMode::Never,
-                            predictability: PlanPredictability::RequiresExecution,
-                        })
-                    }));
+        .flat_map(|task| {
+            let mut effects = match &task.uses {
+                TaskUse::Agent(agent_name) => {
+                    let mut effects = vec![EffectRequirement {
+                        task: task.id.clone(),
+                        operation: format!("agent:{agent_name}"),
+                        effect_class: EffectClass::Model,
+                        approval_possible: workflow.spec.policy.approval
+                            != crate::dsl::ApprovalMode::Never,
+                        predictability: task.predictability,
+                    }];
+                    if let Some(agent) = workflow.spec.agents.get(agent_name) {
+                        effects.extend(agent.tools.iter().filter_map(|name| {
+                            workflow.spec.tools.get(name).map(|tool| EffectRequirement {
+                                task: task.id.clone(),
+                                operation: format!("tool:{name}"),
+                                effect_class: tool.effect_class,
+                                approval_possible: tool.approval
+                                    != crate::dsl::ApprovalRequirement::Never
+                                    || workflow.spec.policy.approval
+                                        != crate::dsl::ApprovalMode::Never,
+                                predictability: PlanPredictability::RequiresExecution,
+                            })
+                        }));
+                    }
+                    effects
                 }
-                effects
-            }
-            TaskUse::Action(name) => {
+                TaskUse::Action(name) => {
+                    let effect_class = workflow
+                        .spec
+                        .actions
+                        .get(name)
+                        .map_or(EffectClass::ExternalMutate, |action| {
+                            action_effect_class(action.kind)
+                        });
+                    vec![EffectRequirement {
+                        task: task.id.clone(),
+                        operation: format!("action:{name}"),
+                        effect_class,
+                        approval_possible: workflow.spec.policy.approval
+                            != crate::dsl::ApprovalMode::Never,
+                        predictability: task.predictability,
+                    }]
+                }
+                TaskUse::Aggregate(_)
+                | TaskUse::Router(_)
+                | TaskUse::LoopAggregate(_)
+                | TaskUse::SubworkflowInput(_)
+                | TaskUse::SubworkflowAggregate(_) => Vec::new(),
+            };
+            if let Some(compensate) = &task.compensate {
+                let name = compensate.uses.trim_start_matches("action:");
                 let effect_class = workflow
                     .spec
                     .actions
@@ -1680,20 +1758,16 @@ fn plan_requirements(
                     .map_or(EffectClass::ExternalMutate, |action| {
                         action_effect_class(action.kind)
                     });
-                vec![EffectRequirement {
+                effects.push(EffectRequirement {
                     task: task.id.clone(),
-                    operation: format!("action:{name}"),
+                    operation: format!("compensate:{}", compensate.uses),
                     effect_class,
                     approval_possible: workflow.spec.policy.approval
                         != crate::dsl::ApprovalMode::Never,
-                    predictability: task.predictability,
-                }]
+                    predictability: PlanPredictability::RequiresExecution,
+                });
             }
-            TaskUse::Aggregate(_)
-            | TaskUse::Router(_)
-            | TaskUse::LoopAggregate(_)
-            | TaskUse::SubworkflowInput(_)
-            | TaskUse::SubworkflowAggregate(_) => Vec::new(),
+            effects
         })
         .collect();
     PlanRequirements {
@@ -1715,6 +1789,149 @@ const fn action_effect_class(kind: ActionKind) -> EffectClass {
         ActionKind::McpCall => EffectClass::Network,
         ActionKind::A2aDelegate => EffectClass::RemoteAgent,
     }
+}
+
+fn compile_compensation(
+    workflow: &Workflow,
+    task: &TaskDefinition,
+    task_use: &TaskUse,
+    file: &str,
+    position: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledCompensation> {
+    let definition = task.compensate.as_ref()?;
+    let path = format!("spec.tasks[{position}].compensate");
+    if !task_use_supports_compensation(workflow, task_use) {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::UnsupportedCapability,
+                file,
+                format!(
+                    "task `{}` declares compensation but has no potentially mutating effect",
+                    task.id
+                ),
+            )
+            .with_path(path.clone()),
+        );
+    }
+    let Some(action_name) = definition.uses.strip_prefix("action:") else {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::UnsupportedCapability,
+                file,
+                format!("task `{}` compensation must use a named action", task.id),
+            )
+            .with_path(format!("{path}.uses")),
+        );
+        return None;
+    };
+    let Some(action) = workflow.spec.actions.get(action_name) else {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::MissingReference,
+                file,
+                format!(
+                    "task `{}` compensation refers to unknown action `{action_name}`",
+                    task.id
+                ),
+            )
+            .with_path(format!("{path}.uses")),
+        );
+        return None;
+    };
+    if !action_kind_supports_compensation(action.kind) {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::UnsupportedCapability,
+                file,
+                format!(
+                    "task `{}` compensation action `{action_name}` is not effectful",
+                    task.id
+                ),
+            )
+            .with_path(format!("{path}.uses")),
+        );
+    }
+    if definition.retry.max_attempts == 0 || definition.retry.max_attempts > 20 {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "compensate.retry.maxAttempts must be between 1 and 20",
+            )
+            .with_path(format!("{path}.retry.maxAttempts")),
+        );
+    }
+    if definition.retry.backoff_ms > 60_000 {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "compensate.retry.backoffMs must not exceed 60000",
+            )
+            .with_path(format!("{path}.retry.backoffMs")),
+        );
+    }
+    if definition
+        .timeout_seconds
+        .is_some_and(|value| value == 0 || value > 86_400)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "compensate.timeoutSeconds must be between 1 and 86400",
+            )
+            .with_path(format!("{path}.timeoutSeconds")),
+        );
+    }
+    let mut input = action.defaults.clone();
+    input.extend(definition.input.clone());
+    Some(CompiledCompensation {
+        uses: definition.uses.clone(),
+        input,
+        retry: definition.retry.clone(),
+        timeout_seconds: definition
+            .timeout_seconds
+            .unwrap_or(workflow.spec.runtime.default_timeout_seconds),
+    })
+}
+
+fn task_use_supports_compensation(workflow: &Workflow, task_use: &TaskUse) -> bool {
+    match task_use {
+        TaskUse::Action(name) => workflow
+            .spec
+            .actions
+            .get(name)
+            .is_some_and(|action| action_kind_supports_compensation(action.kind)),
+        TaskUse::Agent(name) => workflow.spec.agents.get(name).is_some_and(|agent| {
+            agent.tools.iter().any(|tool| {
+                workflow.spec.tools.get(tool).is_some_and(|definition| {
+                    !matches!(
+                        definition.effect_class,
+                        EffectClass::Pure | EffectClass::Observe | EffectClass::Model
+                    )
+                })
+            })
+        }),
+        TaskUse::Aggregate(_)
+        | TaskUse::Router(_)
+        | TaskUse::LoopAggregate(_)
+        | TaskUse::SubworkflowInput(_)
+        | TaskUse::SubworkflowAggregate(_) => false,
+    }
+}
+
+const fn action_kind_supports_compensation(kind: ActionKind) -> bool {
+    matches!(
+        kind,
+        ActionKind::Write
+            | ActionKind::ShellExec
+            | ActionKind::MemoryWrite
+            | ActionKind::LongTermMemoryWrite
+            | ActionKind::McpCall
+            | ActionKind::A2aDelegate
+    )
 }
 
 fn validate_task_templates(
@@ -1760,6 +1977,53 @@ fn validate_task_templates(
                                 ),
                             )
                             .with_path(format!("spec.tasks[{position}].with")),
+                        );
+                    }
+                }
+            }
+            Value::Array(items) => values.extend(items),
+            Value::Object(map) => values.extend(map.values()),
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+}
+
+fn validate_compensation_templates(
+    task: &CompiledTask,
+    tasks: &BTreeMap<String, CompiledTask>,
+    file: &str,
+    position: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(compensate) = &task.compensate else {
+        return;
+    };
+    let mut values = compensate.input.values().collect::<Vec<_>>();
+    while let Some(value) = values.pop() {
+        match value {
+            Value::String(template) => {
+                if let Err(error) = validate_expression(template) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::InvalidTemplate,
+                            file,
+                            format!("task `{}` compensation: {error}", task.id),
+                        )
+                        .with_path(format!("spec.tasks[{position}].compensate.with")),
+                    );
+                }
+                for reference in referenced_tasks(template) {
+                    if !tasks.contains_key(&reference) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticCode::MissingReference,
+                                file,
+                                format!(
+                                    "task `{}` compensation refers to unknown task `{reference}`",
+                                    task.id
+                                ),
+                            )
+                            .with_path(format!("spec.tasks[{position}].compensate.with")),
                         );
                     }
                 }
@@ -2794,6 +3058,99 @@ spec:
         assert_eq!(plan.tasks["right--write"].memory_writes, ["right__result"]);
         assert_eq!(plan.tasks["left--write"].input["key"], "left__result");
         assert_eq!(plan.tasks["right--write"].input["key"], "right__result");
+    }
+
+    #[test]
+    fn compensation_is_explicit_effectful_and_part_of_the_plan() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: compensation }
+spec:
+  compensation: { onFailure: automatic }
+  actions:
+    write: { kind: builtin.write }
+  tasks:
+    - id: create
+      uses: action:write
+      with: { path: resource.txt, content: created }
+      compensate:
+        uses: action:write
+        with:
+          path: "${{ tasks.create.output.path }}"
+          content: removed
+        retry: { maxAttempts: 2, backoffMs: 5 }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("compensation compiles");
+        let compensate = plan.tasks["create"]
+            .compensate
+            .as_ref()
+            .expect("compiled compensation");
+        assert_eq!(compensate.uses, "action:write");
+        assert_eq!(compensate.retry.max_attempts, 2);
+        assert!(
+            plan.requirements
+                .effects
+                .iter()
+                .any(|effect| effect.operation == "compensate:action:write")
+        );
+
+        let invalid = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: invalid-compensation }
+spec:
+  actions:
+    assign: { kind: builtin.assign }
+    read: { kind: builtin.read }
+  tasks:
+    - id: pure
+      uses: action:assign
+      compensate: { uses: "action:read" }
+"#,
+        );
+        let diagnostics = compile(&invalid, "fixture.yaml").expect_err("invalid compensation");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("has no potentially mutating effect")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("compensation action `read` is not effectful")
+        }));
+
+        let expanded = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: expanded-compensation }
+spec:
+  actions:
+    write: { kind: builtin.write }
+  tasks:
+    - id: create
+      uses: action:write
+      foreach: { items: [one, two], as: item }
+      with: { path: "${{ vars.item }}", content: created }
+      compensate:
+        uses: action:write
+        with: { path: "${{ vars.item }}", content: removed }
+"#,
+        );
+        let expanded = compile(&expanded, "fixture.yaml").expect("expanded compensation");
+        assert!(expanded.tasks["create"].compensate.is_none());
+        assert!(
+            expanded
+                .tasks
+                .iter()
+                .filter(|(id, _)| id.starts_with("create--"))
+                .all(|(_, task)| task.compensate.is_some())
+        );
     }
 
     #[test]

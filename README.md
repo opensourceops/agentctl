@@ -52,9 +52,11 @@ agentctl retry workflow.yaml SOURCE_RUN_ID --failed --plan
 agentctl retry workflow.yaml SOURCE_RUN_ID --failed
 agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task --plan
 agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task
+agentctl compensate SOURCE_RUN_ID --plan
+agentctl compensate SOURCE_RUN_ID
 ```
 
-See [Retry a terminal workflow](docs/guides/TERMINAL_RETRY.md) and [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
+See [Retry a terminal workflow](docs/guides/TERMINAL_RETRY.md), [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md), and [Compensate applied effects](docs/guides/COMPENSATION.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
 For retained pre-schema-5 history, use [Legacy run upgrade](docs/guides/LEGACY_RUN_UPGRADE.md). For ambiguous external outcomes, use [Effect reconciliation](docs/guides/EFFECT_RECONCILIATION.md).
 For confidential workflow history, use [Sensitive-state encryption](docs/guides/SENSITIVE_STATE_ENCRYPTION.md).
 For environment, mounted-file, and policy-gated process credentials, use [Secret references](docs/guides/SECRET_REFERENCES.md).

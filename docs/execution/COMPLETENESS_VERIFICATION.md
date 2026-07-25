@@ -79,7 +79,8 @@ cargo xtask acceptance-container
 | Conditions/routers | compiler typed-case/guard failures and runtime durable condition, route, retry, changed-input repair, and skipped replay tests passed | packaged CLI scenario 35 passed | deterministic verified; live pending |
 | Bounded loops | compiler bounds/identity tests and runtime zero/one/max, exhaustion, cancellation, uncertain effect, retry, repair, and replay tests passed | packaged CLI scenario 36 passed | deterministic verified; live pending |
 | Sub-workflows | compiler namespacing/version/cycle/state-isolation tests and runtime typed boundary, retry, repair, and replay tests passed | packaged CLI scenario 37 and integrity-pinned pack example passed | deterministic verified; live pending |
-| Compensation/handoffs/streaming | pending | pending | open |
+| Compensation | compiler declarations plus runtime reverse order, approval, partial failure, source and inverse uncertainty, cancellation, retry, reconciliation, automatic trigger, repair/retry invalidation, and replay tests passed | packaged CLI scenario 38 and the full local release gate passed | verified |
+| Handoffs/streaming | pending | pending | open |
 | MCP/A2A resilience | pending | pending | open |
 | Packs/trust/extensions | pending | pending | open |
 | Semantic memory | pending | pending | open |
