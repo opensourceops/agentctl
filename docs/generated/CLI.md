@@ -222,6 +222,30 @@ Options:
   -h, --help                               Print help
 ```
 
+## `agentctl compensate`
+
+```text
+Execute explicitly declared best-effort compensation for a terminal run
+
+Usage: agentctl compensate [OPTIONS] <SOURCE_RUN_ID>
+
+Arguments:
+  <SOURCE_RUN_ID>
+
+Options:
+      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --task <TASK>
+      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --plan
+      --db <DB>                            [default: .agentctl/runtime.db]
+      --verbose
+      --interactive
+      --diff
+      --workspace <WORKSPACE>
+      --timeout-seconds <TIMEOUT_SECONDS>
+  -h, --help                               Print help
+```
+
 ## `agentctl runs`
 
 ```text

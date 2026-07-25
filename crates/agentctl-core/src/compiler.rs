@@ -1113,6 +1113,20 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 );
                 continue;
             }
+            if let Some(name) = task.uses.strip_prefix("team:") {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::UnsupportedCapability,
+                        file,
+                        format!(
+                            "task `{}` requests unsupported hidden team orchestration `{name}`; use explicit agent tasks, typed handoff tasks, routers, and reusable sub-workflows",
+                            task.id
+                        ),
+                    )
+                    .with_path(format!("spec.tasks[{position}].uses")),
+                );
+                continue;
+            }
             match parse_use(&task.uses) {
                 Some(TaskUse::Action(name)) if workflow.spec.actions.contains_key(&name) => {
                     TaskUse::Action(name)
@@ -3398,6 +3412,26 @@ spec:
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::UnsupportedCapability
                 && diagnostic.message.contains("stateless continuation replay")
+        }));
+    }
+
+    #[test]
+    fn rejects_hidden_team_orchestration_with_migration_guidance() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: hidden-team }
+spec:
+  tasks:
+    - { id: discuss, uses: "team:reviewers" }
+"#,
+        );
+        let diagnostics = compile(&workflow, "fixture.yaml").expect_err("hidden team rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::UnsupportedCapability
+                && diagnostic.message.contains("explicit agent tasks")
+                && diagnostic.message.contains("typed handoff tasks")
         }));
     }
 

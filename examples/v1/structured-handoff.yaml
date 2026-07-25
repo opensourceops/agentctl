@@ -1,0 +1,136 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: structured-handoff
+  description: Pass a typed durable payload between two bounded agent roles.
+spec:
+  outputs:
+    decision: "${{ tasks.review.output.decision }}"
+    handoff: "${{ tasks.handoff.output.output }}"
+  providers:
+    fake:
+      kind: fake
+  policy:
+    workspaceRoot: .
+    toolsAllow:
+      - read_fixture
+    approval: never
+  tools:
+    read_fixture:
+      kind: builtin.workspace.read
+      description: Read one UTF-8 file inside the authorized workspace.
+      inputSchema:
+        type: object
+        required: [path]
+        additionalProperties: false
+        properties:
+          path:
+            type: string
+      outputSchema:
+        type: object
+        required: [path, content, bytes, sha256]
+        additionalProperties: false
+        properties:
+          path:
+            type: string
+          content:
+            type: string
+          bytes:
+            type: integer
+          sha256:
+            type: string
+      capability: filesystem.read
+      risk: low
+      effectClass: observe
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    collector:
+      provider: fake
+      model: scripted
+      instructions: Collect only durable repository evidence.
+      tools: [read_fixture]
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+      structuredOutput:
+        type: object
+        required: [evidence]
+        additionalProperties: false
+        properties:
+          evidence:
+            type: string
+      providerOptions:
+        toolInput:
+          path: fixture/team-evidence.txt
+        finalText: '{"evidence":"TEAM_EVIDENCE_VERIFIED"}'
+    reviewer:
+      provider: fake
+      model: scripted
+      instructions: Review only the typed handoff payload.
+      tools: []
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+      structuredOutput:
+        type: object
+        required: [decision]
+        additionalProperties: false
+        properties:
+          decision:
+            type: string
+            enum: [approved]
+      providerOptions:
+        finalText: '{"decision":"approved"}'
+  actions:
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: collect
+      uses: agent:collector
+      with:
+        prompt: Read the fixture and return the verified evidence marker.
+    - id: handoff
+      uses: action:assign
+      needs: [collect]
+      with:
+        from: collector
+        to: reviewer
+        payload: "${{ tasks.collect.output }}"
+      outputSchema:
+        type: object
+        required: [output]
+        properties:
+          output:
+            type: object
+            required: [from, to, payload]
+            additionalProperties: false
+            properties:
+              from:
+                const: collector
+              to:
+                const: reviewer
+              payload:
+                type: object
+                required: [evidence]
+                additionalProperties: false
+                properties:
+                  evidence:
+                    const: TEAM_EVIDENCE_VERIFIED
+    - id: review
+      uses: agent:reviewer
+      needs: [handoff]
+      with:
+        prompt: "${{ tasks.handoff.output.output.payload }}"
+    - id: verify
+      uses: action:assert
+      needs: [review]
+      with:
+        that: "${{ tasks.review.output.decision == 'approved' }}"
+        message: the reviewer did not approve the typed handoff

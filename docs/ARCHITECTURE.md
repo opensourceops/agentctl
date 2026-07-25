@@ -45,8 +45,10 @@ and providers come from the invoking workflow, while deterministic memory keys
 are invocation-prefixed. Explicit compensation plans eligible applied effects
 in reverse graph order and executes ordinary actions in a separate
 source-linked run. Confirmed inverse effects append immutable reconciliation
-records to the source. Handlers and event triggers remain outside the runtime
-surface.
+records to the source. Structured handoffs are typed deterministic tasks
+between bounded agent tasks, so role collaboration retains ordinary task-local
+provider sessions, effects, audit, retry, repair, and replay. Handlers and event
+triggers remain outside the runtime surface.
 
 Clock and identifier generation are injected. Provider responses, tools, and external actions are injected interfaces. Cryptographic digests canonicalize identity; output maps use stable ordering where the public contract requires it.
 

@@ -15,5 +15,6 @@
 | [0011](../adr/0011-bounded-loops-as-static-graphs.md) | Bounded loops as static graphs | accepted | Fixed iteration chains reuse ordinary durable task and recovery semantics. |
 | [0012](../adr/0012-subworkflows-as-namespaced-graphs.md) | Sub-workflows as namespaced graphs | accepted | Typed boundaries and flattened children avoid a hidden nested runtime. |
 | [0013](../adr/0013-compensation-as-source-linked-runs.md) | Compensation as source-linked runs | accepted | Immutable source effects gain explicit best-effort inverse lineage without pretending to be transactions. |
+| [0014](../adr/0014-structured-handoffs-as-graph-data.md) | Structured handoffs as graph data | accepted | Bounded roles and typed handoff tasks preserve one explicit durable scheduler. |
 
 These decisions resolve the researched patterns in [LANDSCAPE.md](../research/LANDSCAPE.md). No unsafe code or distributed control plane ADR is required because neither exists.

@@ -48,8 +48,8 @@ complete, every entry must have exactly one final disposition:
 | COND-001 | Conditions and routers | in progress | implemented |
 | LOOP-001 | Bounded loops | in progress | implemented |
 | SUB-001 | Sub-workflows | in progress | implemented |
-| COMP-001 | Compensation | in progress | implemented |
-| TEAM-001 | Structured teams and handoffs | open | redesigned |
+| COMP-001 | Compensation | verified | implemented |
+| TEAM-001 | Structured teams and handoffs | in progress | redesigned |
 | STR-001 | Streaming | open | implemented |
 | MCP-001 | MCP resilience | open | implemented |
 | A2A-001 | A2A resilience | open | implemented |
@@ -376,28 +376,40 @@ complete, every entry must have exactly one final disposition:
   reconciliations. Manual and explicitly automatic triggers, approval,
   uncertainty blocking, bounded retries, partial continuation, repeat planning,
   selected tasks, repair/retry invalidation, and effect-free replay use the
-  ordinary durable runtime. Focused compiler/runtime tests, all 38 packaged CLI
-  scenarios, the 12-stage verification gate, examples, docs, packaging, and
+  ordinary durable runtime. Focused compiler/runtime tests, packaged CLI
+  scenario 38, the 12-stage verification gate, examples, docs, packaging, and
   secret scanning pass.
 
 ### TEAM-001: Structured teams and handoffs
 
-- Current behavior: free-form agent handoffs are intentionally absent.
-- User impact: users cannot name bounded roles and inspect typed handoffs.
+- Current behavior: named bounded agent tasks exchange typed payloads through
+  explicit deterministic handoff tasks and reusable sub-workflows.
+- User impact: roles, payloads, routing, tool visibility, and recovery
+  boundaries remain visible in the ordinary graph.
 - Security or durability impact: hidden agent conversations would bypass the
   compiled graph and policy.
-- Product decision: redesign "teams" as syntactic composition over explicit
-  tasks/sub-workflows. No autonomous hidden conversation scheduler is added.
-- Required implementation: role declarations, bounded turn count, typed handoff
-  payload, explicit route conditions, per-role tools/policy, durable handoff
-  records, and ordinary repair/retry/replay.
-- Migration impact: new syntax compiles to existing versioned task constructs.
-- Tests: policy separation, handoff schemas, turn limits, routes, failures,
-  repair/retry/replay, and inspection.
-- Examples: three-role structured verification workflow.
+- Product decision: redesign teams as explicit agent tasks, typed deterministic
+  handoff tasks, routers, and reusable sub-workflows. No autonomous hidden
+  conversation scheduler or `team:` DSL is added.
+- Required implementation: bounded roles, typed handoff payloads, explicit
+  route conditions, per-role provider/tool visibility, durable handoff records,
+  and ordinary cancellation, repair, retry, replay, audit, and tracing.
+- Migration impact: no storage migration. `team:` task uses fail compilation
+  with exact migration guidance.
+- Tests: hidden-team rejection, role tool separation, handoff schemas, turn
+  bounds, packaged inspection, selected-boundary retry/repair, and replay.
+- Examples: two-role evidence collection and verification workflow.
 - Live evidence: two-role OpenAI handoff plus deterministic verifier.
-- Documentation: explain the compiled replacement and reject free-form teams.
-- Final disposition: pending redesign evidence.
+- Documentation: compiled replacement, migration, guarantees, and non-goals.
+- Final disposition: redesigned. Each role is a task-local bounded agent with
+  explicit provider, tools, limits, and structured output. Each handoff is an
+  ordinary typed task output with sender, recipient, payload, task state,
+  output digest, checkpoint, audit, and trace evidence. Typed routers provide
+  explicit branching. Packaged scenario 39 verifies role-specific tool
+  visibility, durable inspection, upstream handoff reuse during retry and
+  repair, and effect-free replay. Free-form `team:` orchestration is rejected
+  with migration guidance. The full local gate passes. Program state remains
+  in progress until the bounded live handoff scenario executes.
 
 ### STR-001: End-to-end streaming
 

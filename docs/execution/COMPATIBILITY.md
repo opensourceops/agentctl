@@ -34,5 +34,6 @@ The TypeScript oracle is commit `be9d0ae`; the detailed public policy is [docs/C
 Legacy custom TypeScript executors, MongoDB memory, and old MCP/A2A shapes
 require manual conversion. Bounded parallel and dynamic tasks, sub-workflows,
 and source-linked compensation are additive. A public registry is an explicit
-non-goal. Structured handoffs and safe remote continuation remain tracked in
-the limitation burn-down until their product paths are verified.
+non-goal. Free-form teams migrate to explicit bounded role tasks and typed
+handoff tasks. Safe remote continuation remains tracked in the limitation
+burn-down until its product path is verified.

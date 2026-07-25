@@ -8,6 +8,8 @@ Use these terms consistently in workflows, documentation, issues, and reviews.
 | Task | One ordered graph node that invokes an action or agent. |
 | Action | A typed runtime operation selected directly by a task. |
 | Agent | A bounded provider-backed executor for one task. |
+| Role | A named agent task with explicit provider, tool visibility, limits, and output contract. |
+| Handoff | A typed durable task output consumed by an explicitly dependent role task. |
 | Tool | A strict capability contract that an agent may request. |
 | Provider | A native model API adapter behind provider-neutral contracts. |
 | Effect | A durably identified operation that observes or changes state outside pure computation. |

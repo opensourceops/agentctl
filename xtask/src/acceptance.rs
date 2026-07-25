@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 38;
+const ACCEPTANCE_SCENARIOS: usize = 39;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1719,6 +1719,109 @@ pub fn run(root: &Path) -> Result<()> {
     )?;
     ensure_eq(&repeat_plan, "/data/executable", false)?;
     ensure!(array_len(&repeat_plan, "/data/alreadyCompensatedEffects")? == 1);
+
+    scenario(
+        39,
+        "packaged CLI preserves typed handoffs across retry and replay",
+    );
+    let structured_handoff = root.join("examples/v1/structured-handoff.yaml");
+    let handoff_workspace = root.join("examples/v1");
+    let handoff_db = directory.path().join("structured-handoff.db");
+    let handoff_run = successful_json(
+        &binary,
+        root,
+        &run_args(&structured_handoff, &handoff_db, &handoff_workspace, &[]),
+    )?;
+    ensure_eq(&handoff_run, "/data/state", "succeeded")?;
+    ensure_eq(&handoff_run, "/data/output/decision", "approved")?;
+    ensure_eq(
+        &handoff_run,
+        "/data/output/handoff/payload/evidence",
+        "TEAM_EVIDENCE_VERIFIED",
+    )?;
+    let handoff_run_id = string_at(&handoff_run, "/data/runId")?;
+    let handoff_inspect = inspect(&binary, root, &handoff_db, handoff_run_id)?;
+    ensure_eq(&handoff_inspect, "/data/tasks/1/taskId", "handoff")?;
+    ensure_eq(
+        &handoff_inspect,
+        "/data/tasks/1/output/output/payload/evidence",
+        "TEAM_EVIDENCE_VERIFIED",
+    )?;
+    ensure!(array_len(&handoff_inspect, "/data/toolCalls")? == 1);
+    let handoff_retry = successful_json(
+        &binary,
+        root,
+        &strings([
+            "retry",
+            path(&structured_handoff)?,
+            handoff_run_id,
+            "--from",
+            "review",
+            "--restart-successful",
+            "--db",
+            path(&handoff_db)?,
+            "--workspace",
+            path(&handoff_workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&handoff_retry, "/data/state", "succeeded")?;
+    ensure_eq(&handoff_retry, "/data/reusedTasks/0", "collect")?;
+    ensure_eq(&handoff_retry, "/data/reusedTasks/1", "handoff")?;
+    ensure_eq(&handoff_retry, "/data/executedTasks/0", "review")?;
+    ensure_eq(&handoff_retry, "/data/executedTasks/1", "verify")?;
+    let handoff_retry_id = string_at(&handoff_retry, "/data/runId")?;
+    let repaired_handoff = workspace.join("structured-handoff-repaired.yaml");
+    let repaired_handoff_source = fs::read_to_string(&structured_handoff)?.replace(
+        "Review only the typed handoff payload.",
+        "Independently review only the typed handoff payload.",
+    );
+    write(&repaired_handoff, &repaired_handoff_source)?;
+    let handoff_repair = successful_json(
+        &binary,
+        root,
+        &strings([
+            "repair",
+            path(&repaired_handoff)?,
+            handoff_run_id,
+            "--from",
+            "review",
+            "--restart-successful",
+            "--db",
+            path(&handoff_db)?,
+            "--workspace",
+            path(&handoff_workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&handoff_repair, "/data/state", "succeeded")?;
+    ensure_eq(&handoff_repair, "/data/reusedTasks/0", "collect")?;
+    ensure_eq(&handoff_repair, "/data/reusedTasks/1", "handoff")?;
+    ensure_eq(&handoff_repair, "/data/executedTasks/0", "review")?;
+    ensure_eq(&handoff_repair, "/data/executedTasks/1", "verify")?;
+    let handoff_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            handoff_retry_id,
+            "--db",
+            path(&handoff_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let handoff_replay_id = string_at(&handoff_replay, "/data/runId")?;
+    let handoff_replay_inspect = inspect(&binary, root, &handoff_db, handoff_replay_id)?;
+    ensure!(array_len(&handoff_replay_inspect, "/data/effects")? == 0);
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

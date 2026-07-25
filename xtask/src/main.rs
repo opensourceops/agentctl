@@ -306,6 +306,7 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["fork"],
         &["repair"],
         &["retry"],
+        &["compensate"],
         &["runs"],
         &["runs", "analyze"],
         &["runs", "upgrade"],
@@ -405,6 +406,7 @@ fn verify_examples(root: &Path) -> Result<()> {
         "long-term-memory.yaml",
         "fake-provider.yaml",
         "reusable-pack.yaml",
+        "structured-handoff.yaml",
     ] {
         let db = directory.path().join(format!("{name}.db"));
         run_binary(

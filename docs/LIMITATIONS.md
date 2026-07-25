@@ -23,7 +23,6 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These are useful extensions but are not required by the product thesis. They need new deterministic state and compatibility contracts before implementation:
 
-- structured agent teams and handoffs;
 - model token streaming into CLI/workflow state;
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
 - pack dependency resolution, pack lockfiles, remote fetching, publisher signatures, and a versioned plugin ABI;
@@ -59,6 +58,10 @@ These are useful extensions but are not required by the product thesis. They nee
   source-linked sequential workflow, skips effects already reconciled as
   compensated, and never claims transactional rollback or exactly-once
   external mutation.
+- Structured collaboration is an explicit graph of bounded role tasks and
+  typed handoff tasks. A hidden `team:` conversation scheduler is rejected.
+  Role tool visibility is fixed by each agent definition; workflow policy
+  remains authoritative for every role.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
