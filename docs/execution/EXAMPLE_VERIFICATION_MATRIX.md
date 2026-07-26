@@ -25,7 +25,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/remote-mcp-autonomy/mission.playbook.yaml` | Archived TypeScript MCP example | legacy | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON error | passed |
 | `examples/selective-repair-openai/repaired.workflow.yaml` | Fixed two-agent repair target | OpenAI | success | 0 | 0 | Runtime mock | Runtime mock | Passed 2026-07-23 | Blocked: Podman unavailable | Marker artifact verified | Contract and marker | live passed; container blocked |
 | `examples/selective-repair-openai/source.workflow.yaml` | Deliberately failed two-agent source | OpenAI | task 2 failure | 0 | 0 | Runtime mock | Runtime mock | Expected failure passed 2026-07-23 | Blocked: Podman unavailable | N/A | Durable task 1 output | live passed; container blocked |
-| `examples/v1/a2a.yaml` | A2A delegation contract | A2A | external execution | 0 | 0 | Protocol mock | Protocol mock | N/A | N/A | N/A | Static | passed |
+| `examples/v1/a2a.yaml` | A2A delegation contract | A2A | external execution | 0 | 0 | Acceptance scenario 41 plus protocol mocks | Protocol mock | N/A | N/A | CAS artifact and recorded lineage | Continue, retry, replay | passed |
 | `examples/v1/anthropic-live.yaml` | Anthropic native provider | Anthropic | credentialed execution | 0 | 0 | N/A | Protocol mock | External opt-in | N/A | N/A | Static | passed |
 | `examples/v1/approval.yaml` | Approval-paused mutation | deterministic | paused | 0 | 0 | Acceptance equivalent | N/A | N/A | N/A | No write before approval | Canonical | passed |
 | `examples/v1/capability-failure.yaml` | Negative capability contract | deterministic | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON diagnostics | passed |
@@ -41,7 +41,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/long-term-memory.yaml` | Namespaced durable memory | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | SQLite | Canonical | passed |
 | `examples/v1/loop.yaml` | Bounded durable loop and ordered iteration aggregation | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Iteration states and values | passed |
 | `examples/v1/matrix.yaml` | Bounded static matrix and ordered aggregation | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Aggregate states and values | passed |
-| `examples/v1/mcp.yaml` | MCP call contract | MCP | external execution | 0 | 0 | Protocol mock | Protocol mock | N/A | N/A | N/A | Static | passed |
+| `examples/v1/mcp.yaml` | MCP call contract | MCP | external execution | 0 | 0 | Acceptance scenario 41 plus protocol mocks | Protocol mock | N/A | N/A | N/A | Reconnect generation and call status | passed |
 | `examples/v1/openai-live.yaml` | Minimal OpenAI response | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | N/A | N/A | Live gate | live passed |
 | `examples/v1/parallel.yaml` | Deterministic parallel batch | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | Atomic ordered memory merge | Canonical | passed |
 | `examples/v1/policy-denial.yaml` | Denied mutation | deterministic | policy failure | 0 | 0 | Canonical expected failure | N/A | N/A | N/A | No mutation | JSON error | passed |

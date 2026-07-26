@@ -67,6 +67,8 @@ For typed branching and durable decisions, use [Conditions and routers](docs/gui
 For iterative work with a hard execution ceiling and iteration-level recovery, use [Bounded loops](docs/guides/BOUNDED_LOOPS.md).
 For typed reusable graphs with namespaced recovery boundaries, use [Reusable sub-workflows](docs/guides/SUB_WORKFLOWS.md).
 For bounded provider progress, JSONL output, and recorded stream replay, use [Durable provider streaming](docs/guides/DURABLE_STREAMING.md).
+For schema-checked MCP reconnect and task-ID-based A2A continuation, use
+[MCP support](docs/MCP.md) and [A2A support](docs/A2A.md).
 
 ## Safety boundary
 

@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         "verify" => verify(&root),
         "docs-verify" => docs_verify(&root),
         "migration-verify" => migration_verify(&root),
+        "protocol-resilience" => protocol_resilience(&root),
         "acceptance" => acceptance::run(&root),
         "acceptance-container" => acceptance::container(&root),
         "acceptance-live-openai" => acceptance::live_openai(&root),
@@ -38,7 +39,7 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
@@ -55,6 +56,31 @@ fn migration_verify(root: &Path) -> Result<()> {
             "-p",
             "agentctl-store",
             "upgrades_every_retained_database_schema_fixture",
+            "--locked",
+        ],
+    )
+}
+
+fn protocol_resilience(root: &Path) -> Result<()> {
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-protocols",
+            "--locked",
+            "--all-targets",
+        ],
+    )?;
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-runtime",
+            "continued_a2a_boundary_is_materialized_without_resubmission",
             "--locked",
         ],
     )

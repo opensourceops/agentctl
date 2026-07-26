@@ -77,10 +77,50 @@ impl IdGenerator for UuidGenerator {
 pub trait ExternalActionHandler: Send + Sync {
     async fn execute(
         &self,
+        context: &ExternalActionContext,
         kind: ActionKind,
         input: &Value,
+        events: &dyn ExternalEventSink,
         cancellation: &CancellationToken,
     ) -> Result<Value, RuntimeError>;
+
+    async fn continue_effect(
+        &self,
+        _context: &ExternalActionContext,
+        _kind: ActionKind,
+        _input: &Value,
+        _events: &dyn ExternalEventSink,
+        _cancellation: &CancellationToken,
+    ) -> Result<Value, RuntimeError> {
+        Err(RuntimeError::InvalidState(
+            "this external effect has no safe continuation".to_owned(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub struct ExternalActionContext {
+    pub run_id: String,
+    pub task_id: String,
+    pub task_attempt: u16,
+    pub effect_id: String,
+    pub operation: String,
+    pub idempotency: Idempotency,
+    pub store: SqliteStore,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalStreamEvent {
+    pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_sequence: Option<i64>,
+    pub payload: Value,
+}
+
+#[async_trait]
+pub trait ExternalEventSink: Send + Sync {
+    async fn emit(&self, event: ExternalStreamEvent) -> Result<(), RuntimeError>;
 }
 
 pub trait EffectReconciliationHook: Send + Sync {
@@ -324,6 +364,13 @@ pub struct RepairPlan {
     materialized_tasks: Vec<ReusedTaskMaterialization>,
     #[serde(skip)]
     reconstructed_memory: Value,
+}
+
+#[derive(Debug, Clone)]
+struct RecoveredProtocolTask {
+    effect_id: String,
+    output: Value,
+    artifact_manifest: Vec<ArtifactRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -900,6 +947,8 @@ impl Runtime {
                 sink.record(event);
             }
         }
+        self.store
+            .copy_protocol_records_for_replay(&replay_id, source_run_id, self.clock.now())?;
         self.store.update_run_state(
             &replay_id,
             source.state,
@@ -1106,6 +1155,162 @@ impl Runtime {
         self.store
             .reconcile_effect(&request, self.clock.now())
             .map_err(RuntimeError::from)
+    }
+
+    pub async fn continue_external_effect(
+        &self,
+        effect_id: &str,
+        actor: &str,
+        reason: &str,
+        approved: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<EffectReconciliationRecord, RuntimeError> {
+        let effect = self.store.load_effect(effect_id)?;
+        if !matches!(
+            effect.status,
+            EffectStatus::Started | EffectStatus::Uncertain
+        ) {
+            return Err(RuntimeError::InvalidState(format!(
+                "effect `{effect_id}` is {:?}, not uncertain",
+                effect.status
+            )));
+        }
+        let kind = match effect.request.operation.as_str() {
+            "mcp.call" => ActionKind::McpCall,
+            "a2a.delegate" => ActionKind::A2aDelegate,
+            operation => {
+                return Err(RuntimeError::InvalidState(format!(
+                    "effect `{effect_id}` operation `{operation}` has no protocol continuation"
+                )));
+            }
+        };
+        let run = self.store.load_run(&effect.request.run_id)?;
+        let workflow: Workflow = serde_json::from_value(run.workflow)?;
+        let base_path = run
+            .base_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.base_path.clone());
+        let policy = PolicyEngine::new(workflow.spec.policy.clone(), &base_path)?;
+        if kind == ActionKind::A2aDelegate {
+            let peer = effect
+                .request
+                .input
+                .get("peer")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(
+                        "persisted A2A effect has no peer identity".to_owned(),
+                    )
+                })?;
+            let card_url = workflow
+                .spec
+                .a2a_peers
+                .get(peer)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "persisted A2A peer `{peer}` is not configured"
+                    ))
+                })?
+                .card_url
+                .as_str();
+            let card_url = Url::parse(card_url).map_err(|error| {
+                RuntimeError::InvalidState(format!("persisted A2A card URL is invalid: {error}"))
+            })?;
+            policy.authorize_network(&card_url)?;
+        }
+        let authorization = policy.decide(&PolicyContext {
+            run_id: effect.request.run_id.clone(),
+            trace_id: self.ids.next_id("trace"),
+            task_id: effect.request.task_id.clone(),
+            agent: None,
+            tool: effect.request.operation.clone(),
+            capability: "effect_reconciliation".to_owned(),
+            effect_class: effect.request.effect_class,
+            risk: effect.request.risk,
+            resource: Some(effect.request.id.clone()),
+            provider: None,
+            input: serde_json::json!({
+                "status": ReconciliationStatus::Applied,
+                "continuation": true,
+            }),
+            interactive: approved,
+        });
+        match authorization {
+            PolicyDecision::Deny { reason } => {
+                return Err(RuntimeError::InvalidState(format!(
+                    "policy denied remote effect continuation: {reason}"
+                )));
+            }
+            PolicyDecision::RequireApproval { reason } if !approved => {
+                return Err(RuntimeError::InvalidState(format!(
+                    "remote effect continuation requires explicit --approved confirmation: {reason}"
+                )));
+            }
+            PolicyDecision::Allow { .. } | PolicyDecision::RequireApproval { .. } => {}
+        }
+        let handler = self.registry.external_actions.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidState("no external protocol handler is registered".to_owned())
+        })?;
+        let context = ExternalActionContext {
+            run_id: effect.request.run_id.clone(),
+            task_id: effect.request.task_id.clone(),
+            task_attempt: effect.request.attempt,
+            effect_id: effect.request.id.clone(),
+            operation: effect.request.operation.clone(),
+            idempotency: effect.request.idempotency,
+            store: self.store.clone(),
+        };
+        let event_sink = DurableExternalStreamSink {
+            store: self.store.clone(),
+            clock: Arc::clone(&self.clock),
+            observer: self.stream_events.clone(),
+            context: context.clone(),
+            budget: durable_stream_budget(&self.store, &context)?,
+        };
+        let result = handler
+            .continue_effect(
+                &context,
+                kind,
+                &effect.request.input,
+                &event_sink,
+                cancellation,
+            )
+            .await?;
+        let task = run.plan.tasks.get(&effect.request.task_id).ok_or_else(|| {
+            RuntimeError::InvalidState(format!(
+                "persisted task `{}` is absent from the compiled plan",
+                effect.request.task_id
+            ))
+        })?;
+        let result_schema =
+            task_output_schema(&workflow, task).unwrap_or_else(|| serde_json::json!({}));
+        validate_output_contract(&result_schema, &result).map_err(|message| {
+            RuntimeError::InvalidState(format!(
+                "continued remote result failed the task output contract: {message}"
+            ))
+        })?;
+        let protocol_call = self.store.protocol_call(effect_id)?.ok_or_else(|| {
+            RuntimeError::InvalidState(format!(
+                "effect `{effect_id}` continuation produced no protocol evidence"
+            ))
+        })?;
+        let evidence = serde_json::json!({
+            "kind": "protocol_observation",
+            "protocolCall": protocol_call,
+            "remoteTaskId": protocol_call.state.get("remoteTaskId"),
+        });
+        self.reconcile_effect(EffectReconciliationInput {
+            effect_id: effect_id.to_owned(),
+            status: ReconciliationStatus::Applied,
+            actor: actor.to_owned(),
+            reason: reason.to_owned(),
+            evidence,
+            result: Some(result),
+            result_schema: Some(result_schema),
+            compensation_effect_id: None,
+            approved,
+        })
     }
 
     fn analyze_legacy_run_internal(
@@ -1370,6 +1575,73 @@ impl Runtime {
                 break;
             }
         }
+        let target_policy =
+            PolicyEngine::new(target_workflow.spec.policy.clone(), &self.base_path)?;
+        let mut recovered_protocol_tasks = BTreeMap::new();
+        for source_task in source_tasks
+            .values()
+            .filter(|task| matches!(task.state, TaskState::Failed | TaskState::Cancelled))
+        {
+            let task_effects = source_effects
+                .iter()
+                .filter(|effect| effect.request.task_id == source_task.task_id)
+                .collect::<Vec<_>>();
+            let [effect] = task_effects.as_slice() else {
+                continue;
+            };
+            if effect.request.operation != "a2a.delegate" {
+                continue;
+            }
+            let Some(target_task) = target_plan.tasks.get(&source_task.task_id) else {
+                continue;
+            };
+            let target_fingerprint =
+                task_definition_fingerprint(target_workflow, target_task, &target_policy, None)?;
+            if source_task.definition_fingerprint.as_deref() != Some(&target_fingerprint) {
+                continue;
+            }
+            let Some(reconciliation) = self
+                .store
+                .latest_effect_reconciliation(&effect.request.id)?
+                .filter(|record| record.status == ReconciliationStatus::Applied)
+            else {
+                continue;
+            };
+            let Some(output) = reconciliation.result else {
+                continue;
+            };
+            let Some(call) = self.store.protocol_call(&effect.request.id)? else {
+                continue;
+            };
+            if call.protocol != "a2a"
+                || call.status != "succeeded"
+                || call
+                    .state
+                    .get("submissionAmbiguous")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                || call
+                    .state
+                    .get("remoteTaskId")
+                    .and_then(Value::as_str)
+                    .is_none()
+            {
+                continue;
+            }
+            recovered_protocol_tasks.insert(
+                source_task.task_id.clone(),
+                RecoveredProtocolTask {
+                    effect_id: effect.request.id.clone(),
+                    output,
+                    artifact_manifest: self
+                        .store
+                        .pending_artifacts(source_run_id, &source_task.task_id)?,
+                },
+            );
+        }
+        for task_id in recovered_protocol_tasks.keys() {
+            rerun.remove(task_id);
+        }
 
         let mut blocks = Vec::new();
         if source.mode == RunMode::Replay {
@@ -1479,8 +1751,6 @@ impl Runtime {
             }
         }
 
-        let target_policy =
-            PolicyEngine::new(target_workflow.spec.policy.clone(), &self.base_path)?;
         let mut memory = Value::Object(
             target_workflow
                 .spec
@@ -1566,7 +1836,8 @@ impl Runtime {
                 blocked_task_ids.insert(task_id.clone());
             };
 
-            if source_task.state != TaskState::Succeeded {
+            let recovered_protocol_task = recovered_protocol_tasks.get(task_id);
+            if source_task.state != TaskState::Succeeded && recovered_protocol_task.is_none() {
                 blocked(
                     "source_task_not_successful",
                     format!(
@@ -1726,13 +1997,18 @@ impl Runtime {
                 ));
                 continue;
             }
-            let output = source_task.output.as_ref().ok_or_else(|| {
-                RuntimeError::InvalidState(format!(
-                    "successful source task `{task_id}` has no output"
-                ))
-            })?;
+            let output = recovered_protocol_task
+                .map(|recovered| &recovered.output)
+                .or(source_task.output.as_ref())
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "successful source task `{task_id}` has no output"
+                    ))
+                })?;
             let output_digest = versioned_json_digest(output)?;
-            if source_task.output_digest.as_deref() != Some(&output_digest) {
+            if recovered_protocol_task.is_none()
+                && source_task.output_digest.as_deref() != Some(&output_digest)
+            {
                 blocked(
                     "output_digest_mismatch",
                     format!("stored output for task `{task_id}` is corrupt or was modified"),
@@ -1764,7 +2040,11 @@ impl Runtime {
                 ));
                 continue;
             }
-            if let Err(message) = verify_artifacts(&self.store, &source_task.artifact_manifest) {
+            let artifact_manifest = recovered_protocol_task.map_or_else(
+                || source_task.artifact_manifest.clone(),
+                |recovered| recovered.artifact_manifest.clone(),
+            );
+            if let Err(message) = verify_artifacts(&self.store, &artifact_manifest) {
                 blocked(
                     "artifact_integrity",
                     format!("artifact verification failed for task `{task_id}`: {message}"),
@@ -1799,7 +2079,12 @@ impl Runtime {
                 ));
                 continue;
             }
-            let Some(state_delta) = source_task.state_delta.as_ref() else {
+            let recovered_state_delta = recovered_protocol_task
+                .map(|_| serde_json::json!({"formatVersion": 1, "set": {}, "remove": []}));
+            let state_delta = recovered_state_delta
+                .as_ref()
+                .or(source_task.state_delta.as_ref());
+            let Some(state_delta) = state_delta else {
                 blocked(
                     "state_delta_missing",
                     format!(
@@ -1818,7 +2103,9 @@ impl Runtime {
                 continue;
             };
             let state_delta_digest = versioned_json_digest(state_delta)?;
-            if source_task.state_delta_digest.as_deref() != Some(&state_delta_digest) {
+            if recovered_protocol_task.is_none()
+                && source_task.state_delta_digest.as_deref() != Some(&state_delta_digest)
+            {
                 blocked(
                     "state_delta_digest_mismatch",
                     format!("state delta for task `{task_id}` is corrupt or unsupported"),
@@ -1877,11 +2164,21 @@ impl Runtime {
                         .collect(),
                 )
             };
+            let reuse_reason = recovered_protocol_task.map_or(
+                "all compatibility checks passed",
+                |_| "continued A2A task completed without resubmission",
+            );
+            let recovered_effect_id =
+                recovered_protocol_task.map(|recovered| recovered.effect_id.as_str());
             let reuse_decision = serde_json::json!({
                 "formatVersion": 1,
-                "reason": "all compatibility checks passed",
+                "reason": reuse_reason,
                 "checks": [
-                    "source_succeeded",
+                    if recovered_protocol_task.is_some() {
+                        "continued_protocol_effect_applied"
+                    } else {
+                        "source_succeeded"
+                    },
                     "outside_rerun_closure",
                     "definition_fingerprint",
                     "resolved_input_digest",
@@ -1895,6 +2192,7 @@ impl Runtime {
                 "sourceWorkflowDigest": source.workflow_digest,
                 "targetWorkflowDigest": target_plan.workflow_digest,
                 "sourceEffects": source_effect_summary,
+                "recoveredEffectId": recovered_effect_id,
             });
             reused.push(ReusedTaskMaterialization {
                 task_id: task_id.clone(),
@@ -1912,14 +2210,14 @@ impl Runtime {
                     output_digest,
                     state_delta: state_delta.clone(),
                     state_delta_digest,
-                    artifact_manifest: source_task.artifact_manifest.clone(),
+                    artifact_manifest,
                 },
                 reuse_decision,
             });
             task_plans.push(RepairTaskPlan {
                 task_id: task_id.clone(),
                 disposition: PlannedDisposition::Reuse,
-                reason: "successful compatible source result".to_owned(),
+                reason: reuse_reason.to_owned(),
                 source_state: Some(source_task.state),
                 source_fingerprint,
                 target_fingerprint: Some(target_fingerprint),
@@ -4711,6 +5009,11 @@ impl Runtime {
                 } else {
                     (EffectClass::RemoteAgent, Risk::High, "a2a.delegate")
                 };
+                let idempotency = if action.kind == ActionKind::McpCall {
+                    action.idempotency.unwrap_or(Idempotency::Unknown)
+                } else {
+                    Idempotency::AtMostOnce
+                };
                 let request = EffectRequest::new(
                     &run.run_id,
                     &task.task_id,
@@ -4719,7 +5022,7 @@ impl Runtime {
                     operation,
                     class,
                     risk,
-                    Idempotency::Unknown,
+                    idempotency,
                     input.clone(),
                     operation,
                     trace_id,
@@ -4740,7 +5043,25 @@ impl Runtime {
                     PreparedEffect::Execute => {
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
-                        let result = handler.execute(action.kind, &input, cancellation).await;
+                        let context = ExternalActionContext {
+                            run_id: run.run_id.clone(),
+                            task_id: task.task_id.clone(),
+                            task_attempt: task.attempt,
+                            effect_id: request.id.clone(),
+                            operation: operation.to_owned(),
+                            idempotency,
+                            store: self.store.clone(),
+                        };
+                        let event_sink = DurableExternalStreamSink {
+                            store: self.store.clone(),
+                            clock: Arc::clone(&self.clock),
+                            observer: self.stream_events.clone(),
+                            context: context.clone(),
+                            budget: durable_stream_budget(&self.store, &context)?,
+                        };
+                        let result = handler
+                            .execute(&context, action.kind, &input, &event_sink, cancellation)
+                            .await;
                         match result {
                             Ok(output) => {
                                 self.store.complete_effect(
@@ -5467,6 +5788,18 @@ struct StreamBudget {
     exhausted: bool,
 }
 
+fn durable_stream_budget(
+    store: &SqliteStore,
+    context: &ExternalActionContext,
+) -> Result<Arc<Mutex<StreamBudget>>, RuntimeError> {
+    let persisted =
+        store.stream_event_count(&context.run_id, &context.task_id, context.task_attempt)?;
+    Ok(Arc::new(Mutex::new(StreamBudget {
+        persisted,
+        exhausted: persisted >= MAX_STREAM_EVENTS_PER_TASK_ATTEMPT,
+    })))
+}
+
 struct DurableProviderStreamSink {
     store: SqliteStore,
     clock: Arc<dyn Clock>,
@@ -5526,6 +5859,60 @@ impl ProviderStreamSink for DurableProviderStreamSink {
             .map_err(|error| {
                 ProviderError::Malformed(format!("failed to persist stream event: {error}"))
             })?;
+        if let Some(observer) = &self.observer {
+            observer.record(&record);
+        }
+        Ok(())
+    }
+}
+
+struct DurableExternalStreamSink {
+    store: SqliteStore,
+    clock: Arc<dyn Clock>,
+    observer: Option<Arc<dyn StreamEventSink>>,
+    context: ExternalActionContext,
+    budget: Arc<Mutex<StreamBudget>>,
+}
+
+#[async_trait]
+impl ExternalEventSink for DurableExternalStreamSink {
+    async fn emit(&self, event: ExternalStreamEvent) -> Result<(), RuntimeError> {
+        let (event_type, payload, truncated) = {
+            let mut budget = self.budget.lock().map_err(|_| {
+                RuntimeError::InvalidState("stream event budget lock was poisoned".to_owned())
+            })?;
+            if budget.exhausted {
+                return Ok(());
+            }
+            if budget.persisted >= MAX_STREAM_EVENTS_PER_TASK_ATTEMPT.saturating_sub(1) {
+                budget.persisted = budget.persisted.saturating_add(1);
+                budget.exhausted = true;
+                (
+                    "stream.truncated".to_owned(),
+                    serde_json::json!({
+                        "reason": "event_limit",
+                        "maxEvents": MAX_STREAM_EVENTS_PER_TASK_ATTEMPT,
+                    }),
+                    true,
+                )
+            } else {
+                budget.persisted = budget.persisted.saturating_add(1);
+                let (payload, truncated) = bounded_stream_payload(&event.payload)
+                    .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
+                (event.event_type, payload, truncated)
+            }
+        };
+        let record = self.store.record_stream_event(
+            &self.context.run_id,
+            &self.context.task_id,
+            self.context.task_attempt,
+            Some(&self.context.effect_id),
+            &event_type,
+            event.remote_sequence,
+            &payload,
+            truncated,
+            self.clock.now(),
+        )?;
         if let Some(observer) = &self.observer {
             observer.record(&record);
         }
@@ -6431,6 +6818,7 @@ fn collect_artifacts(
     task_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<ArtifactRecord>, RuntimeError> {
+    let mut artifacts = store.pending_artifacts(run_id, task_id)?;
     let mut paths = BTreeSet::new();
     for effect in effects.iter().filter(|effect| {
         effect.request.task_id == task_id
@@ -6442,15 +6830,22 @@ fn collect_artifacts(
             collect_result_paths(result, &mut paths);
         }
     }
-    paths
-        .into_iter()
-        .map(|path| {
-            let resolved = policy.resolve_artifact_path(&path)?;
-            store
-                .ingest_artifact(run_id, task_id, &resolved, &path, 16 * 1024 * 1024, now)
-                .map_err(RuntimeError::from)
-        })
-        .collect()
+    for path in paths {
+        if artifacts.iter().any(|artifact| artifact.path == path) {
+            continue;
+        }
+        let resolved = policy.resolve_artifact_path(&path)?;
+        artifacts.push(store.ingest_artifact(
+            run_id,
+            task_id,
+            &resolved,
+            &path,
+            16 * 1024 * 1024,
+            now,
+        )?);
+    }
+    artifacts.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(artifacts)
 }
 
 fn collect_result_paths(value: &Value, paths: &mut BTreeSet<String>) {
@@ -7075,6 +7470,119 @@ mod tests {
             self.notify.notify_waiters();
             cancellation.cancelled().await;
             Err(ProviderError::Cancelled)
+        }
+    }
+
+    #[derive(Default)]
+    struct ContinuingA2aHandler {
+        submissions: AtomicUsize,
+        continuations: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ExternalActionHandler for ContinuingA2aHandler {
+        async fn execute(
+            &self,
+            context: &ExternalActionContext,
+            kind: ActionKind,
+            _input: &Value,
+            events: &dyn ExternalEventSink,
+            _cancellation: &CancellationToken,
+        ) -> Result<Value, RuntimeError> {
+            assert_eq!(kind, ActionKind::A2aDelegate);
+            self.submissions.fetch_add(1, Ordering::SeqCst);
+            events
+                .emit(ExternalStreamEvent {
+                    event_type: "a2a.task.status".to_owned(),
+                    remote_sequence: None,
+                    payload: serde_json::json!({
+                        "id": "remote-task-1",
+                        "status": {"state": "working"}
+                    }),
+                })
+                .await?;
+            context.store.put_protocol_call(
+                &context.effect_id,
+                &context.run_id,
+                &context.task_id,
+                context.task_attempt,
+                "a2a",
+                &context.operation,
+                "message-1",
+                1,
+                "at_most_once",
+                "uncertain",
+                &serde_json::json!({
+                    "peer": "local",
+                    "messageId": "message-1",
+                    "remoteTaskId": "remote-task-1",
+                    "task": {
+                        "id": "remote-task-1",
+                        "status": {"state": "working"}
+                    },
+                    "submissionAmbiguous": false,
+                }),
+                Utc::now(),
+            )?;
+            Err(RuntimeError::ExternalEffectUncertain(
+                "observation disconnected after submission".to_owned(),
+            ))
+        }
+
+        async fn continue_effect(
+            &self,
+            context: &ExternalActionContext,
+            kind: ActionKind,
+            _input: &Value,
+            events: &dyn ExternalEventSink,
+            _cancellation: &CancellationToken,
+        ) -> Result<Value, RuntimeError> {
+            assert_eq!(kind, ActionKind::A2aDelegate);
+            self.continuations.fetch_add(1, Ordering::SeqCst);
+            let completed = serde_json::json!({
+                "id": "remote-task-1",
+                "status": {"state": "completed"},
+                "artifacts": [{
+                    "artifactId": "report",
+                    "parts": [{"text": "durable report"}]
+                }]
+            });
+            events
+                .emit(ExternalStreamEvent {
+                    event_type: "a2a.task.status".to_owned(),
+                    remote_sequence: None,
+                    payload: completed.clone(),
+                })
+                .await?;
+            context.store.ingest_artifact_bytes(
+                &context.run_id,
+                &context.task_id,
+                b"durable report",
+                "a2a/report/report.txt",
+                1024,
+                Utc::now(),
+            )?;
+            context.store.put_protocol_call(
+                &context.effect_id,
+                &context.run_id,
+                &context.task_id,
+                context.task_attempt,
+                "a2a",
+                &context.operation,
+                "message-1",
+                1,
+                "at_most_once",
+                "succeeded",
+                &serde_json::json!({
+                    "peer": "local",
+                    "messageId": "message-1",
+                    "remoteTaskId": "remote-task-1",
+                    "task": completed,
+                    "submissionAmbiguous": false,
+                }),
+                Utc::now(),
+            )?;
+            Ok(completed)
         }
     }
 
@@ -8105,6 +8613,122 @@ spec:
         let retry_tasks = store.list_tasks(&outcome.run_id).expect("retry tasks");
         assert_eq!(retry_tasks[0].disposition, TaskDisposition::Executed);
         assert_eq!(retry_tasks[1].disposition, TaskDisposition::Reused);
+    }
+
+    #[tokio::test]
+    async fn continued_a2a_boundary_is_materialized_without_resubmission() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let handler = Arc::new(ContinuingA2aHandler::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_external_actions(handler.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: continued-a2a }
+spec:
+  policy:
+    networkAllowlist: [127.0.0.1]
+    approval: never
+  a2aPeers:
+    local:
+      cardUrl: http://127.0.0.1:8766/.well-known/agent-card.json
+      protocolVersion: "1.0"
+  actions:
+    delegate: { kind: a2a.delegate }
+    consume: { kind: builtin.assign }
+  tasks:
+    - id: delegate
+      uses: action:delegate
+      outputSchema:
+        type: object
+        required: [id, status]
+        properties:
+          id: { const: remote-task-1 }
+          status:
+            type: object
+            required: [state]
+            properties:
+              state: { const: completed }
+      with:
+        peer: local
+        messageId: message-1
+        message: perform durable work
+    - id: consume
+      uses: action:consume
+      needs: [delegate]
+      with:
+        value: "${{ tasks.delegate.output.id }}"
+"#,
+        );
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, task, .. }) => {
+                assert_eq!(task, "delegate");
+                run_id
+            }
+            other => panic!("expected uncertain A2A source failure, got {other:?}"),
+        };
+        let effect = store
+            .latest_effect_for_task(&source_run_id, "delegate")
+            .expect("effect lookup")
+            .expect("effect");
+        assert_eq!(effect.status, EffectStatus::Uncertain);
+        runtime
+            .continue_external_effect(
+                &effect.request.id,
+                "operator",
+                "resume known remote task",
+                true,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("continue known task");
+        assert_eq!(handler.submissions.load(Ordering::SeqCst), 1);
+        assert_eq!(handler.continuations.load(Ordering::SeqCst), 1);
+
+        let retry_plan = runtime
+            .plan_retry(&source_run_id, &workflow, &plan, &[], true, false)
+            .expect("retry plan");
+        assert!(retry_plan.compatible, "{:?}", retry_plan.blocked_reuse);
+        assert_eq!(retry_plan.reused_tasks, ["delegate"]);
+        assert_eq!(retry_plan.rerun_tasks, ["consume"]);
+        let outcome = runtime
+            .retry(
+                &workflow,
+                &plan,
+                retry_plan,
+                Some("continue after durable remote completion"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("retry from recovered boundary");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(handler.submissions.load(Ordering::SeqCst), 1);
+        assert_eq!(handler.continuations.load(Ordering::SeqCst), 1);
+        let tasks = store.list_tasks(&outcome.run_id).expect("tasks");
+        assert_eq!(tasks[0].disposition, TaskDisposition::Reused);
+        assert_eq!(tasks[1].disposition, TaskDisposition::Executed);
+        assert_eq!(tasks[0].artifact_manifest[0].path, "a2a/report/report.txt");
+        let recorded_calls = store
+            .protocol_calls(&outcome.run_id)
+            .expect("recorded protocol calls");
+        assert_eq!(recorded_calls.len(), 1);
+        assert_eq!(recorded_calls[0].status, "recorded");
+        assert_eq!(
+            recorded_calls[0].source_effect_id.as_deref(),
+            Some(effect.request.id.as_str())
+        );
     }
 
     #[tokio::test]

@@ -2,9 +2,14 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -17,7 +22,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 40;
+const ACCEPTANCE_SCENARIOS: usize = 41;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -1937,6 +1942,155 @@ pub fn run(root: &Path) -> Result<()> {
         "human stream progress was not written to stderr"
     );
 
+    scenario(
+        41,
+        "packaged CLI safely reconnects MCP and continues A2A without resubmission",
+    );
+    let protocol_server = ProtocolFixtureServer::start()?;
+    let protocol_workspace = directory.path().join("protocol-resilience");
+    fs::create_dir_all(&protocol_workspace)?;
+    let mcp_workflow = protocol_workspace.join("mcp.yaml");
+    write(
+        &mcp_workflow,
+        &PROTOCOL_MCP_WORKFLOW.replace(
+            "__MCP_URL__",
+            &format!("http://{}/mcp", protocol_server.address()),
+        ),
+    )?;
+    let mcp_db = protocol_workspace.join("mcp.db");
+    let mcp_run = successful_json(
+        &binary,
+        &protocol_workspace,
+        &run_args(&mcp_workflow, &mcp_db, &protocol_workspace, &[]),
+    )?;
+    ensure_eq(&mcp_run, "/data/state", "succeeded")?;
+    let mcp_run_id = string_at(&mcp_run, "/data/runId")?;
+    let mcp_inspect = inspect(&binary, &protocol_workspace, &mcp_db, mcp_run_id)?;
+    ensure_eq(&mcp_inspect, "/data/protocolSessions/0/generation", 2_u64)?;
+    ensure_eq(&mcp_inspect, "/data/protocolCalls/0/status", "succeeded")?;
+    ensure!(
+        mcp_inspect["data"]["streamEvents"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| {
+                event.get("eventType").and_then(Value::as_str) == Some("mcp.reconnected")
+            }))
+    );
+    ensure!(protocol_server.mcp_calls() == 2);
+
+    let a2a_workflow = protocol_workspace.join("a2a.yaml");
+    write(
+        &a2a_workflow,
+        &PROTOCOL_A2A_WORKFLOW.replace(
+            "__A2A_CARD_URL__",
+            &format!("http://{}/agent-card.json", protocol_server.address()),
+        ),
+    )?;
+    let a2a_db = protocol_workspace.join("a2a.db");
+    let interrupted = json_with_code(
+        &binary,
+        &protocol_workspace,
+        &run_args(&a2a_workflow, &a2a_db, &protocol_workspace, &[]),
+        4,
+    )?;
+    let a2a_source_id = string_at(&interrupted, "/error/runId")?;
+    let a2a_source = inspect(&binary, &protocol_workspace, &a2a_db, a2a_source_id)?;
+    ensure_eq(&a2a_source, "/data/effects/0/status", "uncertain")?;
+    ensure_eq(
+        &a2a_source,
+        "/data/protocolCalls/0/state/remoteTaskId",
+        "remote-task-1",
+    )?;
+    let a2a_effect_id = string_at(&a2a_source, "/data/effects/0/request/id")?;
+    let continuation = successful_json(
+        &binary,
+        &protocol_workspace,
+        &strings([
+            "effects",
+            "--db",
+            path(&a2a_db)?,
+            "continue-remote",
+            a2a_effect_id,
+            "--actor",
+            "acceptance",
+            "--reason",
+            "resume persisted A2A task",
+            "--approved",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&continuation, "/data/status", "applied")?;
+    ensure!(protocol_server.a2a_sends() == 1);
+    let retry_plan = successful_json(
+        &binary,
+        &protocol_workspace,
+        &strings([
+            "retry",
+            path(&a2a_workflow)?,
+            a2a_source_id,
+            "--failed",
+            "--plan",
+            "--db",
+            path(&a2a_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&retry_plan, "/data/reusedTasks/0", "delegate")?;
+    ensure_eq(&retry_plan, "/data/rerunTasks/0", "consume")?;
+    let retried = successful_json(
+        &binary,
+        &protocol_workspace,
+        &strings([
+            "retry",
+            path(&a2a_workflow)?,
+            a2a_source_id,
+            "--failed",
+            "--reason",
+            "continue durable A2A boundary",
+            "--db",
+            path(&a2a_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&retried, "/data/state", "succeeded")?;
+    ensure_eq(&retried, "/data/reusedTasks/0", "delegate")?;
+    ensure_eq(&retried, "/data/executedTasks/0", "consume")?;
+    ensure!(protocol_server.a2a_sends() == 1);
+    let retry_run_id = string_at(&retried, "/data/runId")?;
+    let retry_inspect = inspect(&binary, &protocol_workspace, &a2a_db, retry_run_id)?;
+    ensure_eq(&retry_inspect, "/data/protocolCalls/0/status", "recorded")?;
+    ensure_eq(
+        &retry_inspect,
+        "/data/artifacts/0/logicalPath",
+        "a2a/report/report.txt",
+    )?;
+    let replay = successful_json(
+        &binary,
+        &protocol_workspace,
+        &strings([
+            "replay",
+            retry_run_id,
+            "--db",
+            path(&a2a_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let replay_run_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = inspect(&binary, &protocol_workspace, &a2a_db, replay_run_id)?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    ensure_eq(&replay_inspect, "/data/protocolCalls/0/status", "recorded")?;
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -3106,6 +3260,294 @@ fn run_args(workflow: &Path, db: &Path, workspace: &Path, extra: &[String]) -> V
     args
 }
 
+#[derive(Default)]
+struct ProtocolFixtureState {
+    mcp_initializations: AtomicUsize,
+    mcp_calls: AtomicUsize,
+    a2a_sends: AtomicUsize,
+    a2a_observations: AtomicUsize,
+}
+
+struct ProtocolFixtureServer {
+    address: SocketAddr,
+    state: Arc<ProtocolFixtureState>,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ProtocolFixtureServer {
+    fn start() -> Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let state = Arc::new(ProtocolFixtureState::default());
+        let thread_state = Arc::clone(&state);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
+        let handle = thread::spawn(move || {
+            while !thread_shutdown.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = serve_protocol_request(&mut stream, address, &thread_state);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(Self {
+            address,
+            state,
+            shutdown,
+            handle: Some(handle),
+        })
+    }
+
+    const fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    fn mcp_calls(&self) -> usize {
+        self.state.mcp_calls.load(Ordering::SeqCst)
+    }
+
+    fn a2a_sends(&self) -> usize {
+        self.state.a2a_sends.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for ProtocolFixtureServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.address);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn serve_protocol_request(
+    stream: &mut TcpStream,
+    address: SocketAddr,
+    state: &ProtocolFixtureState,
+) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let request = read_http_request(stream)?;
+    let header_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .context("fixture HTTP request has no header boundary")?;
+    let headers = std::str::from_utf8(&request[..header_end])?;
+    let request_line = headers.lines().next().context("fixture request line")?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().context("fixture request method")?;
+    let path = request_parts.next().context("fixture request path")?;
+    let body = &request[header_end + 4..];
+    let body: Value = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(body)?
+    };
+    let rpc_method = body.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = body.get("id").and_then(Value::as_u64).unwrap_or(0);
+    let mut response_headers = Vec::new();
+    let (status, response_body) = match (method, path, rpc_method) {
+        ("POST", "/mcp", "initialize") => {
+            let generation = state.mcp_initializations.fetch_add(1, Ordering::SeqCst) + 1;
+            response_headers.push(("Mcp-Session-Id", format!("fixture-session-{generation}")));
+            (
+                200,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    }
+                })
+                .to_string(),
+            )
+        }
+        ("POST", "/mcp", "notifications/initialized") => (202, String::new()),
+        ("POST", "/mcp", "tools/list") => (
+            200,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "tools": [{
+                        "name": "durable",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"]
+                        }
+                    }]
+                }
+            })
+            .to_string(),
+        ),
+        ("POST", "/mcp", "tools/call") => {
+            let call = state.mcp_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 1 {
+                (404, String::new())
+            } else {
+                (
+                    200,
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "structuredContent": {"ok": true},
+                            "isError": false
+                        }
+                    })
+                    .to_string(),
+                )
+            }
+        }
+        ("GET", "/agent-card.json", _) => (
+            200,
+            serde_json::json!({
+                "name": "fixture-agent",
+                "description": "durable continuation fixture",
+                "supportedInterfaces": [{
+                    "url": format!("http://{address}/a2a"),
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": "1.0"
+                }],
+                "capabilities": {"streaming": false},
+                "skills": []
+            })
+            .to_string(),
+        ),
+        ("POST", "/a2a", "SendMessage") => {
+            state.a2a_sends.fetch_add(1, Ordering::SeqCst);
+            (
+                200,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "task": {
+                            "id": "remote-task-1",
+                            "status": {"state": "working"}
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+        ("POST", "/a2a", "GetTask") => {
+            let observation = state.a2a_observations.fetch_add(1, Ordering::SeqCst) + 1;
+            let task = if observation == 1 {
+                serde_json::json!({
+                    "id": "remote-task-1",
+                    "status": {"state": "working"}
+                })
+            } else {
+                serde_json::json!({
+                    "id": "remote-task-1",
+                    "status": {"state": "completed"},
+                    "artifacts": [{
+                        "artifactId": "report",
+                        "parts": [{
+                            "text": "completed without resubmission",
+                            "filename": "report.txt",
+                            "mediaType": "text/plain"
+                        }]
+                    }]
+                })
+            };
+            (
+                200,
+                serde_json::json!({"jsonrpc": "2.0", "id": id, "result": task}).to_string(),
+            )
+        }
+        ("POST", "/a2a", "CancelTask") => (
+            200,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "id": "remote-task-1",
+                    "status": {"state": "canceled"}
+                }
+            })
+            .to_string(),
+        ),
+        _ => (400, String::new()),
+    };
+    write_http_response(stream, status, &response_headers, &response_body)
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut expected = None;
+    loop {
+        let count = stream.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..count]);
+        ensure!(
+            request.len() <= 1024 * 1024,
+            "fixture request exceeded 1 MiB"
+        );
+        if expected.is_none()
+            && let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+        {
+            let headers = std::str::from_utf8(&request[..header_end])?;
+            let content_length = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            });
+            expected = Some(header_end + 4 + content_length.unwrap_or(0));
+        }
+        if expected.is_some_and(|expected| request.len() >= expected) {
+            break;
+        }
+    }
+    Ok(request)
+}
+
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    extra_headers: &[(&str, String)],
+    body: &str,
+) -> Result<()> {
+    let reason = match status {
+        200 => "OK",
+        202 => "Accepted",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body.len()
+    );
+    for (name, value) in extra_headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+    response.push_str(body);
+    stream.write_all(response.as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
 fn successful_json(binary: &Path, cwd: &Path, args: &[String]) -> Result<Value> {
     json_with_code(binary, cwd, args, 0)
 }
@@ -3985,6 +4427,77 @@ spec:
       uses: action:assert
       needs: [provision]
       with: { that: false, message: expected acceptance failure }
+"#;
+
+const PROTOCOL_MCP_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: mcp-resilience-acceptance }
+spec:
+  policy:
+    networkAllowlist: [127.0.0.1]
+    approval: never
+  mcpServers:
+    fixture:
+      url: __MCP_URL__
+      protocolVersion: 2025-11-25
+      timeoutSeconds: 2
+  actions:
+    invoke:
+      kind: mcp.call
+      idempotency: idempotent
+  tasks:
+    - id: invoke
+      uses: action:invoke
+      outputSchema:
+        type: object
+        required: [ok]
+        properties: { ok: { const: true } }
+      with:
+        server: fixture
+        tool: durable
+        arguments: { value: safe }
+"#;
+
+const PROTOCOL_A2A_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: a2a-resilience-acceptance }
+spec:
+  outputs:
+    result: "${{ tasks.consume.output.output.value }}"
+  policy:
+    networkAllowlist: [127.0.0.1]
+    approval: never
+  a2aPeers:
+    fixture:
+      cardUrl: __A2A_CARD_URL__
+      protocolVersion: "1.0"
+      timeoutSeconds: 2
+      maxPolls: 1
+      pollIntervalMs: 1
+  actions:
+    delegate: { kind: a2a.delegate }
+    consume: { kind: builtin.assign }
+  tasks:
+    - id: delegate
+      uses: action:delegate
+      outputSchema:
+        type: object
+        required: [id, status]
+        properties:
+          id: { const: remote-task-1 }
+          status:
+            type: object
+            required: [state]
+            properties: { state: { const: completed } }
+      with:
+        peer: fixture
+        messageId: message-1
+        message: perform durable work
+    - id: consume
+      uses: action:consume
+      needs: [delegate]
+      with:
+        value: "${{ tasks.delegate.output.id }}"
 "#;
 
 const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

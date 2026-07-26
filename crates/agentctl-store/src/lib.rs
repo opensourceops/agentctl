@@ -3,7 +3,7 @@
 pub mod artifact;
 pub mod encryption;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -25,7 +25,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 12;
+pub const DATABASE_SCHEMA_VERSION: u32 = 13;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -343,6 +343,47 @@ CREATE TABLE stream_events (
 );
 CREATE INDEX idx_stream_events_run
   ON stream_events(run_id, task_id, task_attempt, sequence);
+"#;
+
+const MIGRATION_13: &str = r#"
+CREATE TABLE protocol_sessions (
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  effect_id TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  remote TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  format_version INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  source_run_id TEXT,
+  source_task_id TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, task_id, protocol),
+  FOREIGN KEY (run_id, task_id) REFERENCES task_states(run_id, task_id) ON DELETE CASCADE
+);
+CREATE TABLE protocol_calls (
+  effect_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  task_attempt INTEGER NOT NULL,
+  protocol TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  call_identity TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  idempotency TEXT NOT NULL,
+  status TEXT NOT NULL,
+  format_version INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  source_run_id TEXT,
+  source_effect_id TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (run_id, task_id) REFERENCES task_states(run_id, task_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_protocol_sessions_run
+  ON protocol_sessions(run_id, task_id, protocol);
+CREATE INDEX idx_protocol_calls_run
+  ON protocol_calls(run_id, task_id, task_attempt, effect_id);
 "#;
 
 #[derive(Clone)]
@@ -689,6 +730,43 @@ pub struct StreamEventRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProtocolSessionRecord {
+    pub run_id: String,
+    pub task_id: String,
+    pub effect_id: String,
+    pub protocol: String,
+    pub remote: String,
+    pub generation: u32,
+    pub status: String,
+    pub format_version: u32,
+    pub state: Value,
+    pub source_run_id: Option<String>,
+    pub source_task_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolCallRecord {
+    pub effect_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub task_attempt: u16,
+    pub protocol: String,
+    pub operation: String,
+    pub call_identity: String,
+    pub generation: u32,
+    pub idempotency: String,
+    pub status: String,
+    pub format_version: u32,
+    pub state: Value,
+    pub source_run_id: Option<String>,
+    pub source_effect_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolCallRecord {
     pub call_id: String,
     pub task_id: String,
@@ -722,6 +800,8 @@ pub struct DatabaseStats {
     pub audit_events: i64,
     pub provider_sessions: i64,
     pub stream_events: i64,
+    pub protocol_sessions: i64,
+    pub protocol_calls: i64,
     pub tool_calls: i64,
     pub trace_events: i64,
     pub long_term_memory: i64,
@@ -902,6 +982,81 @@ impl SqliteStore {
             logical_name: logical_name.to_owned(),
             store_path: blob.relative_path,
         })
+    }
+
+    pub fn ingest_artifact_bytes(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        bytes: &[u8],
+        logical_path: &str,
+        max_bytes: u64,
+        now: DateTime<Utc>,
+    ) -> Result<ArtifactRecord, StoreError> {
+        use std::io::Write as _;
+
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+            return Err(StoreError::Incompatible(format!(
+                "artifact `{logical_path}` exceeds the configured limit of {max_bytes} bytes"
+            )));
+        }
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(self.artifact_store.root().join("tmp"))?;
+        temporary.write_all(bytes)?;
+        temporary.as_file_mut().sync_all()?;
+        self.ingest_artifact(
+            run_id,
+            task_id,
+            temporary.path(),
+            logical_path,
+            max_bytes,
+            now,
+        )
+    }
+
+    pub fn pending_artifacts(
+        &self,
+        run_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<ArtifactRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT i.logical_path, b.digest, b.size_bytes, b.relative_path
+             FROM artifact_ingests i
+             JOIN artifact_blobs b ON b.digest = i.digest
+             WHERE i.run_id = ?1 AND i.task_id = ?2
+             ORDER BY i.logical_path",
+        )?;
+        statement
+            .query_map(params![run_id, task_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .map(|row| {
+                let row = row?;
+                let logical_name = Path::new(&row.0)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| {
+                        StoreError::Corrupt(format!(
+                            "artifact logical path `{}` has no valid file name",
+                            row.0
+                        ))
+                    })?;
+                Ok(ArtifactRecord {
+                    path: row.0.clone(),
+                    digest: row.1,
+                    size_bytes: sqlite_u64(row.2, "artifact_ingest.size_bytes")?,
+                    media_type: media_type_for_path(Path::new(&row.0)).to_owned(),
+                    logical_name: logical_name.to_owned(),
+                    store_path: row.3,
+                })
+            })
+            .collect()
     }
 
     #[must_use]
@@ -1260,6 +1415,13 @@ impl SqliteStore {
                 )?;
             }
         }
+        copy_protocol_records_for_tasks_tx(
+            &transaction,
+            run_id,
+            source_run_id,
+            reused.keys().copied(),
+            now,
+        )?;
         append_audit_tx(
             &transaction,
             run_id,
@@ -1427,6 +1589,13 @@ impl SqliteStore {
                 )?;
             }
         }
+        copy_protocol_records_for_tasks_tx(
+            &transaction,
+            run_id,
+            source_run_id,
+            reused.keys().copied(),
+            now,
+        )?;
         append_audit_tx(
             &transaction,
             run_id,
@@ -3324,6 +3493,22 @@ impl SqliteStore {
             .collect()
     }
 
+    pub fn stream_event_count(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        task_attempt: u16,
+    ) -> Result<usize, StoreError> {
+        let count = self.connection.lock().query_row(
+            "SELECT COUNT(*) FROM stream_events
+             WHERE run_id = ?1 AND task_id = ?2 AND task_attempt = ?3",
+            params![run_id, task_id, task_attempt],
+            |row| row.get::<_, i64>(0),
+        )?;
+        usize::try_from(count)
+            .map_err(|_| StoreError::Corrupt("stream event count is invalid".to_owned()))
+    }
+
     pub fn copy_stream_events_for_replay(
         &self,
         replay_run_id: &str,
@@ -3374,6 +3559,367 @@ impl SqliteStore {
             copied.push(record);
         }
         Ok(copied)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_protocol_session(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        effect_id: &str,
+        protocol: &str,
+        remote: &str,
+        generation: u32,
+        status: &str,
+        state: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.connection.lock().execute(
+            "INSERT INTO protocol_sessions
+             (run_id, task_id, effect_id, protocol, remote, generation, status, format_version, state_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9)
+             ON CONFLICT(run_id, task_id, protocol) DO UPDATE SET
+               effect_id = excluded.effect_id,
+               remote = excluded.remote,
+               generation = excluded.generation,
+               status = excluded.status,
+               format_version = excluded.format_version,
+               state_json = excluded.state_json,
+               source_run_id = NULL,
+               source_task_id = NULL,
+               updated_at = excluded.updated_at",
+            params![
+                run_id,
+                task_id,
+                effect_id,
+                protocol,
+                remote,
+                generation,
+                status,
+                encode_protected(
+                    &self.protection,
+                    state,
+                    "protocol_sessions.state_json"
+                )?,
+                now.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_protocol_call(
+        &self,
+        effect_id: &str,
+        run_id: &str,
+        task_id: &str,
+        task_attempt: u16,
+        protocol: &str,
+        operation: &str,
+        call_identity: &str,
+        generation: u32,
+        idempotency: &str,
+        status: &str,
+        state: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let connection = self.connection.lock();
+        let identity = connection
+            .query_row(
+                "SELECT run_id, task_id, task_attempt, protocol, operation, call_identity, idempotency
+                 FROM protocol_calls WHERE effect_id = ?1",
+                [effect_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u16>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if identity.as_ref().is_some_and(|identity| {
+            identity.0 != run_id
+                || identity.1 != task_id
+                || identity.2 != task_attempt
+                || identity.3 != protocol
+                || identity.4 != operation
+                || identity.5 != call_identity
+                || identity.6 != idempotency
+        }) {
+            return Err(StoreError::Incompatible(format!(
+                "protocol call identity for effect `{effect_id}` changed"
+            )));
+        }
+        connection.execute(
+            "INSERT INTO protocol_calls
+             (effect_id, run_id, task_id, task_attempt, protocol, operation, call_identity, generation, idempotency, status, format_version, state_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?12)
+             ON CONFLICT(effect_id) DO UPDATE SET
+               generation = excluded.generation,
+               status = excluded.status,
+               format_version = excluded.format_version,
+               state_json = excluded.state_json,
+               source_run_id = NULL,
+               source_effect_id = NULL,
+               updated_at = excluded.updated_at",
+            params![
+                effect_id,
+                run_id,
+                task_id,
+                task_attempt,
+                protocol,
+                operation,
+                call_identity,
+                generation,
+                idempotency,
+                status,
+                encode_protected(&self.protection, state, "protocol_calls.state_json")?,
+                now.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn protocol_sessions(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<ProtocolSessionRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT task_id, effect_id, protocol, remote, generation, status, format_version,
+                    state_json, source_run_id, source_task_id, updated_at
+             FROM protocol_sessions WHERE run_id = ?1 ORDER BY task_id, protocol",
+        )?;
+        statement
+            .query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, u32>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, u32>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            })?
+            .map(|row| {
+                let row = row?;
+                if row.6 != 1 {
+                    return Err(StoreError::Incompatible(format!(
+                        "protocol session format version {}",
+                        row.6
+                    )));
+                }
+                Ok(ProtocolSessionRecord {
+                    run_id: run_id.to_owned(),
+                    task_id: row.0,
+                    effect_id: row.1,
+                    protocol: row.2,
+                    remote: row.3,
+                    generation: row.4,
+                    status: row.5,
+                    format_version: row.6,
+                    state: decode_protected(
+                        &self.protection,
+                        &row.7,
+                        "protocol_sessions.state_json",
+                    )?,
+                    source_run_id: row.8,
+                    source_task_id: row.9,
+                    updated_at: parse_time(&row.10, "protocol_session.updated_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn protocol_calls(&self, run_id: &str) -> Result<Vec<ProtocolCallRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT effect_id, task_id, task_attempt, protocol, operation, call_identity,
+                    generation, idempotency, status, format_version, state_json,
+                    source_run_id, source_effect_id, updated_at
+             FROM protocol_calls WHERE run_id = ?1
+             ORDER BY task_id, task_attempt, effect_id",
+        )?;
+        statement
+            .query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u16>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, u32>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, u32>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, String>(13)?,
+                ))
+            })?
+            .map(|row| {
+                let row = row?;
+                if row.9 != 1 {
+                    return Err(StoreError::Incompatible(format!(
+                        "protocol call format version {}",
+                        row.9
+                    )));
+                }
+                Ok(ProtocolCallRecord {
+                    effect_id: row.0,
+                    run_id: run_id.to_owned(),
+                    task_id: row.1,
+                    task_attempt: row.2,
+                    protocol: row.3,
+                    operation: row.4,
+                    call_identity: row.5,
+                    generation: row.6,
+                    idempotency: row.7,
+                    status: row.8,
+                    format_version: row.9,
+                    state: decode_protected(
+                        &self.protection,
+                        &row.10,
+                        "protocol_calls.state_json",
+                    )?,
+                    source_run_id: row.11,
+                    source_effect_id: row.12,
+                    updated_at: parse_time(&row.13, "protocol_call.updated_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn protocol_call(&self, effect_id: &str) -> Result<Option<ProtocolCallRecord>, StoreError> {
+        let run_id = self
+            .connection
+            .lock()
+            .query_row(
+                "SELECT run_id FROM protocol_calls WHERE effect_id = ?1",
+                [effect_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(run_id
+            .map(|run_id| self.protocol_calls(&run_id))
+            .transpose()?
+            .and_then(|calls| calls.into_iter().find(|call| call.effect_id == effect_id)))
+    }
+
+    pub fn copy_protocol_records_for_replay(
+        &self,
+        replay_run_id: &str,
+        source_run_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.copy_protocol_records(replay_run_id, source_run_id, None, now)
+    }
+
+    pub fn copy_protocol_records_for_materialization(
+        &self,
+        target_run_id: &str,
+        source_run_id: &str,
+        task_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let task_ids = task_ids.iter().cloned().collect::<BTreeSet<_>>();
+        self.copy_protocol_records(target_run_id, source_run_id, Some(&task_ids), now)
+    }
+
+    fn copy_protocol_records(
+        &self,
+        target_run_id: &str,
+        source_run_id: &str,
+        task_ids: Option<&BTreeSet<String>>,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let sessions = self
+            .protocol_sessions(source_run_id)?
+            .into_iter()
+            .filter(|session| task_ids.is_none_or(|ids| ids.contains(&session.task_id)))
+            .collect::<Vec<_>>();
+        let calls = self
+            .protocol_calls(source_run_id)?
+            .into_iter()
+            .filter(|call| task_ids.is_none_or(|ids| ids.contains(&call.task_id)))
+            .collect::<Vec<_>>();
+        let attempts = self
+            .list_tasks(target_run_id)?
+            .into_iter()
+            .map(|task| (task.task_id, task.attempt))
+            .collect::<BTreeMap<_, _>>();
+        let connection = self.connection.lock();
+        let transaction = connection.unchecked_transaction()?;
+        for session in sessions {
+            transaction.execute(
+                "INSERT INTO protocol_sessions
+                 (run_id, task_id, effect_id, protocol, remote, generation, status, format_version,
+                  state_json, source_run_id, source_task_id, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'recorded', 1, ?7, ?8, ?9, ?10)",
+                params![
+                    target_run_id,
+                    session.task_id,
+                    format!("recorded:{target_run_id}:{}", session.effect_id),
+                    session.protocol,
+                    session.remote,
+                    session.generation,
+                    encode_protected(
+                        &self.protection,
+                        &session.state,
+                        "protocol_sessions.state_json"
+                    )?,
+                    source_run_id,
+                    session.task_id,
+                    now.to_rfc3339(),
+                ],
+            )?;
+        }
+        for call in calls {
+            let attempt =
+                attempts
+                    .get(&call.task_id)
+                    .copied()
+                    .ok_or_else(|| StoreError::TaskNotFound {
+                        run_id: target_run_id.to_owned(),
+                        task_id: call.task_id.clone(),
+                    })?;
+            transaction.execute(
+                "INSERT INTO protocol_calls
+                 (effect_id, run_id, task_id, task_attempt, protocol, operation, call_identity,
+                  generation, idempotency, status, format_version, state_json, source_run_id,
+                  source_effect_id, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'recorded', 1, ?10, ?11, ?12, ?13)",
+                params![
+                    format!("recorded:{target_run_id}:{}", call.effect_id),
+                    target_run_id,
+                    call.task_id,
+                    attempt,
+                    call.protocol,
+                    call.operation,
+                    call.call_identity,
+                    call.generation,
+                    call.idempotency,
+                    encode_protected(&self.protection, &call.state, "protocol_calls.state_json")?,
+                    source_run_id,
+                    call.effect_id,
+                    now.to_rfc3339(),
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn list_effects(&self, run_id: &str) -> Result<Vec<EffectRecord>, StoreError> {
@@ -4062,6 +4608,8 @@ impl SqliteStore {
                 "audit_events",
                 "provider_sessions",
                 "stream_events",
+                "protocol_sessions",
+                "protocol_calls",
                 "tool_calls",
                 "trace_events",
                 "long_term_memory",
@@ -4094,6 +4642,8 @@ impl SqliteStore {
             audit_events: count("audit_events")?,
             provider_sessions: count("provider_sessions")?,
             stream_events: count("stream_events")?,
+            protocol_sessions: count("protocol_sessions")?,
+            protocol_calls: count("protocol_calls")?,
             tool_calls: count("tool_calls")?,
             trace_events: count("trace_events")?,
             long_term_memory: count("long_term_memory")?,
@@ -4269,6 +4819,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (10_u32, MIGRATION_10),
         (11_u32, MIGRATION_11),
         (12_u32, MIGRATION_12),
+        (13_u32, MIGRATION_13),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -4644,6 +5195,43 @@ fn verify_artifact_manifest(
     Ok(())
 }
 
+fn copy_protocol_records_for_tasks_tx<'a>(
+    transaction: &Transaction<'_>,
+    target_run_id: &str,
+    source_run_id: &str,
+    task_ids: impl Iterator<Item = &'a str>,
+    now: DateTime<Utc>,
+) -> Result<(), StoreError> {
+    let updated_at = now.to_rfc3339();
+    for task_id in task_ids {
+        transaction.execute(
+            "INSERT INTO protocol_sessions
+             (run_id, task_id, effect_id, protocol, remote, generation, status, format_version,
+              state_json, source_run_id, source_task_id, updated_at)
+             SELECT ?1, task_id, 'recorded:' || ?1 || ':' || effect_id, protocol, remote,
+                    generation, 'recorded', format_version, state_json, ?2, task_id, ?4
+             FROM protocol_sessions
+             WHERE run_id = ?2 AND task_id = ?3",
+            params![target_run_id, source_run_id, task_id, updated_at],
+        )?;
+        transaction.execute(
+            "INSERT INTO protocol_calls
+             (effect_id, run_id, task_id, task_attempt, protocol, operation, call_identity,
+              generation, idempotency, status, format_version, state_json, source_run_id,
+              source_effect_id, updated_at)
+             SELECT 'recorded:' || ?1 || ':' || effect_id, ?1, task_id,
+                    (SELECT attempt FROM task_states
+                     WHERE run_id = ?1 AND task_id = protocol_calls.task_id),
+                    protocol, operation, call_identity, generation, idempotency, 'recorded',
+                    format_version, state_json, ?2, effect_id, ?4
+             FROM protocol_calls
+             WHERE run_id = ?2 AND task_id = ?3",
+            params![target_run_id, source_run_id, task_id, updated_at],
+        )?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_artifact_references_tx(
     transaction: &Transaction<'_>,
@@ -4952,6 +5540,7 @@ spec:
             MIGRATION_9,
             MIGRATION_10,
             MIGRATION_11,
+            MIGRATION_12,
         ]
         .into_iter()
         .enumerate()
@@ -5060,6 +5649,35 @@ spec:
             )
             .expect("provider session");
         store
+            .put_protocol_session(
+                "encrypted-run",
+                "one",
+                &effect.id,
+                "a2a",
+                "https://agent.invalid",
+                1,
+                "polling",
+                &serde_json::json!({"remoteTask": marker}),
+                Utc::now(),
+            )
+            .expect("protocol session");
+        store
+            .put_protocol_call(
+                &effect.id,
+                "encrypted-run",
+                "one",
+                1,
+                "a2a",
+                "a2a.delegate",
+                "message-1",
+                1,
+                "at_most_once",
+                "polling",
+                &serde_json::json!({"remoteTask": marker}),
+                Utc::now(),
+            )
+            .expect("protocol call");
+        store
             .put_long_term_memory(
                 "test",
                 "secret",
@@ -5108,6 +5726,14 @@ spec:
         );
         assert_eq!(
             store.load_effect(&effect.id).expect("effect").request.input["secret"],
+            marker
+        );
+        assert_eq!(
+            store
+                .protocol_call(&effect.id)
+                .expect("protocol call")
+                .expect("protocol call record")
+                .state["remoteTask"],
             marker
         );
         assert_eq!(
@@ -5902,6 +6528,69 @@ spec:
                 .iter()
                 .any(|event| event.event_type == "retry.created")
         );
+    }
+
+    #[test]
+    fn protocol_lineage_can_be_recorded_into_multiple_replays() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "source");
+        store
+            .put_protocol_session(
+                "source",
+                "one",
+                "effect-source",
+                "a2a",
+                "https://agent.invalid",
+                1,
+                "completed",
+                &serde_json::json!({"remoteTaskId": "task-1"}),
+                Utc::now(),
+            )
+            .expect("session");
+        store
+            .put_protocol_call(
+                "effect-source",
+                "source",
+                "one",
+                1,
+                "a2a",
+                "a2a.delegate",
+                "message-1",
+                1,
+                "at_most_once",
+                "succeeded",
+                &serde_json::json!({"remoteTaskId": "task-1"}),
+                Utc::now(),
+            )
+            .expect("call");
+        let (workflow, plan) = fixture();
+        for replay_run_id in ["replay-one", "replay-two"] {
+            store
+                .create_run(
+                    replay_run_id,
+                    API_VERSION,
+                    &workflow,
+                    &plan,
+                    &serde_json::json!({}),
+                    &serde_json::json!({}),
+                    RunMode::Replay,
+                    Some("source"),
+                    Some("source"),
+                    Path::new("."),
+                    Utc::now(),
+                    "trace-replay",
+                )
+                .expect("replay run");
+            store
+                .copy_protocol_records_for_replay(replay_run_id, "source", Utc::now())
+                .expect("copy protocol lineage");
+            let calls = store.protocol_calls(replay_run_id).expect("calls");
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].status, "recorded");
+            assert_eq!(calls[0].source_run_id.as_deref(), Some("source"));
+            assert_eq!(calls[0].source_effect_id.as_deref(), Some("effect-source"));
+            assert!(calls[0].effect_id.contains(replay_run_id));
+        }
     }
 
     #[test]

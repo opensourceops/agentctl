@@ -346,6 +346,7 @@ Usage: agentctl effects [OPTIONS] <COMMAND>
 Commands:
   list
   inspect
+  continue-remote  Resume observation of a persisted remote task without resubmitting it
   reconcile
 
 Options:

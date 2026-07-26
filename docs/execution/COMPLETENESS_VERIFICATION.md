@@ -82,7 +82,7 @@ cargo xtask acceptance-container
 | Compensation | compiler declarations plus runtime reverse order, approval, partial failure, source and inverse uncertainty, cancellation, retry, reconciliation, automatic trigger, repair/retry invalidation, and replay tests passed | packaged CLI scenario 38 and the full local release gate passed | verified |
 | Structured handoffs | compiler rejects hidden teams; typed role and handoff contracts use ordinary task recovery | packaged CLI scenario 39 covers tool separation, inspection, retry, repair, and replay | deterministic verified; live pending |
 | Streaming | provider SSE fragmentation plus runtime bounds, redaction, final validation, and replay tests passed | packaged CLI scenario 40 covers human, JSONL, final JSON, inspection, and replay | deterministic verified; live pending |
-| MCP/A2A resilience | pending | pending | open |
+| MCP/A2A resilience | 15 protocol tests, 76 runtime tests, schema 13 migration/encryption/replay tests, and `cargo xtask protocol-resilience` passed | packaged CLI scenario 41 reconnects MCP once and continues one known A2A task through CAS, retry, and replay without resubmission | verified |
 | Packs/trust/extensions | pending | pending | open |
 | Semantic memory | pending | pending | open |
 | Network/isolation/budgets | pending | pending | open |

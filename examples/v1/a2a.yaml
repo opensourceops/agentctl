@@ -11,6 +11,8 @@ spec:
       cardUrl: http://127.0.0.1:8766/.well-known/agent-card.json
       protocolVersion: "1.0"
       timeoutSeconds: 5
+      maxPolls: 100
+      pollIntervalMs: 100
   actions:
     delegate:
       kind: a2a.delegate

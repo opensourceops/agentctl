@@ -19,13 +19,14 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 - Shell execution and acceptance/container helpers use bounded concurrent capture. Output overflow terminates/reaps the child with a structured secret-safe error; timeouts and cancellation retain durable uncertain-effect semantics.
 - Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
-## Post-v1 features
+## Remaining framework-completeness work
 
-These are useful extensions but are not required by the product thesis. They need new deterministic state and compatibility contracts before implementation:
+These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
 
-- opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
-- pack dependency resolution, pack lockfiles, remote fetching, publisher signatures, and a versioned plugin ABI;
-- vector memory;
+- pack dependency resolution, lockfiles, immutable remote sources, integrity, and trust policy;
+- the selected isolated extension process protocol;
+- semantic and hybrid long-term-memory retrieval;
+- enforceable network, process-isolation, usage, resource, and cost budgets;
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
 - reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
 
@@ -66,6 +67,15 @@ These are useful extensions but are not required by the product thesis. They nee
   payload. The OpenAI SSE transport is capped at 8 MiB. Transport loss is not
   automatically reconnected or resubmitted, and final task output still
   requires a terminal validated provider response.
+- MCP reconnects at most once only for `pure`, `idempotent`, or `keyed`
+  actions and only while the selected tool schema remains identical. Calls
+  with `unknown` or `at_most_once` idempotency remain uncertain after a lost
+  response and require reconciliation.
+- A2A continuation requires a persisted remote task ID. An ambiguous
+  `SendMessage` without a returned task ID is never resubmitted automatically.
+  `effects continue-remote` can resume polling or streaming of a known task,
+  retrieve bounded same-origin artifacts, and make the recovered boundary
+  reusable by retry.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.

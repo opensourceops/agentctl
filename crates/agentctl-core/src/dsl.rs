@@ -235,6 +235,8 @@ pub struct ActionDefinition {
     #[serde(default, rename = "with")]
     pub defaults: JsonMap,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency: Option<Idempotency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
@@ -283,6 +285,9 @@ impl ActionDefinition {
             || self.combined_output_limit_bytes.is_some();
         if self.kind != ActionKind::ShellExec && has_output_limit {
             return Err("process output limits are only valid for builtin.shell.exec actions");
+        }
+        if self.idempotency.is_some() && self.kind != ActionKind::McpCall {
+            return Err("idempotency is only valid for mcp.call actions");
         }
         if self.kind != ActionKind::ShellExec {
             return Ok(());
@@ -703,8 +708,20 @@ pub struct A2aPeerDefinition {
     pub headers: BTreeMap<String, SecretReference>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default = "default_a2a_max_polls")]
+    pub max_polls: usize,
+    #[serde(default = "default_a2a_poll_interval_ms")]
+    pub poll_interval_ms: u64,
     #[serde(default = "default_a2a_version")]
     pub protocol_version: String,
+}
+
+const fn default_a2a_max_polls() -> usize {
+    100
+}
+
+const fn default_a2a_poll_interval_ms() -> u64 {
+    100
 }
 
 fn default_a2a_version() -> String {
@@ -1243,6 +1260,18 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
         }
     }
     for (name, server) in &workflow.spec.mcp_servers {
+        if server.timeout_seconds == 0 || server.timeout_seconds > MAX_PROCESS_TIMEOUT_SECONDS {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!(
+                        "MCP server `{name}` timeoutSeconds must be between 1 and {MAX_PROCESS_TIMEOUT_SECONDS}"
+                    ),
+                )
+                .with_path(format!("spec.mcpServers.{name}.timeoutSeconds")),
+            );
+        }
         for (header, secret) in &server.headers {
             validate_secret_reference(
                 secret,
@@ -1255,6 +1284,38 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
         }
     }
     for (name, peer) in &workflow.spec.a2a_peers {
+        if peer.timeout_seconds == 0 || peer.timeout_seconds > MAX_PROCESS_TIMEOUT_SECONDS {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!(
+                        "A2A peer `{name}` timeoutSeconds must be between 1 and {MAX_PROCESS_TIMEOUT_SECONDS}"
+                    ),
+                )
+                .with_path(format!("spec.a2aPeers.{name}.timeoutSeconds")),
+            );
+        }
+        if peer.max_polls == 0 || peer.max_polls > 1_000 {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("A2A peer `{name}` maxPolls must be between 1 and 1000"),
+                )
+                .with_path(format!("spec.a2aPeers.{name}.maxPolls")),
+            );
+        }
+        if peer.poll_interval_ms == 0 || peer.poll_interval_ms > 60_000 {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("A2A peer `{name}` pollIntervalMs must be between 1 and 60000"),
+                )
+                .with_path(format!("spec.a2aPeers.{name}.pollIntervalMs")),
+            );
+        }
         for (header, secret) in &peer.headers {
             validate_secret_reference(
                 secret,
@@ -1443,6 +1504,46 @@ spec:
             workflow.spec.providers["process"].credential.as_ref(),
             Some(SecretReference::Process { .. })
         ));
+    }
+
+    #[test]
+    fn protocol_recovery_bounds_and_idempotency_are_strict() {
+        let mcp = MINIMAL.replace(
+            "    greet:\n      kind: builtin.assign",
+            "    greet:\n      kind: mcp.call\n      idempotency: keyed",
+        );
+        let workflow = parse_workflow(&mcp, "mcp.yaml")
+            .expect("MCP idempotency")
+            .workflow;
+        assert_eq!(
+            workflow.spec.actions["greet"].idempotency,
+            Some(Idempotency::Keyed)
+        );
+
+        let invalid_action = MINIMAL.replace(
+            "      kind: builtin.assign",
+            "      kind: builtin.assign\n      idempotency: idempotent",
+        );
+        let diagnostics =
+            parse_workflow(&invalid_action, "action.yaml").expect_err("invalid action field");
+        assert!(diagnostics[0].message.contains("only valid for mcp.call"));
+
+        let invalid_a2a = MINIMAL.replace(
+            "  actions:",
+            "  a2aPeers:\n    remote:\n      cardUrl: https://agent.example/card.json\n      maxPolls: 0\n      pollIntervalMs: 0\n  actions:",
+        );
+        let diagnostics =
+            parse_workflow(&invalid_a2a, "a2a.yaml").expect_err("invalid polling bounds");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item.message.contains("maxPolls"))
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item.message.contains("pollIntervalMs"))
+        );
     }
 
     #[test]

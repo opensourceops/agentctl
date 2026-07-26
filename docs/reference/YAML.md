@@ -94,6 +94,15 @@ Supported action kinds:
 
 `builtin.shell.exec` uses a direct executable and argument list. Output defaults are 1 MiB per stream and 2 MiB combined, with a maximum configured value of 16 MiB. Its maximum timeout is 86,400 seconds.
 
+`mcp.call` accepts an optional `idempotency` declaration. Only `pure`,
+`idempotent`, or `keyed` permits the bounded reconnect path, and a refreshed
+tool schema must match exactly. Omitted idempotency is `unknown`.
+
+An A2A peer accepts `timeoutSeconds`, `maxPolls` from 1 through 1,000, and
+`pollIntervalMs` from 1 through 60,000. Defaults are 120 seconds, 100 polls,
+and 100 milliseconds. These bounds apply to observation of a known task;
+`SendMessage` remains at most once.
+
 ## Tools
 
 A tool requires `kind`, description, strict input and output JSON Schema, capability, risk, effect class, idempotency, retry safety, timeout, and approval behavior. Built-in tool executors are workspace read, workspace write, and echo. Declared semantics must match the built-in kind.

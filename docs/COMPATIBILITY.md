@@ -30,4 +30,4 @@ Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2
 
 ## Separate product decisions
 
-A public pack registry/resolver, vector memory, automatic MCP reconnection, and general A2A resubmission are not compatibility promises for v1alpha1. Bounded loops, namespaced sub-workflows, explicit source-linked compensation, graph-native structured handoffs, and bounded durable streaming are additive; hidden or model-controlled orchestration is intentionally unsupported.
+A public pack registry and general A2A resubmission are not compatibility promises for v1alpha1. MCP reconnect is bounded by explicit idempotency and schema stability. A2A continuation observes only a persisted task ID. Bounded loops, namespaced sub-workflows, explicit source-linked compensation, graph-native structured handoffs, durable streaming, and protocol continuation records are additive; hidden or model-controlled orchestration is intentionally unsupported.

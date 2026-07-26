@@ -504,6 +504,16 @@
           "additionalProperties": true,
           "default": {}
         },
+        "idempotency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Idempotency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "command": {
           "type": [
             "string",
@@ -583,6 +593,16 @@
         "builtin.long_term_memory.write",
         "mcp.call",
         "a2a.delegate"
+      ]
+    },
+    "Idempotency": {
+      "type": "string",
+      "enum": [
+        "pure",
+        "idempotent",
+        "keyed",
+        "at_most_once",
+        "unknown"
       ]
     },
     "ToolDefinition": {
@@ -678,16 +698,6 @@
         "network",
         "model",
         "remote_agent"
-      ]
-    },
-    "Idempotency": {
-      "type": "string",
-      "enum": [
-        "pure",
-        "idempotent",
-        "keyed",
-        "at_most_once",
-        "unknown"
       ]
     },
     "ApprovalRequirement": {
@@ -1206,6 +1216,18 @@
           "format": "uint64",
           "minimum": 0,
           "default": 120
+        },
+        "maxPolls": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 100
+        },
+        "pollIntervalMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 100
         },
         "protocolVersion": {
           "type": "string",

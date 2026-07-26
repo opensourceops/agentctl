@@ -51,8 +51,8 @@ complete, every entry must have exactly one final disposition:
 | COMP-001 | Compensation | verified | implemented |
 | TEAM-001 | Structured teams and handoffs | in progress | redesigned |
 | STR-001 | Streaming | in progress | implemented |
-| MCP-001 | MCP resilience | open | implemented |
-| A2A-001 | A2A resilience | open | implemented |
+| MCP-001 | MCP resilience | verified | implemented |
+| A2A-001 | A2A resilience | verified | implemented |
 | PACK-001 | Pack resolution and lockfiles | open | implemented |
 | TRUST-001 | Pack integrity and signing | open | implemented |
 | EXT-001 | Plugin strategy | open | redesigned |
@@ -450,8 +450,11 @@ complete, every entry must have exactly one final disposition:
 
 ### MCP-001: Safe MCP reconnect
 
-- Current behavior: session expiry fails explicitly and requires external
-  recovery.
+- Current behavior: SQLite schema 13 persists MCP session generations and
+  immutable call identities. Calls declared `pure`, `idempotent`, or `keyed`
+  may reinitialize once, refresh `tools/list`, verify the selected schema
+  digest, and redispatch. Unknown and at-most-once calls never redispatch after
+  ambiguity.
 - User impact: safe observations cannot recover from server restart, and manual
   recovery lacks protocol-specific evidence.
 - Security or durability impact: automatic retry of an uncertain mutation can
@@ -467,27 +470,41 @@ complete, every entry must have exactly one final disposition:
 - Examples: operational mock MCP workflow.
 - Live evidence: deterministic local server only.
 - Documentation: safe reconnect matrix.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Protocol tests cover restart, one-reconnect
+  bounds, unsafe refusal, stable and changed schemas, auth refresh, SSE,
+  cancellation, and timeout. Packaged acceptance scenario 41 verifies a
+  session-expiry reconnect, generation 2 inspection, durable reconnect event,
+  successful call, and exactly two call attempts. Retry and replay preserve
+  source-linked protocol records without effects.
 
 ### A2A-001: Safe remote-task continuation
 
-- Current behavior: task polling is bounded, but task identity is not exposed as
-  a complete resumable reconciliation workflow.
+- Current behavior: the call identity, remote task ID, latest task state, card
+  generation, and submission ambiguity are durable before observation.
+  `effects continue-remote` resumes a known task without `SendMessage`.
 - User impact: a lost response can strand externally running work.
 - Security or durability impact: blind `SendMessage` resubmission duplicates a
   remote task.
 - Product decision: persist external task IDs before polling and resume polling
   or streaming; never resubmit an ambiguous task automatically.
 - Required implementation: card refresh, interface compatibility, task ID and
-  stream cursor persistence, auth refresh, artifact retrieval into ART-001,
-  cancellation, bounded retry, and EFX-001 linkage.
+  durable local stream sequence persistence with canonical `GetTask` fallback,
+  auth refresh, artifact retrieval into ART-001, cancellation, bounded retry,
+  and EFX-001 linkage.
 - Migration impact: protocol task/session records.
 - Tests: ambiguous submission, polling/stream resume, card/interface change,
   auth refresh, cancellation, artifacts, repair/retry/replay.
 - Examples: resilient mock A2A workflow.
 - Live evidence: deterministic local peer only.
 - Documentation: continuation and reconciliation.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Mock peers prove known-task continuation,
+  ambiguous-send refusal, card refresh, bounded polling and streaming fallback,
+  cancellation, same-origin interface and artifact policy, CAS ingestion, and
+  auth refresh. Runtime repair tests prove the applied completed result is
+  schema-validated and materialized while only descendants rerun. Packaged
+  acceptance scenario 41 performs one `SendMessage`, resumes by task ID,
+  retrieves an artifact, retries from the recovered boundary, and replays with
+  zero effects.
 
 ### PACK-001: Deterministic pack resolution and lockfile
 

@@ -319,6 +319,18 @@ enum EffectCommand {
     Inspect {
         effect_id: String,
     },
+    /// Resume observation of a persisted remote task without resubmitting it.
+    ContinueRemote {
+        effect_id: String,
+        #[arg(long, default_value = "cli-user")]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        approved: bool,
+        #[arg(long)]
+        timeout_seconds: Option<u64>,
+    },
     Reconcile {
         effect_id: String,
         #[arg(long, value_enum)]
@@ -798,6 +810,12 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let stream_events = store
                 .stream_events(&args.run_id)
                 .map_err(CliError::persistence)?;
+            let protocol_sessions = store
+                .protocol_sessions(&args.run_id)
+                .map_err(CliError::persistence)?;
+            let protocol_calls = store
+                .protocol_calls(&args.run_id)
+                .map_err(CliError::persistence)?;
             let traces = store
                 .trace_events(&args.run_id)
                 .map_err(CliError::persistence)?;
@@ -805,11 +823,12 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 .artifact_references(Some(&args.run_id), None)
                 .map_err(CliError::persistence)?;
             let summary = format!(
-                "{} {:?}; {} tasks; {} effects; {} stream events; {} artifacts; {} checkpoints; {} audit events; {} traces",
+                "{} {:?}; {} tasks; {} effects; {} protocol calls; {} stream events; {} artifacts; {} checkpoints; {} audit events; {} traces",
                 args.run_id,
                 run.state,
                 tasks.len(),
                 effects.len(),
+                protocol_calls.len(),
                 stream_events.len(),
                 artifacts.len(),
                 checkpoints.len(),
@@ -848,6 +867,8 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 "checkpoints": checkpoints,
                 "providerSessions": provider_sessions,
                 "streamEvents": stream_events,
+                "protocolSessions": protocol_sessions,
+                "protocolCalls": protocol_calls,
                 "toolCalls": tool_calls,
                 "artifacts": artifacts,
                 "audit": audit,
@@ -1405,6 +1426,9 @@ async fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, Cl
             let reconciliations = store
                 .effect_reconciliations(&effect_id)
                 .map_err(CliError::persistence)?;
+            let protocol_call = store
+                .protocol_call(&effect_id)
+                .map_err(CliError::persistence)?;
             print_value(
                 output,
                 "EffectInspection",
@@ -1412,6 +1436,7 @@ async fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, Cl
                     "effect": effect,
                     "reconciliations": reconciliations,
                     "effectiveReconciliation": reconciliations.last(),
+                    "protocolCall": protocol_call,
                 }),
                 Vec::new(),
                 format!(
@@ -1419,6 +1444,42 @@ async fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, Cl
                     effect.request.id,
                     effect.status,
                     reconciliations.len()
+                ),
+            )?;
+        }
+        EffectCommand::ContinueRemote {
+            effect_id,
+            actor,
+            reason,
+            approved,
+            timeout_seconds,
+        } => {
+            let effect = store
+                .load_effect(&effect_id)
+                .map_err(CliError::persistence)?;
+            let run = store
+                .load_run(&effect.request.run_id)
+                .map_err(CliError::persistence)?;
+            let workflow: Workflow = serde_json::from_value(run.workflow)
+                .map_err(|error| CliError::persistence(error.to_string()))?;
+            let base = resolve_base_path(run.base_path.as_deref().map(Path::new))?;
+            let cancellation = cancellation_token(timeout_seconds);
+            let execution_tasks = BTreeSet::from([effect.request.task_id.clone()]);
+            let registry =
+                build_registry(&workflow, &base, &cancellation, Some(&execution_tasks)).await?;
+            let runtime = runtime_for_output(output, store, &base).with_registry(registry);
+            let reconciliation = runtime
+                .continue_external_effect(&effect_id, &actor, &reason, approved, &cancellation)
+                .await
+                .map_err(map_runtime_error)?;
+            print_value(
+                output,
+                "EffectReconciliation",
+                &reconciliation,
+                Vec::new(),
+                format!(
+                    "{} safely continued and reconciled as applied",
+                    reconciliation.effect_id
                 ),
             )?;
         }
@@ -2510,6 +2571,8 @@ async fn build_registry(
                     CliError::validation(format!("MCP server `{name}` URL: {error}"))
                 })?,
                 headers,
+                header_references: definition.headers.clone(),
+                header_resolver: Some(Arc::new(restricted_secrets.clone())),
                 timeout: Duration::from_secs(definition.timeout_seconds),
             })
             .map_err(remote_error)?;
@@ -2527,9 +2590,15 @@ async fn build_registry(
                     CliError::validation(format!("A2A peer `{name}` card URL: {error}"))
                 })?,
                 headers,
+                header_references: definition.headers.clone(),
+                header_resolver: Some(Arc::new(restricted_secrets.clone())),
                 timeout: Duration::from_secs(definition.timeout_seconds),
             })
-            .map_err(remote_error)?;
+            .map_err(remote_error)?
+            .with_poll_bounds(
+                definition.max_polls,
+                Duration::from_millis(definition.poll_interval_ms),
+            );
             a2a.insert(name.clone(), Arc::new(client));
         }
     }

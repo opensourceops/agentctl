@@ -127,6 +127,14 @@ pub(crate) const SENSITIVE_COLUMNS: &[SensitiveColumn] = &[
         column: "payload_json",
     },
     SensitiveColumn {
+        table: "protocol_sessions",
+        column: "state_json",
+    },
+    SensitiveColumn {
+        table: "protocol_calls",
+        column: "state_json",
+    },
+    SensitiveColumn {
         table: "long_term_memory",
         column: "value_json",
     },
