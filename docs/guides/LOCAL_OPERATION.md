@@ -19,7 +19,9 @@ This writes the SQLite database and any declared artifacts. Network calls occur 
 
 Human output is for terminals. `--output json --color never` emits one versioned final document on stdout; an error uses the same envelope shape on stderr. Exit codes distinguish success, validation, policy or approval, run failure, persistence, remote failure, and cancellation.
 
-JSONL progress output is not supported in this release. Use durable audit and trace records for event-level inspection.
+`--output jsonl` emits durable provider stream events followed by the final
+outcome. Human stream progress uses stderr. Use `--output json` when an
+automation requires exactly one final document.
 
 ## Interrupt safely
 

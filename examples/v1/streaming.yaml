@@ -1,0 +1,27 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: durable-streaming
+  description: Persist bounded provider progress without changing the final output contract.
+spec:
+  providers:
+    fake:
+      kind: fake
+  agents:
+    streamer:
+      provider: fake
+      model: scripted
+      instructions: Return the configured deterministic marker.
+      stream: true
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+      providerOptions:
+        finalText: STREAM_COMPLETE
+  outputs:
+    result: "${{ tasks.stream.output.text }}"
+  tasks:
+    - id: stream
+      uses: agent:streamer
+      with: { prompt: emit bounded progress }

@@ -81,7 +81,7 @@ cargo xtask acceptance-container
 | Sub-workflows | compiler namespacing/version/cycle/state-isolation tests and runtime typed boundary, retry, repair, and replay tests passed | packaged CLI scenario 37 and integrity-pinned pack example passed | deterministic verified; live pending |
 | Compensation | compiler declarations plus runtime reverse order, approval, partial failure, source and inverse uncertainty, cancellation, retry, reconciliation, automatic trigger, repair/retry invalidation, and replay tests passed | packaged CLI scenario 38 and the full local release gate passed | verified |
 | Structured handoffs | compiler rejects hidden teams; typed role and handoff contracts use ordinary task recovery | packaged CLI scenario 39 covers tool separation, inspection, retry, repair, and replay | deterministic verified; live pending |
-| Streaming | pending | pending | open |
+| Streaming | provider SSE fragmentation plus runtime bounds, redaction, final validation, and replay tests passed | packaged CLI scenario 40 covers human, JSONL, final JSON, inspection, and replay | deterministic verified; live pending |
 | MCP/A2A resilience | pending | pending | open |
 | Packs/trust/extensions | pending | pending | open |
 | Semantic memory | pending | pending | open |

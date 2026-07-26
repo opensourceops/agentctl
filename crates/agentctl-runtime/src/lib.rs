@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentctl_core::compiler::{CompiledPlan, PlanPredictability, TaskUse, compile};
@@ -17,7 +17,7 @@ use agentctl_core::effect::{
 use agentctl_core::policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyError, redact};
 use agentctl_core::provider::{
     ContentBlock, FinishReason, Message, ModelProvider, ProviderError, ProviderRequest,
-    ProviderResponse, Usage,
+    ProviderResponse, ProviderStreamEvent, ProviderStreamSink, Usage,
 };
 use agentctl_core::state::{RunState, TaskState};
 use agentctl_core::template::{EvalContext, TemplateError, evaluate_when, render};
@@ -26,8 +26,9 @@ use agentctl_observability::{NoopTraceSink, SpanKind, TraceEvent, TracePhase, Tr
 use agentctl_store::{
     ApprovalRequest, ArtifactRecord, CheckpointRecord, EffectReconciliationRecord,
     EffectReconciliationRequest, LegacyTaskUpgrade, ReconciliationStatus,
-    ReusedTaskMaterialization, RunMode, SqliteStore, StoreError, TaskBatchOutcome, TaskBatchResult,
-    TaskCompletionMetadata, TaskDisposition, TaskExecutionMetadata, TaskRecord,
+    ReusedTaskMaterialization, RunMode, SqliteStore, StoreError, StreamEventRecord,
+    TaskBatchOutcome, TaskBatchResult, TaskCompletionMetadata, TaskDisposition,
+    TaskExecutionMetadata, TaskRecord,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -89,6 +90,10 @@ pub trait EffectReconciliationHook: Send + Sync {
         evidence: &Value,
         result: Option<&Value>,
     ) -> Result<(), String>;
+}
+
+pub trait StreamEventSink: Send + Sync {
+    fn record(&self, event: &StreamEventRecord);
 }
 
 const MAX_WORKSPACE_FILE_BYTES: u64 = 1024 * 1024;
@@ -528,6 +533,7 @@ pub struct Runtime {
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     traces: Arc<dyn TraceSink>,
+    stream_events: Option<Arc<dyn StreamEventSink>>,
     base_path: PathBuf,
 }
 
@@ -540,6 +546,7 @@ impl Runtime {
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidGenerator),
             traces: Arc::new(NoopTraceSink),
+            stream_events: None,
             base_path: base_path.into(),
         }
     }
@@ -565,6 +572,12 @@ impl Runtime {
     #[must_use]
     pub fn with_trace_sink(mut self, traces: Arc<dyn TraceSink>) -> Self {
         self.traces = traces;
+        self
+    }
+
+    #[must_use]
+    pub fn with_stream_event_sink(mut self, stream_events: Arc<dyn StreamEventSink>) -> Self {
+        self.stream_events = Some(stream_events);
         self
     }
 
@@ -876,6 +889,16 @@ impl Runtime {
                 self.clock.now(),
                 &trace_id,
             )?;
+        }
+        let stream_events = self.store.copy_stream_events_for_replay(
+            &replay_id,
+            source_run_id,
+            self.clock.now(),
+        )?;
+        if let Some(sink) = &self.stream_events {
+            for event in &stream_events {
+                sink.record(event);
+            }
         }
         self.store.update_run_state(
             &replay_id,
@@ -4908,6 +4931,7 @@ impl Runtime {
         let mut continuation = None;
         let mut usage = Usage::default();
         let mut tool_call_count = 0_u16;
+        let stream_budget = Arc::new(Mutex::new(StreamBudget::default()));
         for _turn in 0..agent.max_turns {
             ordinal = ordinal.saturating_add(1);
             let provider_request = ProviderRequest {
@@ -4949,10 +4973,32 @@ impl Runtime {
                 PreparedEffect::Execute => {
                     self.store
                         .mark_effect_started(&effect.id, self.clock.now())?;
+                    let stream_sink = DurableProviderStreamSink {
+                        store: self.store.clone(),
+                        clock: Arc::clone(&self.clock),
+                        observer: self.stream_events.clone(),
+                        run_id: run.run_id.clone(),
+                        task_id: task.task_id.clone(),
+                        task_attempt: task.attempt,
+                        effect_id: effect.id.clone(),
+                        budget: Arc::clone(&stream_budget),
+                    };
                     let result = tokio::select! {
                         result = tokio::time::timeout(
                             Duration::from_secs(agent.timeout_seconds),
-                            provider.complete(&provider_request, cancellation),
+                            async {
+                                if agent.stream {
+                                    provider
+                                        .complete_streaming(
+                                            &provider_request,
+                                            &stream_sink,
+                                            cancellation,
+                                        )
+                                        .await
+                                } else {
+                                    provider.complete(&provider_request, cancellation).await
+                                }
+                            },
                         ) => result.unwrap_or(Err(ProviderError::Timeout)),
                         () = cancellation.cancelled() => Err(ProviderError::Cancelled),
                     };
@@ -4972,7 +5018,9 @@ impl Runtime {
                             return Err(RuntimeError::Cancelled);
                         }
                         Err(error) => {
-                            if provider_effect_is_uncertain(&error) {
+                            if provider_effect_is_uncertain(&error)
+                                || (agent.stream && matches!(error, ProviderError::Malformed(_)))
+                            {
                                 self.store.mark_effect_uncertain(
                                     &effect.id,
                                     &error.to_string(),
@@ -5408,6 +5456,98 @@ enum PreparedEffect {
     Execute,
     Recorded(Value),
     Paused,
+}
+
+const MAX_STREAM_EVENTS_PER_TASK_ATTEMPT: usize = 256;
+const MAX_STREAM_EVENT_PAYLOAD_BYTES: usize = 4 * 1024;
+
+#[derive(Default)]
+struct StreamBudget {
+    persisted: usize,
+    exhausted: bool,
+}
+
+struct DurableProviderStreamSink {
+    store: SqliteStore,
+    clock: Arc<dyn Clock>,
+    observer: Option<Arc<dyn StreamEventSink>>,
+    run_id: String,
+    task_id: String,
+    task_attempt: u16,
+    effect_id: String,
+    budget: Arc<Mutex<StreamBudget>>,
+}
+
+#[async_trait]
+impl ProviderStreamSink for DurableProviderStreamSink {
+    async fn emit(&self, event: ProviderStreamEvent) -> Result<(), ProviderError> {
+        let (event_type, payload, truncated) = {
+            let mut budget = self.budget.lock().map_err(|_| {
+                ProviderError::Malformed("stream event budget lock was poisoned".to_owned())
+            })?;
+            if budget.exhausted {
+                return Ok(());
+            }
+            if budget.persisted >= MAX_STREAM_EVENTS_PER_TASK_ATTEMPT.saturating_sub(1) {
+                budget.persisted = budget.persisted.saturating_add(1);
+                budget.exhausted = true;
+                (
+                    "stream.truncated".to_owned(),
+                    serde_json::json!({
+                        "reason": "event_limit",
+                        "maxEvents": MAX_STREAM_EVENTS_PER_TASK_ATTEMPT,
+                    }),
+                    true,
+                )
+            } else {
+                budget.persisted = budget.persisted.saturating_add(1);
+                let (payload, truncated) = bounded_stream_payload(&event.payload)?;
+                (event.event_type, payload, truncated)
+            }
+        };
+        let provider_sequence = event
+            .provider_sequence
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| ProviderError::Malformed("provider sequence exceeds i64".to_owned()))?;
+        let record = self
+            .store
+            .record_stream_event(
+                &self.run_id,
+                &self.task_id,
+                self.task_attempt,
+                Some(&self.effect_id),
+                &event_type,
+                provider_sequence,
+                &payload,
+                truncated,
+                self.clock.now(),
+            )
+            .map_err(|error| {
+                ProviderError::Malformed(format!("failed to persist stream event: {error}"))
+            })?;
+        if let Some(observer) = &self.observer {
+            observer.record(&record);
+        }
+        Ok(())
+    }
+}
+
+fn bounded_stream_payload(payload: &Value) -> Result<(Value, bool), ProviderError> {
+    let payload = redact(payload, &[]);
+    let serialized = serde_json::to_vec(&payload)
+        .map_err(|error| ProviderError::Malformed(error.to_string()))?;
+    if serialized.len() <= MAX_STREAM_EVENT_PAYLOAD_BYTES {
+        return Ok((payload, false));
+    }
+    Ok((
+        serde_json::json!({
+            "truncated": true,
+            "originalBytes": serialized.len(),
+            "sha256": digest(&serialized),
+        }),
+        true,
+    ))
 }
 
 enum TaskExecution {
@@ -6800,6 +6940,150 @@ mod tests {
                 },
                 finish_reason: FinishReason::Complete,
             })
+        }
+    }
+
+    struct BurstyStreamingProvider;
+
+    #[async_trait]
+    impl ModelProvider for BurstyStreamingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            Err(ProviderError::Malformed(
+                "non-streaming completion was unexpectedly selected".to_owned(),
+            ))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _request: &ProviderRequest,
+            sink: &dyn ProviderStreamSink,
+            cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            for sequence in 0..300_u64 {
+                if cancellation.is_cancelled() {
+                    return Err(ProviderError::Cancelled);
+                }
+                let payload = match sequence {
+                    0 => serde_json::json!({"token": "must-redact", "delta": "start"}),
+                    1 => {
+                        serde_json::json!({"delta": "x".repeat(MAX_STREAM_EVENT_PAYLOAD_BYTES + 1)})
+                    }
+                    _ => serde_json::json!({"delta": format!("fragment-{sequence}")}),
+                };
+                sink.emit(ProviderStreamEvent {
+                    event_type: "response.output_text.delta".to_owned(),
+                    provider_sequence: Some(sequence),
+                    payload,
+                })
+                .await?;
+            }
+            Ok(ProviderResponse {
+                response_id: Some("stream-response".to_owned()),
+                text: r#"{"answer":"done"}"#.to_owned(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text {
+                    text: r#"{"answer":"done"}"#.to_owned(),
+                }],
+                continuation: None,
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    ..Usage::default()
+                },
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct InterruptedStreamingProvider(AtomicUsize);
+
+    #[async_trait]
+    impl ModelProvider for InterruptedStreamingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            unreachable!("streaming completion is required")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _request: &ProviderRequest,
+            sink: &dyn ProviderStreamSink,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            sink.emit(ProviderStreamEvent {
+                event_type: "response.output_text.delta".to_owned(),
+                provider_sequence: Some(1),
+                payload: serde_json::json!({"delta": "partial"}),
+            })
+            .await?;
+            Err(ProviderError::Malformed(
+                "stream ended before a terminal response event".to_owned(),
+            ))
+        }
+    }
+
+    #[derive(Default)]
+    struct WaitingStreamingProvider {
+        started: AtomicUsize,
+        notify: Notify,
+    }
+
+    #[async_trait]
+    impl ModelProvider for WaitingStreamingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            unreachable!("streaming completion is required")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _request: &ProviderRequest,
+            sink: &dyn ProviderStreamSink,
+            cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            sink.emit(ProviderStreamEvent {
+                event_type: "response.output_text.delta".to_owned(),
+                provider_sequence: Some(1),
+                payload: serde_json::json!({"delta": "accepted-before-cancel"}),
+            })
+            .await?;
+            self.started.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            cancellation.cancelled().await;
+            Err(ProviderError::Cancelled)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordedStreamSink(Mutex<Vec<StreamEventRecord>>);
+
+    impl StreamEventSink for RecordedStreamSink {
+        fn record(&self, event: &StreamEventRecord) {
+            self.0.lock().expect("stream sink").push(event.clone());
         }
     }
 
@@ -11412,6 +11696,188 @@ spec:
     }
 
     #[tokio::test]
+    async fn streaming_is_bounded_redacted_validated_and_copied_by_replay() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let observer = Arc::new(RecordedStreamSink::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(
+                RuntimeRegistry::default().with_provider("fake", Arc::new(BurstyStreamingProvider)),
+            )
+            .with_stream_event_sink(observer.clone());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: bounded-stream }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    answer:
+      provider: fake
+      model: scripted
+      instructions: answer
+      stream: true
+      maxTurns: 1
+      structuredOutput:
+        type: object
+        properties: { answer: { type: string } }
+        required: [answer]
+        additionalProperties: false
+  tasks:
+    - { id: answer, uses: "agent:answer", with: { prompt: hello } }
+"#,
+        );
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("streamed run");
+        assert_eq!(
+            outcome.output.as_ref().expect("output")["answer"]["answer"],
+            "done"
+        );
+        let events = store.stream_events(&outcome.run_id).expect("events");
+        assert_eq!(events.len(), MAX_STREAM_EVENTS_PER_TASK_ATTEMPT);
+        assert_eq!(events[0].sequence, 1);
+        assert_eq!(events[0].payload["token"], "[REDACTED]");
+        assert!(events[1].truncated);
+        assert_eq!(events[1].payload["truncated"], true);
+        assert_eq!(
+            events.last().expect("last event").event_type,
+            "stream.truncated"
+        );
+        assert_eq!(
+            observer.0.lock().expect("observed").len(),
+            MAX_STREAM_EVENTS_PER_TASK_ATTEMPT
+        );
+
+        let replay = runtime.replay(&outcome.run_id).await.expect("replay");
+        let replay_events = store.stream_events(&replay.run_id).expect("replay events");
+        assert_eq!(replay_events.len(), events.len());
+        assert!(
+            replay_events
+                .iter()
+                .all(|event| event.source_run_id.as_deref() == Some(outcome.run_id.as_str()))
+        );
+        assert!(
+            store
+                .list_effects(&replay.run_id)
+                .expect("effects")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_stream_is_uncertain_and_never_reconnected() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(InterruptedStreamingProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: interrupted-stream }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    answer:
+      provider: fake
+      model: scripted
+      instructions: answer
+      stream: true
+      maxTurns: 1
+      retry: { maxAttempts: 3 }
+  tasks:
+    - { id: answer, uses: "agent:answer", with: { prompt: hello } }
+"#,
+        );
+        let run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected interrupted stream failure, got {other:?}"),
+        };
+        assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        assert_eq!(store.stream_events(&run_id).expect("events").len(), 1);
+        let effects = store.list_effects(&run_id).expect("effects");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].status, EffectStatus::Uncertain);
+    }
+
+    #[tokio::test]
+    async fn streaming_cancellation_preserves_accepted_events() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(WaitingStreamingProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: cancelled-stream }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    answer:
+      provider: fake
+      model: scripted
+      instructions: answer
+      stream: true
+      maxTurns: 1
+  tasks:
+    - { id: answer, uses: "agent:answer", with: { prompt: hello } }
+"#,
+        );
+        let cancellation = CancellationToken::new();
+        let run_cancellation = cancellation.clone();
+        let handle = tokio::spawn(async move {
+            runtime
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &run_cancellation,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while provider.started.load(Ordering::SeqCst) != 1 {
+                provider.notify.notified().await;
+            }
+        })
+        .await
+        .expect("stream started");
+        cancellation.cancel();
+        let outcome = handle.await.expect("join").expect("cancelled run");
+        assert_eq!(outcome.state, RunState::Cancelled);
+        assert_eq!(
+            store.stream_events(&outcome.run_id).expect("events").len(),
+            1
+        );
+        assert_eq!(
+            store.list_effects(&outcome.run_id).expect("effects")[0].status,
+            EffectStatus::Uncertain
+        );
+    }
+
+    #[tokio::test]
     async fn recorded_replay_never_calls_provider_or_tool_executor() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
@@ -12083,6 +12549,7 @@ spec:
                    UNION ALL SELECT error FROM effects WHERE error IS NOT NULL
                    UNION ALL SELECT state_json FROM checkpoints
                    UNION ALL SELECT payload_json FROM audit_events
+                   UNION ALL SELECT payload_json FROM stream_events
                    UNION ALL SELECT event_json FROM trace_events
                  ) WHERE instr(value, ?1) > 0",
                 [secret],

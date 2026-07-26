@@ -37,3 +37,7 @@ and source-linked compensation are additive. A public registry is an explicit
 non-goal. Free-form teams migrate to explicit bounded role tasks and typed
 handoff tasks. Safe remote continuation remains tracked in the limitation
 burn-down until its product path is verified.
+
+Bounded provider streaming is additive. Existing agents default to
+`stream: false`, final JSON remains one document, and JSONL uses the existing
+versioned envelope. Stream transport loss never weakens at-most-once recovery.

@@ -14,7 +14,11 @@ Hosted workflows now target Linux x64, macOS arm64, and Windows x64; build the L
 
 The reopened audit found that the earlier provider-only smoke did not substantiate runtime production readiness. It also found concrete implementation gaps: packaged YAML tools were not registered; declared outputs could not read workflow inputs; traces and provider/tool continuation evidence were not durable/publicly inspectable; non-interactive approvals did not durably pause; SIGTERM and in-flight provider cancellation were misclassified; resume/fork lost the original workspace; missing credentials created partial database state; provider options could be ignored; ambiguous transport failures could be retried; function-call IDs were treated as globally unique; and the repository had no user-journey, cron, or OCI acceptance layer.
 
-All release-blocking gaps above were fixed and covered by focused regression or public-CLI acceptance scenarios. Unsupported OpenAI streaming and programmatic tool calling now fail compilation rather than implying support.
+All release-blocking gaps above were fixed and covered by focused regression
+or public-CLI acceptance scenarios. At this audit boundary, OpenAI streaming
+and programmatic tool calling failed compilation rather than implying support.
+The later framework-completeness program adds bounded durable streaming;
+programmatic tool calling remains rejected.
 
 ## Repository-owned gates
 

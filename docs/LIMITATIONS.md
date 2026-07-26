@@ -8,7 +8,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 ## Required hardening completed for this release
 
-- Provider-specific options are allowlisted, type-checked, included in plan capability negotiation, and either mapped or rejected. Streaming and programmatic tool calling are rejected rather than ignored.
+- Provider-specific options are allowlisted, type-checked, included in plan capability negotiation, and either mapped or rejected. Streaming is explicit and capability-checked; programmatic tool calling is rejected rather than ignored.
 - Tool input/output schemas are strict; built-in tool kinds have compiler-checked capability/effect/idempotency contracts.
 - Provider calls, function-call IDs/results, continuations, effects, checkpoints, audit events, and redacted trace events are durable and publicly inspectable.
 - Timeout/transport ambiguity is not automatically retried; confirmed effects survive resume; call IDs are scoped by run; missing credentials fail before run/database creation.
@@ -23,7 +23,6 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These are useful extensions but are not required by the product thesis. They need new deterministic state and compatibility contracts before implementation:
 
-- model token streaming into CLI/workflow state;
 - opt-in MCP reconnection and A2A resubmission with explicit remote reconciliation;
 - pack dependency resolution, pack lockfiles, remote fetching, publisher signatures, and a versioned plugin ABI;
 - vector memory;
@@ -62,6 +61,11 @@ These are useful extensions but are not required by the product thesis. They nee
   typed handoff tasks. A hidden `team:` conversation scheduler is rejected.
   Role tool visibility is fixed by each agent definition; workflow policy
   remains authoritative for every role.
+- Streaming is available for fake, OpenAI, and Azure OpenAI agents only.
+  Progress records are capped at 256 events per task attempt and 4 KiB per
+  payload. The OpenAI SSE transport is capped at 8 MiB. Transport loss is not
+  automatically reconnected or resubmitted, and final task output still
+  requires a terminal validated provider response.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.

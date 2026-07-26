@@ -17,7 +17,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 39;
+const ACCEPTANCE_SCENARIOS: usize = 40;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -110,10 +110,7 @@ pub fn run(root: &Path) -> Result<()> {
         2,
     )?;
 
-    scenario(
-        4,
-        "unsupported streaming and programmatic tool options fail explicitly",
-    );
+    scenario(4, "unsupported provider options fail explicitly");
     for (name, option) in [
         ("stream", "stream: true"),
         ("ptc", "programmaticToolCalling: true"),
@@ -1822,6 +1819,123 @@ pub fn run(root: &Path) -> Result<()> {
     let handoff_replay_id = string_at(&handoff_replay, "/data/runId")?;
     let handoff_replay_inspect = inspect(&binary, root, &handoff_db, handoff_replay_id)?;
     ensure!(array_len(&handoff_replay_inspect, "/data/effects")? == 0);
+
+    scenario(
+        40,
+        "packaged CLI persists and replays bounded human and JSONL streams",
+    );
+    let streaming = root.join("examples/v1/streaming.yaml");
+    let streaming_db = directory.path().join("streaming.db");
+    let streaming_run = successful_json(
+        &binary,
+        root,
+        &run_args(&streaming, &streaming_db, root, &[]),
+    )?;
+    ensure_eq(&streaming_run, "/data/output/result", "STREAM_COMPLETE")?;
+    let streaming_run_id = string_at(&streaming_run, "/data/runId")?;
+    let streaming_inspect = inspect(&binary, root, &streaming_db, streaming_run_id)?;
+    ensure!(array_len(&streaming_inspect, "/data/streamEvents")? >= 3);
+
+    let jsonl_db = directory.path().join("streaming-jsonl.db");
+    let jsonl_output = output_with_code(
+        command_for(
+            &binary,
+            root,
+            &strings([
+                "run",
+                path(&streaming)?,
+                "--db",
+                path(&jsonl_db)?,
+                "--workspace",
+                path(root)?,
+                "--output",
+                "jsonl",
+                "--color",
+                "never",
+            ]),
+        ),
+        0,
+        "agentctl streaming JSONL",
+    )?;
+    ensure!(
+        jsonl_output.stderr.iter().all(u8::is_ascii_whitespace),
+        "JSONL streaming wrote unexpected stderr: {}",
+        String::from_utf8_lossy(&jsonl_output.stderr)
+    );
+    let jsonl = String::from_utf8(jsonl_output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(jsonl.len() >= 4, "JSONL stream did not include progress");
+    ensure!(
+        jsonl[..jsonl.len() - 1]
+            .iter()
+            .all(|line| line["kind"] == "StreamEvent")
+    );
+    ensure_eq(
+        jsonl.last().context("JSONL final line")?,
+        "/kind",
+        "RunOutcome",
+    )?;
+    let jsonl_run_id = string_at(jsonl.last().context("JSONL final line")?, "/data/runId")?;
+    let replay_output = output_with_code(
+        command_for(
+            &binary,
+            root,
+            &strings([
+                "replay",
+                jsonl_run_id,
+                "--db",
+                path(&jsonl_db)?,
+                "--output",
+                "jsonl",
+                "--color",
+                "never",
+            ]),
+        ),
+        0,
+        "agentctl streaming replay JSONL",
+    )?;
+    let replay_jsonl = String::from_utf8(replay_output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(replay_jsonl[..replay_jsonl.len() - 1].iter().all(|line| {
+        line["kind"] == "StreamEvent"
+            && line.pointer("/data/sourceRunId").and_then(Value::as_str) == Some(jsonl_run_id)
+    }));
+    let replay_run_id = string_at(
+        replay_jsonl.last().context("replay JSONL final line")?,
+        "/data/runId",
+    )?;
+    let replay_inspect = inspect(&binary, root, &jsonl_db, replay_run_id)?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+
+    let human_db = directory.path().join("streaming-human.db");
+    let human_output = output_with_code(
+        command_for(
+            &binary,
+            root,
+            &strings([
+                "run",
+                path(&streaming)?,
+                "--db",
+                path(&human_db)?,
+                "--workspace",
+                path(root)?,
+                "--output",
+                "human",
+                "--color",
+                "never",
+            ]),
+        ),
+        0,
+        "agentctl streaming human",
+    )?;
+    ensure!(
+        String::from_utf8_lossy(&human_output.stderr).contains("[stream stream"),
+        "human stream progress was not written to stderr"
+    );
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

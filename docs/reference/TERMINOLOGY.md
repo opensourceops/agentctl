@@ -12,6 +12,7 @@ Use these terms consistently in workflows, documentation, issues, and reviews.
 | Handoff | A typed durable task output consumed by an explicitly dependent role task. |
 | Tool | A strict capability contract that an agent may request. |
 | Provider | A native model API adapter behind provider-neutral contracts. |
+| Stream event | One bounded, redacted provider progress record ordered within a task attempt. |
 | Effect | A durably identified operation that observes or changes state outside pure computation. |
 | Run | One durable execution, check, replay, repair, or fork record. |
 | Attempt | One bounded execution attempt for a task. |

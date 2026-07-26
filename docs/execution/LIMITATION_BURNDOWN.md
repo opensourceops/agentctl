@@ -50,7 +50,7 @@ complete, every entry must have exactly one final disposition:
 | SUB-001 | Sub-workflows | in progress | implemented |
 | COMP-001 | Compensation | verified | implemented |
 | TEAM-001 | Structured teams and handoffs | in progress | redesigned |
-| STR-001 | Streaming | open | implemented |
+| STR-001 | Streaming | in progress | implemented |
 | MCP-001 | MCP resilience | open | implemented |
 | A2A-001 | A2A resilience | open | implemented |
 | PACK-001 | Pack resolution and lockfiles | open | implemented |
@@ -413,11 +413,13 @@ complete, every entry must have exactly one final disposition:
 
 ### STR-001: End-to-end streaming
 
-- Current behavior: provider transports parse some SSE but workflow output is a
-  final document only.
-- User impact: long agent calls have no bounded progress stream.
-- Security or durability impact: unbounded deltas or mixed JSON output can leak
-  secrets and corrupt automation.
+- Current behavior: fake, OpenAI, and Azure OpenAI agents can emit bounded
+  durable provider progress while retaining normal final task output.
+- User impact: long supported-provider calls expose inspectable progress in
+  human or JSONL mode.
+- Security or durability impact: event and transport caps, redaction,
+  encrypted-capable storage, and final JSON isolation prevent unbounded deltas
+  from corrupting automation.
 - Product decision: add durable bounded stream events and explicit human or
   JSONL progress modes while retaining one final JSON document mode.
 - Required implementation: provider fragments, sequence numbers, persisted
@@ -429,7 +431,20 @@ complete, every entry must have exactly one final disposition:
 - Examples: streaming agent workflow.
 - Live evidence: one packaged OpenAI streaming run.
 - Documentation: stdout contracts and replay.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented with bounded live evidence pending. Provider
+  fragments cross an awaited persistence boundary with monotonic task-attempt
+  sequence numbers. SQLite schema 12 stores at most 256 events per task
+  attempt and 4 KiB per payload; OpenAI SSE is capped at 8 MiB. Cancellation
+  preserves accepted records. A dropped or malformed post-dispatch stream is
+  uncertain and is not reconnected or resubmitted automatically. Terminal
+  responses still pass ordinary finish-reason, usage, tool, structured-output,
+  and task-output validation. Human progress uses stderr, JSONL emits
+  versioned event envelopes plus the final outcome, and final JSON remains one
+  document. Recorded replay copies source-linked events and performs zero
+  effects. Focused provider/runtime tests and packaged CLI scenario 40 cover
+  fragmentation, bounds, redaction, inspection, output isolation, and replay.
+  The full local gate passes. Program state remains in progress until the
+  bounded live OpenAI streaming scenario executes.
 
 ## Remote protocols, packs, and memory
 

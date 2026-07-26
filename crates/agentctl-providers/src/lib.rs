@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use agentctl_core::dsl::{ReasoningEffort, SecretReference};
 use agentctl_core::provider::{
     ContentBlock, ContinuationState, FinishReason, Message, ModelProvider, ProviderError,
-    ProviderRequest, ProviderResponse, ToolCall, Usage,
+    ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderStreamSink, ToolCall, Usage,
 };
 use agentctl_core::secret::{SecretSourceResolver, SecretValue};
 use async_trait::async_trait;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PROVIDER_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct HttpProviderConfig {
@@ -150,6 +151,55 @@ impl ModelProvider for OpenAiProvider {
         }
         let secrets = configured_secrets(&credential, &self.config.headers);
         let response = send(http, cancellation, &secrets).await?;
+        parse_openai(response)
+    }
+
+    async fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        sink: &dyn ProviderStreamSink,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let credential = load_credential(&self.config, cancellation).await?;
+        let endpoint = if self.azure {
+            let separator = if self.config.endpoint.contains('?') {
+                '&'
+            } else {
+                '?'
+            };
+            format!(
+                "{}{separator}api-version={}",
+                self.config.endpoint.trim_end_matches('/'),
+                self.config.api_version.as_deref().unwrap_or("v1")
+            )
+        } else {
+            self.config.endpoint.clone()
+        };
+        let mut body = openai_request(request)?;
+        body.as_object_mut()
+            .expect("OpenAI request is always an object")
+            .insert("stream".to_owned(), Value::Bool(true));
+        let mut http = self
+            .client
+            .post(endpoint)
+            .header("Accept", "text/event-stream")
+            .json(&body);
+        for (name, value) in &self.config.headers {
+            http = http.header(name, value.expose());
+        }
+        http = if self.azure {
+            http.header("api-key", credential.expose())
+        } else {
+            http.bearer_auth(credential.expose())
+        };
+        if let Some(organization) = &self.config.organization {
+            http = http.header("OpenAI-Organization", organization);
+        }
+        if let Some(project) = &self.config.project {
+            http = http.header("OpenAI-Project", project);
+        }
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send_openai_stream(http, sink, cancellation, &secrets).await?;
         parse_openai(response)
     }
 }
@@ -1012,6 +1062,217 @@ impl ModelProvider for FakeProvider {
             finish_reason: FinishReason::Complete,
         })
     }
+
+    async fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        sink: &dyn ProviderStreamSink,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderError> {
+        sink.emit(ProviderStreamEvent {
+            event_type: "response.created".to_owned(),
+            provider_sequence: Some(0),
+            payload: serde_json::json!({"responseId": "fake-response", "status": "in_progress"}),
+        })
+        .await?;
+        let response = self.complete(request, cancellation).await?;
+        let characters = response.text.chars().collect::<Vec<_>>();
+        for (index, chunk) in characters.chunks(8).enumerate() {
+            let delta = chunk.iter().collect::<String>();
+            sink.emit(ProviderStreamEvent {
+                event_type: "response.output_text.delta".to_owned(),
+                provider_sequence: Some(u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1)),
+                payload: serde_json::json!({"delta": delta}),
+            })
+            .await?;
+        }
+        sink.emit(ProviderStreamEvent {
+            event_type: "response.completed".to_owned(),
+            provider_sequence: None,
+            payload: serde_json::json!({
+                "responseId": response.response_id,
+                "status": "completed",
+                "finishReason": response.finish_reason,
+            }),
+        })
+        .await?;
+        Ok(response)
+    }
+}
+
+async fn send_openai_stream(
+    request: reqwest::RequestBuilder,
+    sink: &dyn ProviderStreamSink,
+    cancellation: &CancellationToken,
+    secrets: &[&str],
+) -> Result<Value, ProviderError> {
+    let response = tokio::select! {
+        response = request.send() => response.map_err(normalize_transport)?,
+        () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+    };
+    let status = response.status();
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .or_else(|| response.headers().get("request-id"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unavailable");
+    let mut request_id = redact_text(request_id, secrets);
+    request_id.truncate(512);
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let mut received = 0_usize;
+    let mut terminal = None;
+    loop {
+        let next = tokio::select! {
+            next = stream.next() => next,
+            () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+        };
+        let Some(chunk) = next else { break };
+        let chunk = chunk.map_err(normalize_transport)?;
+        received = received.saturating_add(chunk.len());
+        if received > MAX_PROVIDER_STREAM_BYTES {
+            return Err(ProviderError::Malformed(format!(
+                "stream exceeds {MAX_PROVIDER_STREAM_BYTES} bytes"
+            )));
+        }
+        buffer.extend_from_slice(&chunk);
+        for value in drain_sse_events(&mut buffer)? {
+            let event_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ProviderError::Malformed("stream event is missing `type`".to_owned())
+                })?
+                .to_owned();
+            let provider_sequence = value.get("sequence_number").and_then(Value::as_u64);
+            let mut safe = value.clone();
+            redact_value(&mut safe, secrets);
+            let payload = stream_event_payload(&event_type, &safe);
+            sink.emit(ProviderStreamEvent {
+                event_type: event_type.clone(),
+                provider_sequence,
+                payload,
+            })
+            .await?;
+            match event_type.as_str() {
+                "response.completed" | "response.incomplete" => {
+                    terminal = safe.get("response").cloned();
+                }
+                "response.failed" | "error" => {
+                    let message = value
+                        .pointer("/response/error/message")
+                        .or_else(|| value.pointer("/error/message"))
+                        .or_else(|| value.get("message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("OpenAI streaming response failed");
+                    let mut message = redact_text(message, secrets);
+                    message.truncate(512);
+                    return Err(ProviderError::Http {
+                        status: status.as_u16(),
+                        message,
+                        request_id,
+                        retryable: false,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    if !status.is_success() {
+        let mut body: Value = serde_json::from_slice(&buffer)
+            .unwrap_or_else(|_| serde_json::json!({"message": "provider request failed"}));
+        redact_value(&mut body, secrets);
+        let message = body
+            .pointer("/error/message")
+            .or_else(|| body.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("provider request failed");
+        let mut message = redact_text(message, secrets);
+        message.truncate(512);
+        return Err(ProviderError::Http {
+            status: status.as_u16(),
+            message,
+            request_id,
+            retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+        });
+    }
+    if !content_type.starts_with("text/event-stream") {
+        return Err(ProviderError::Malformed(format!(
+            "streaming response used unexpected content type `{content_type}`"
+        )));
+    }
+    if !buffer.iter().all(u8::is_ascii_whitespace) {
+        return Err(ProviderError::Malformed(
+            "stream ended with an incomplete SSE event".to_owned(),
+        ));
+    }
+    terminal.ok_or_else(|| {
+        ProviderError::Malformed("stream ended before a terminal response event".to_owned())
+    })
+}
+
+fn sse_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+    bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4))
+        .or_else(|| {
+            bytes
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|position| (position, 2))
+        })
+}
+
+fn drain_sse_events(buffer: &mut Vec<u8>) -> Result<Vec<Value>, ProviderError> {
+    let mut events = Vec::new();
+    while let Some((boundary, delimiter_length)) = sse_boundary(buffer) {
+        let frame = buffer.drain(..boundary).collect::<Vec<_>>();
+        buffer.drain(..delimiter_length);
+        if let Some(value) = parse_sse_frame(&frame)? {
+            events.push(value);
+        }
+    }
+    Ok(events)
+}
+
+fn parse_sse_frame(frame: &[u8]) -> Result<Option<Value>, ProviderError> {
+    let text = std::str::from_utf8(frame)
+        .map_err(|error| ProviderError::Malformed(format!("SSE UTF-8: {error}")))?;
+    let data = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if data.is_empty() || data == "[DONE]" {
+        return Ok(None);
+    }
+    serde_json::from_str(&data)
+        .map(Some)
+        .map_err(|error| ProviderError::Malformed(format!("SSE data: {error}")))
+}
+
+fn stream_event_payload(event_type: &str, event: &Value) -> Value {
+    match event_type {
+        "response.created"
+        | "response.in_progress"
+        | "response.completed"
+        | "response.incomplete"
+        | "response.failed" => serde_json::json!({
+            "responseId": event.pointer("/response/id"),
+            "status": event.pointer("/response/status"),
+            "error": event.pointer("/response/error"),
+        }),
+        _ => event.clone(),
+    }
 }
 
 async fn send(
@@ -1192,6 +1453,20 @@ mod tests {
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    #[derive(Default)]
+    struct RecordingStreamSink(Mutex<Vec<ProviderStreamEvent>>);
+
+    #[async_trait]
+    impl ProviderStreamSink for RecordingStreamSink {
+        async fn emit(&self, event: ProviderStreamEvent) -> Result<(), ProviderError> {
+            self.0
+                .lock()
+                .map_err(|_| ProviderError::Malformed("recording sink poisoned".to_owned()))?
+                .push(event);
+            Ok(())
+        }
+    }
+
     fn request() -> ProviderRequest {
         ProviderRequest {
             model: "test-model".to_owned(),
@@ -1334,6 +1609,75 @@ mod tests {
         assert_eq!(response.usage.cache_read_tokens, 3);
         assert_eq!(response.usage.cache_write_tokens, 5);
         assert_eq!(response.usage.reasoning_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn openai_streams_typed_sse_and_returns_the_terminal_response() {
+        let server = MockServer::start().await;
+        let mut expected = openai_request(&request()).expect("request mapping");
+        expected["stream"] = Value::Bool(true);
+        let response = serde_json::json!({
+            "id": "resp_stream",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "hello"}]
+            }],
+            "usage": {"input_tokens": 2, "output_tokens": 1}
+        });
+        let body = format!(
+            "event: response.created\r\ndata: {}\r\n\r\nevent: response.output_text.delta\r\ndata: {}\r\n\r\nevent: response.completed\r\ndata: {}\r\n\r\n",
+            serde_json::json!({
+                "type": "response.created",
+                "sequence_number": 0,
+                "response": {"id": "resp_stream", "status": "in_progress"}
+            }),
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "delta": "hello"
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "sequence_number": 2,
+                "response": response
+            }),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("accept", "text/event-stream"))
+            .and(body_json(expected))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        let sink = RecordingStreamSink::default();
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete_streaming(&request(), &sink, &CancellationToken::new())
+            .await
+            .expect("stream response");
+
+        assert_eq!(response.text, "hello");
+        let events = sink.0.lock().expect("events");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[1].event_type, "response.output_text.delta");
+        assert_eq!(events[1].payload["delta"], "hello");
+        assert_eq!(events[2].payload["responseId"], "resp_stream");
+    }
+
+    #[test]
+    fn fragmented_sse_frames_wait_for_a_complete_boundary() {
+        let mut buffer =
+            b"event: response.output_text.delta\ndata: {\"type\":\"response.output".to_vec();
+        assert!(drain_sse_events(&mut buffer).expect("partial").is_empty());
+        buffer.extend_from_slice(b"_text.delta\",\"delta\":\"ok\"}\n\n");
+        let events = drain_sse_events(&mut buffer).expect("complete");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["delta"], "ok");
+        assert!(buffer.is_empty());
     }
 
     #[tokio::test]

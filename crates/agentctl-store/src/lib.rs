@@ -25,10 +25,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 11;
+pub const DATABASE_SCHEMA_VERSION: u32 = 12;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
+pub const STREAM_EVENT_FORMAT_VERSION: u32 = 1;
 const ARTIFACT_INGEST_LEASE_MINUTES: i64 = 60;
 
 const MIGRATION_1: &str = r#"
@@ -320,6 +321,28 @@ CREATE TABLE state_encryption (
 
 const MIGRATION_11: &str = r#"
 ALTER TABLE task_states ADD COLUMN execution_memory_json TEXT;
+"#;
+
+const MIGRATION_12: &str = r#"
+CREATE TABLE stream_events (
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  task_attempt INTEGER NOT NULL,
+  sequence INTEGER NOT NULL,
+  format_version INTEGER NOT NULL,
+  effect_id TEXT,
+  event_type TEXT NOT NULL,
+  provider_sequence INTEGER,
+  payload_json TEXT NOT NULL,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  source_run_id TEXT,
+  source_sequence INTEGER,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, task_id, task_attempt, sequence),
+  FOREIGN KEY (run_id, task_id) REFERENCES task_states(run_id, task_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_stream_events_run
+  ON stream_events(run_id, task_id, task_attempt, sequence);
 "#;
 
 #[derive(Clone)]
@@ -649,6 +672,23 @@ pub struct ProviderSessionRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StreamEventRecord {
+    pub run_id: String,
+    pub task_id: String,
+    pub task_attempt: u16,
+    pub sequence: i64,
+    pub effect_id: Option<String>,
+    pub event_type: String,
+    pub provider_sequence: Option<i64>,
+    pub payload: Value,
+    pub truncated: bool,
+    pub source_run_id: Option<String>,
+    pub source_sequence: Option<i64>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolCallRecord {
     pub call_id: String,
     pub task_id: String,
@@ -681,6 +721,7 @@ pub struct DatabaseStats {
     pub checkpoints: i64,
     pub audit_events: i64,
     pub provider_sessions: i64,
+    pub stream_events: i64,
     pub tool_calls: i64,
     pub trace_events: i64,
     pub long_term_memory: i64,
@@ -3169,6 +3210,172 @@ impl SqliteStore {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_stream_event(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        task_attempt: u16,
+        effect_id: Option<&str>,
+        event_type: &str,
+        provider_sequence: Option<i64>,
+        payload: &Value,
+        truncated: bool,
+        now: DateTime<Utc>,
+    ) -> Result<StreamEventRecord, StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sequence: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM stream_events
+             WHERE run_id = ?1 AND task_id = ?2 AND task_attempt = ?3",
+            params![run_id, task_id, task_attempt],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "INSERT INTO stream_events
+             (run_id, task_id, task_attempt, sequence, format_version, effect_id, event_type, provider_sequence, payload_json, truncated, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                run_id,
+                task_id,
+                task_attempt,
+                sequence,
+                STREAM_EVENT_FORMAT_VERSION,
+                effect_id,
+                event_type,
+                provider_sequence,
+                encode_protected(&self.protection, payload, "stream_events.payload_json")?,
+                truncated,
+                now.to_rfc3339(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(StreamEventRecord {
+            run_id: run_id.to_owned(),
+            task_id: task_id.to_owned(),
+            task_attempt,
+            sequence,
+            effect_id: effect_id.map(ToOwned::to_owned),
+            event_type: event_type.to_owned(),
+            provider_sequence,
+            payload: payload.clone(),
+            truncated,
+            source_run_id: None,
+            source_sequence: None,
+            created_at: now,
+        })
+    }
+
+    pub fn stream_events(&self, run_id: &str) -> Result<Vec<StreamEventRecord>, StoreError> {
+        let connection = self.connection.lock();
+        let mut statement = connection.prepare(
+            "SELECT s.task_id, s.task_attempt, s.sequence, s.format_version,
+                    s.effect_id, s.event_type, s.provider_sequence, s.payload_json,
+                    s.truncated, s.source_run_id, s.source_sequence, s.created_at
+             FROM stream_events s
+             JOIN task_states t ON t.run_id = s.run_id AND t.task_id = s.task_id
+             WHERE s.run_id = ?1
+             ORDER BY t.position, s.task_attempt, s.sequence",
+        )?;
+        statement
+            .query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u16>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, u32>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, bool>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            })?
+            .map(|row| {
+                let row = row?;
+                if row.3 != STREAM_EVENT_FORMAT_VERSION {
+                    return Err(StoreError::Incompatible(format!(
+                        "stream event format version {}",
+                        row.3
+                    )));
+                }
+                Ok(StreamEventRecord {
+                    run_id: run_id.to_owned(),
+                    task_id: row.0,
+                    task_attempt: row.1,
+                    sequence: row.2,
+                    effect_id: row.4,
+                    event_type: row.5,
+                    provider_sequence: row.6,
+                    payload: decode_protected(
+                        &self.protection,
+                        &row.7,
+                        "stream_events.payload_json",
+                    )?,
+                    truncated: row.8,
+                    source_run_id: row.9,
+                    source_sequence: row.10,
+                    created_at: parse_time(&row.11, "stream_event.created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn copy_stream_events_for_replay(
+        &self,
+        replay_run_id: &str,
+        source_run_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<StreamEventRecord>, StoreError> {
+        let source = self.stream_events(source_run_id)?;
+        let attempts = self
+            .list_tasks(replay_run_id)?
+            .into_iter()
+            .map(|task| (task.task_id, task.attempt))
+            .collect::<BTreeMap<_, _>>();
+        let mut copied = Vec::with_capacity(source.len());
+        for event in source {
+            let task_attempt =
+                attempts
+                    .get(&event.task_id)
+                    .copied()
+                    .ok_or_else(|| StoreError::TaskNotFound {
+                        run_id: replay_run_id.to_owned(),
+                        task_id: event.task_id.clone(),
+                    })?;
+            let mut record = self.record_stream_event(
+                replay_run_id,
+                &event.task_id,
+                task_attempt,
+                None,
+                &event.event_type,
+                event.provider_sequence,
+                &event.payload,
+                event.truncated,
+                now,
+            )?;
+            self.connection.lock().execute(
+                "UPDATE stream_events SET source_run_id = ?5, source_sequence = ?6
+                 WHERE run_id = ?1 AND task_id = ?2 AND task_attempt = ?3 AND sequence = ?4",
+                params![
+                    replay_run_id,
+                    record.task_id,
+                    record.task_attempt,
+                    record.sequence,
+                    source_run_id,
+                    event.sequence,
+                ],
+            )?;
+            record.source_run_id = Some(source_run_id.to_owned());
+            record.source_sequence = Some(event.sequence);
+            copied.push(record);
+        }
+        Ok(copied)
+    }
+
     pub fn list_effects(&self, run_id: &str) -> Result<Vec<EffectRecord>, StoreError> {
         let ids = {
             let connection = self.connection.lock();
@@ -3854,6 +4061,7 @@ impl SqliteStore {
                 "checkpoints",
                 "audit_events",
                 "provider_sessions",
+                "stream_events",
                 "tool_calls",
                 "trace_events",
                 "long_term_memory",
@@ -3885,6 +4093,7 @@ impl SqliteStore {
             checkpoints: count("checkpoints")?,
             audit_events: count("audit_events")?,
             provider_sessions: count("provider_sessions")?,
+            stream_events: count("stream_events")?,
             tool_calls: count("tool_calls")?,
             trace_events: count("trace_events")?,
             long_term_memory: count("long_term_memory")?,
@@ -4059,6 +4268,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (9_u32, MIGRATION_9),
         (10_u32, MIGRATION_10),
         (11_u32, MIGRATION_11),
+        (12_u32, MIGRATION_12),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -4741,6 +4951,7 @@ spec:
             MIGRATION_8,
             MIGRATION_9,
             MIGRATION_10,
+            MIGRATION_11,
         ]
         .into_iter()
         .enumerate()

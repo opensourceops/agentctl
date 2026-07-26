@@ -407,6 +407,7 @@ fn verify_examples(root: &Path) -> Result<()> {
         "fake-provider.yaml",
         "reusable-pack.yaml",
         "structured-handoff.yaml",
+        "streaming.yaml",
     ] {
         let db = directory.path().join(format!("{name}.db"));
         run_binary(

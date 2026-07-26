@@ -12,7 +12,16 @@ agentctl run workflow.yaml --output json --color never
 
 The envelope version is `agentctl.dev/cli/v1` and includes `kind`, `ok`, `data`, and `diagnostics`. A successful run includes run ID, trace ID, terminal state, and declared output. A failure writes a versioned error envelope to stderr, with run and trace correlation when a run exists.
 
-JSONL progress output is not implemented in this release. Event-level information remains available in durable audit and trace records.
+JSONL mode emits one versioned envelope per durable provider stream event,
+followed by one final outcome envelope:
+
+```text
+agentctl run workflow.yaml --output jsonl --color never
+```
+
+Human mode writes provider progress to stderr. JSON mode never renders progress
+and remains exactly one final document. All modes persist the same bounded
+records for `agentctl inspect`.
 
 ## Exit codes
 

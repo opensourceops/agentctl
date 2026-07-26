@@ -183,6 +183,7 @@ pub enum ProviderCapability {
     PromptCaching,
     MultipleFunctionCalls,
     ResponseStorage,
+    Streaming,
 }
 
 impl ProviderCapability {
@@ -202,6 +203,7 @@ impl ProviderCapability {
             Self::PromptCaching => "prompt_caching",
             Self::MultipleFunctionCalls => "multiple_function_calls",
             Self::ResponseStorage => "response_storage",
+            Self::Streaming => "streaming",
         }
     }
 }
@@ -2159,6 +2161,9 @@ fn validate_agents(workflow: &Workflow, file: &str, diagnostics: &mut Vec<Diagno
         if agent.provider_options.contains_key("store") {
             required.insert(ProviderCapability::ResponseStorage);
         }
+        if agent.stream {
+            required.insert(ProviderCapability::Streaming);
+        }
         for tool in &agent.tools {
             if !workflow.spec.tools.contains_key(tool) {
                 diagnostics.push(
@@ -2435,7 +2440,12 @@ pub fn provider_capabilities(kind: ProviderKind) -> BTreeSet<ProviderCapability>
     let mut values = BTreeSet::from([C::Text, C::Usage, C::Cancellation]);
     match kind {
         ProviderKind::Fake => {
-            values.extend([C::FunctionTools, C::StructuredOutput, C::Continuation]);
+            values.extend([
+                C::FunctionTools,
+                C::StructuredOutput,
+                C::Continuation,
+                C::Streaming,
+            ]);
         }
         ProviderKind::Openai | ProviderKind::AzureOpenai => {
             values.extend([
@@ -2448,6 +2458,7 @@ pub fn provider_capabilities(kind: ProviderKind) -> BTreeSet<ProviderCapability>
                 C::PromptCaching,
                 C::MultipleFunctionCalls,
                 C::ResponseStorage,
+                C::Streaming,
             ]);
         }
         ProviderKind::Anthropic => {
@@ -3432,6 +3443,42 @@ spec:
             diagnostic.code == DiagnosticCode::UnsupportedCapability
                 && diagnostic.message.contains("explicit agent tasks")
                 && diagnostic.message.contains("typed handoff tasks")
+        }));
+    }
+
+    #[test]
+    fn streaming_is_explicit_and_provider_capability_checked() {
+        let fake = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: streaming }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: scripted
+      instructions: stream
+      stream: true
+  tasks: [{ id: work, uses: "agent:worker" }]
+"#,
+        );
+        let plan = compile(&fake, "fixture.yaml").expect("fake streaming compiles");
+        assert!(
+            plan.requirements.providers[0]
+                .capabilities
+                .contains(&"streaming".to_owned())
+        );
+
+        let anthropic = serde_yaml_ng::to_string(&fake)
+            .expect("serialize")
+            .replace("kind: fake", "kind: anthropic");
+        let diagnostics =
+            compile(&parse(&anthropic), "fixture.yaml").expect_err("capability rejected");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::UnsupportedCapability
+                && diagnostic.message.contains("streaming")
         }));
     }
 

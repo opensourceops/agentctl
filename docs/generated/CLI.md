@@ -38,7 +38,7 @@ Commands:
   update      Explain safe update options without modifying the installation
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -56,7 +56,7 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -73,7 +73,7 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -91,7 +91,7 @@ Arguments:
 
 Options:
       --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --inputs <INPUTS>
       --inputs-file <INPUTS_FILE>
@@ -117,7 +117,7 @@ Arguments:
 
 Options:
       --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --diff
       --interactive
@@ -139,7 +139,7 @@ Arguments:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -157,7 +157,7 @@ Arguments:
 
 Options:
       --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --interactive
       --diff
@@ -180,7 +180,7 @@ Arguments:
 
 Options:
       --from <FROM>
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --plan
       --restart-successful
@@ -207,7 +207,7 @@ Arguments:
 
 Options:
       --failed
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --from <FROM>
       --plan
@@ -233,7 +233,7 @@ Arguments:
   <SOURCE_RUN_ID>
 
 Options:
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --task <TASK>
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --plan
@@ -259,7 +259,7 @@ Commands:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -276,7 +276,7 @@ Arguments:
   <RUN_ID>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -294,7 +294,7 @@ Arguments:
 
 Options:
       --dry-run
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -312,7 +312,7 @@ Arguments:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -330,7 +330,7 @@ Arguments:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -350,7 +350,7 @@ Commands:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -365,7 +365,7 @@ Arguments:
   <RUN_ID>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --task <TASK>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
@@ -381,7 +381,7 @@ Arguments:
   <EFFECT_ID>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -397,7 +397,7 @@ Arguments:
 
 Options:
       --output <OUTPUT>
-          [default: human] [possible values: human, json]
+          [default: human] [possible values: human, json, jsonl]
       --status <STATUS>
           [possible values: applied, not-applied, compensated]
       --actor <ACTOR>
@@ -436,7 +436,7 @@ Commands:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -451,7 +451,7 @@ Arguments:
   <RUN_ID>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -467,7 +467,7 @@ Arguments:
 
 Options:
       --actor <ACTOR>    [default: cli-user]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --reason <REASON>
       --verbose
@@ -484,7 +484,7 @@ Arguments:
 
 Options:
       --actor <ACTOR>    [default: cli-user]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --reason <REASON>
       --verbose
@@ -503,7 +503,7 @@ Commands:
   smoke-openai
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -518,7 +518,7 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -531,7 +531,7 @@ Usage: agentctl providers smoke-openai [OPTIONS] --live
 
 Options:
       --live             Required acknowledgement that this performs one bounded live request
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --model <MODEL>    [default: gpt-5.6]
       --verbose
@@ -549,7 +549,7 @@ Commands:
   check
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -563,7 +563,7 @@ Print or write the generated workflow JSON Schema
 Usage: agentctl schema [OPTIONS]
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --write <WRITE>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
@@ -581,7 +581,7 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --write <WRITE>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
@@ -600,7 +600,7 @@ Commands:
   verify
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -622,7 +622,7 @@ Commands:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -634,7 +634,7 @@ Options:
 Usage: agentctl artifacts list [OPTIONS]
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --run <RUN>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --task <TASK>
@@ -651,7 +651,7 @@ Arguments:
   <DIGEST>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -667,7 +667,7 @@ Arguments:
 
 Options:
       --all
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -683,7 +683,7 @@ Arguments:
   <DESTINATION>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --overwrite
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
@@ -697,7 +697,7 @@ Usage: agentctl artifacts gc [OPTIONS]
 
 Options:
       --older-than-days <OLDER_THAN_DAYS>  [default: 30]
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --dry-run
       --verbose
@@ -718,7 +718,7 @@ Commands:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -735,7 +735,7 @@ Commands:
   rotate     Transactionally decrypt and re-encrypt every protected field with a new key
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -749,7 +749,7 @@ Inventory protected fields without exposing their values
 Usage: agentctl db encryption inventory [OPTIONS]
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -764,7 +764,7 @@ Usage: agentctl db encryption enable [OPTIONS] --key-id <KEY_ID> --key-env <KEY_
 
 Options:
       --key-id <KEY_ID>
-      --output <OUTPUT>    [default: human] [possible values: human, json]
+      --output <OUTPUT>    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>      [default: auto] [possible values: auto, always, never]
       --key-env <KEY_ENV>  Environment variable containing a base64-encoded 32-byte key
       --dry-run
@@ -781,7 +781,7 @@ Usage: agentctl db encryption rotate [OPTIONS] --key-id <KEY_ID> --key-env <KEY_
 
 Options:
       --key-id <KEY_ID>
-      --output <OUTPUT>    [default: human] [possible values: human, json]
+      --output <OUTPUT>    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>      [default: auto] [possible values: auto, always, never]
       --key-env <KEY_ENV>  Environment variable containing a base64-encoded 32-byte key
       --dry-run
@@ -802,7 +802,7 @@ Commands:
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -817,7 +817,7 @@ Usage: agentctl gc [OPTIONS]
 
 Options:
       --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json]
+      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
       --color <COLOR>                      [default: auto] [possible values: auto, always, never]
       --older-than-days <OLDER_THAN_DAYS>  [default: 30]
       --verbose
@@ -835,7 +835,7 @@ Arguments:
   <SHELL>  [possible values: bash, elvish, fish, powershell, zsh]
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -849,7 +849,7 @@ Print the exact build version
 Usage: agentctl version [OPTIONS]
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help
@@ -863,7 +863,7 @@ Explain safe update options without modifying the installation
 Usage: agentctl update [OPTIONS]
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
   -h, --help             Print help

@@ -76,6 +76,20 @@ pub struct ProviderResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStreamEvent {
+    pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_sequence: Option<u64>,
+    pub payload: Value,
+}
+
+#[async_trait]
+pub trait ProviderStreamSink: Send + Sync {
+    async fn emit(&self, event: ProviderStreamEvent) -> Result<(), ProviderError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum ContinuationState {
     OpenaiPreviousResponse(String),
@@ -132,4 +146,16 @@ pub trait ModelProvider: Send + Sync {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError>;
+
+    async fn complete_streaming(
+        &self,
+        _request: &ProviderRequest,
+        _sink: &dyn ProviderStreamSink,
+        _cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderError> {
+        Err(ProviderError::Unsupported(format!(
+            "{} does not support streaming",
+            self.name()
+        )))
+    }
 }

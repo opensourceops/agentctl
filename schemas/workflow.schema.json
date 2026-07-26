@@ -394,6 +394,10 @@
             }
           ]
         },
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
         "providerOptions": {
           "type": "object",
           "additionalProperties": true,

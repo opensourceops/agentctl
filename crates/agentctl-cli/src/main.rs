@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentctl_core::compiler::provider_capabilities;
@@ -21,9 +21,11 @@ use agentctl_providers::{
 use agentctl_runtime::secret::{SecretResolutionError, SecretResolver};
 use agentctl_runtime::{
     BuiltinToolExecutor, EffectReconciliationInput, RunOptions, Runtime, RuntimeRegistry,
+    StreamEventSink,
 };
 use agentctl_store::{
-    ApprovalResolution, ReconciliationStatus, RunMode, SqliteStore, StoreError, TaskDisposition,
+    ApprovalResolution, ReconciliationStatus, RunMode, SqliteStore, StoreError, StreamEventRecord,
+    TaskDisposition,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -43,6 +45,7 @@ const EXIT_CANCELLED: u8 = 130;
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 static VERBOSE_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
+static STREAM_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Parser)]
 #[command(
@@ -66,6 +69,7 @@ struct Cli {
 enum OutputFormat {
     Human,
     Json,
+    Jsonl,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -587,14 +591,14 @@ async fn main() {
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error)
-            if requested_output == OutputFormat::Json
+            if requested_output != OutputFormat::Human
                 && !matches!(
                     error.kind(),
                     clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
                 ) =>
         {
             let error = CliError::validation(error.to_string());
-            render_error(OutputFormat::Json, &error);
+            render_error(requested_output, &error);
             std::process::exit(i32::from(error.code));
         }
         Err(error) => error.exit(),
@@ -632,8 +636,11 @@ fn requested_output(args: &[OsString]) -> OutputFormat {
             args.iter()
                 .find_map(|arg| arg.to_str().and_then(|arg| arg.strip_prefix("--output=")))
         })
-        .filter(|value| *value == "json")
-        .map_or(OutputFormat::Human, |_| OutputFormat::Json)
+        .map_or(OutputFormat::Human, |value| match value {
+            "json" => OutputFormat::Json,
+            "jsonl" => OutputFormat::Jsonl,
+            _ => OutputFormat::Human,
+        })
 }
 
 async fn execute(cli: Cli) -> Result<u8, CliError> {
@@ -694,7 +701,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Resume(args) => resume_run(output, args).await,
         Command::Replay(args) => {
             let store = open_store(&args.db)?;
-            let runtime = Runtime::new(store, current_dir()?);
+            let runtime = runtime_for_output(output, store, current_dir()?);
             let outcome = runtime
                 .replay(&args.run_id)
                 .await
@@ -726,7 +733,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             )?;
             let cancellation = cancellation_token(args.timeout_seconds);
             let registry = build_registry(&workflow, &base, &cancellation, None).await?;
-            let runtime = Runtime::new(store, &base).with_registry(registry);
+            let runtime = runtime_for_output(output, store, &base).with_registry(registry);
             let outcome = runtime
                 .fork(
                     &args.run_id,
@@ -788,6 +795,9 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let tool_calls = store
                 .tool_calls(&args.run_id)
                 .map_err(CliError::persistence)?;
+            let stream_events = store
+                .stream_events(&args.run_id)
+                .map_err(CliError::persistence)?;
             let traces = store
                 .trace_events(&args.run_id)
                 .map_err(CliError::persistence)?;
@@ -795,11 +805,12 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 .artifact_references(Some(&args.run_id), None)
                 .map_err(CliError::persistence)?;
             let summary = format!(
-                "{} {:?}; {} tasks; {} effects; {} artifacts; {} checkpoints; {} audit events; {} traces",
+                "{} {:?}; {} tasks; {} effects; {} stream events; {} artifacts; {} checkpoints; {} audit events; {} traces",
                 args.run_id,
                 run.state,
                 tasks.len(),
                 effects.len(),
+                stream_events.len(),
                 artifacts.len(),
                 checkpoints.len(),
                 audit.len(),
@@ -836,6 +847,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 "approvals": approvals,
                 "checkpoints": checkpoints,
                 "providerSessions": provider_sessions,
+                "streamEvents": stream_events,
                 "toolCalls": tool_calls,
                 "artifacts": artifacts,
                 "audit": audit,
@@ -922,7 +934,7 @@ async fn run_workflow(output: OutputFormat, args: RunArgs) -> Result<u8, CliErro
     let cancellation = cancellation_token(args.timeout_seconds);
     let registry = build_registry(&workflow, &base, &cancellation, None).await?;
     let store = open_store(&args.db)?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .start(
             &workflow,
@@ -974,7 +986,7 @@ async fn resume_run(output: OutputFormat, args: ResumeArgs) -> Result<u8, CliErr
         .map(|task| task.task_id)
         .collect::<BTreeSet<_>>();
     let registry = build_registry(&workflow, &base, &cancellation, Some(&resume_tasks)).await?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .resume(
             &args.run_id,
@@ -1038,7 +1050,7 @@ async fn repair_workflow(output: OutputFormat, args: RepairArgs) -> Result<u8, C
     let cancellation = cancellation_token(args.timeout_seconds);
     let repair_tasks = plan.rerun_tasks.iter().cloned().collect::<BTreeSet<_>>();
     let registry = build_registry(&workflow, &base, &cancellation, Some(&repair_tasks)).await?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .repair(
             &workflow,
@@ -1132,7 +1144,7 @@ async fn retry_workflow(output: OutputFormat, args: RetryArgs) -> Result<u8, Cli
     let cancellation = cancellation_token(args.timeout_seconds);
     let retry_tasks = plan.rerun_tasks.iter().cloned().collect::<BTreeSet<_>>();
     let registry = build_registry(&workflow, &base, &cancellation, Some(&retry_tasks)).await?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .retry(
             &workflow,
@@ -1226,7 +1238,7 @@ async fn compensate_workflow(output: OutputFormat, args: CompensateArgs) -> Resu
     }
     let cancellation = cancellation_token(args.timeout_seconds);
     let registry = build_registry(&workflow, &base, &cancellation, None).await?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .compensate(
             plan,
@@ -2657,6 +2669,60 @@ fn write_text(path: &Path, content: &str) -> Result<(), CliError> {
         .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))
 }
 
+fn runtime_for_output(
+    output: OutputFormat,
+    store: SqliteStore,
+    base_path: impl Into<PathBuf>,
+) -> Runtime {
+    let runtime = Runtime::new(store, base_path);
+    match output {
+        OutputFormat::Human | OutputFormat::Jsonl => {
+            runtime.with_stream_event_sink(Arc::new(CliStreamEventSink { output }))
+        }
+        OutputFormat::Json => runtime,
+    }
+}
+
+struct CliStreamEventSink {
+    output: OutputFormat,
+}
+
+impl StreamEventSink for CliStreamEventSink {
+    fn record(&self, event: &StreamEventRecord) {
+        let _guard = STREAM_OUTPUT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match self.output {
+            OutputFormat::Human => {
+                if let Some(delta) = event.payload.get("delta").and_then(Value::as_str) {
+                    eprintln!(
+                        "[{} stream {}] {}",
+                        event.task_id,
+                        event.sequence,
+                        delta.escape_debug()
+                    );
+                } else {
+                    eprintln!(
+                        "[{} stream {}] {}",
+                        event.task_id, event.sequence, event.event_type
+                    );
+                }
+            }
+            OutputFormat::Jsonl => {
+                let value = serde_json::json!({
+                    "apiVersion": MACHINE_OUTPUT_VERSION,
+                    "kind": "StreamEvent",
+                    "ok": true,
+                    "data": event,
+                    "diagnostics": [],
+                });
+                println!("{value}");
+            }
+            OutputFormat::Json => {}
+        }
+    }
+}
+
 fn print_value<T: Serialize>(
     output: OutputFormat,
     kind: &'static str,
@@ -2679,7 +2745,7 @@ fn print_value<T: Serialize>(
                 );
             }
         }
-        OutputFormat::Json => println!(
+        OutputFormat::Json | OutputFormat::Jsonl => println!(
             "{}",
             serde_json::to_string(&Envelope {
                 api_version: MACHINE_OUTPUT_VERSION,
@@ -2719,7 +2785,7 @@ fn render_error(output: OutputFormat, error: &CliError) {
                 eprintln!("  trace: {trace_id}");
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Jsonl => {
             let value = serde_json::json!({
                 "apiVersion": MACHINE_OUTPUT_VERSION,
                 "kind": "Error",
@@ -2875,6 +2941,14 @@ mod tests {
                 OsString::from("--output=json"),
             ]),
             OutputFormat::Json
+        );
+        assert_eq!(
+            requested_output(&[
+                OsString::from("agentctl"),
+                OsString::from("--output=jsonl"),
+                OsString::from("run"),
+            ]),
+            OutputFormat::Jsonl
         );
     }
 

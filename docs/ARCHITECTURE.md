@@ -47,8 +47,11 @@ in reverse graph order and executes ordinary actions in a separate
 source-linked run. Confirmed inverse effects append immutable reconciliation
 records to the source. Structured handoffs are typed deterministic tasks
 between bounded agent tasks, so role collaboration retains ordinary task-local
-provider sessions, effects, audit, retry, repair, and replay. Handlers and event
-triggers remain outside the runtime surface.
+provider sessions, effects, audit, retry, repair, and replay. Streaming
+providers pass typed fragments through an awaited runtime sink that bounds and
+persists each task-attempt event before consuming more transport data. Final
+result validation remains unchanged. Handlers and event triggers remain
+outside the runtime surface.
 
 Clock and identifier generation are injected. Provider responses, tools, and external actions are injected interfaces. Cryptographic digests canonicalize identity; output maps use stable ordering where the public contract requires it.
 

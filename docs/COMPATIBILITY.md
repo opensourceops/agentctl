@@ -6,7 +6,7 @@ Declaration-order scheduling among ready tasks, `needs` dataflow, exact typed te
 
 ## Migrated
 
-Unversioned `playbook:` YAML can be translated by `agentctl migrate`; `modules` become `actions`, `module:x` becomes `action:x`, heuristic agents map to the fake provider, and core memory/policy fields are normalized. Rust JSON output is a stable `agentctl.dev/cli/v1` envelope rather than the prototype JSONL/YAML mixture. The production executable and runtime are Rust.
+Unversioned `playbook:` YAML can be translated by `agentctl migrate`; `modules` become `actions`, `module:x` becomes `action:x`, heuristic agents map to the fake provider, and core memory/policy fields are normalized. Rust JSON output is a stable `agentctl.dev/cli/v1` envelope rather than the prototype JSONL/YAML mixture. The additive JSONL mode uses the same versioned envelopes for bounded progress and a final result. The production executable and runtime are Rust.
 
 ## Intentionally changed
 
@@ -30,4 +30,4 @@ Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2
 
 ## Separate product decisions
 
-A public pack registry/resolver, vector memory, automatic MCP reconnection, general A2A resubmission, and streamed model output are not compatibility promises for v1alpha1. Bounded loops, namespaced sub-workflows, explicit source-linked compensation, and graph-native structured handoffs are additive; hidden or model-controlled orchestration is intentionally unsupported.
+A public pack registry/resolver, vector memory, automatic MCP reconnection, and general A2A resubmission are not compatibility promises for v1alpha1. Bounded loops, namespaced sub-workflows, explicit source-linked compensation, graph-native structured handoffs, and bounded durable streaming are additive; hidden or model-controlled orchestration is intentionally unsupported.

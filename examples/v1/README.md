@@ -16,6 +16,7 @@ The deterministic examples are exercised by `cargo xtask verify` and never requi
 - `subworkflow.yaml`: typed reusable graph expansion and namespaced recovery boundaries.
 - `compensation.yaml`: expected downstream failure followed by explicit source-linked compensation.
 - `structured-handoff.yaml`: two bounded agent roles connected by a typed durable handoff task.
+- `streaming.yaml`: bounded durable provider progress with isolated final JSON output.
 - `working-memory.yaml` and `long-term-memory.yaml`: separate memory lifecycles.
 - `fake-provider.yaml`: deterministic model-provider path.
 - `mcp.yaml` and `a2a.yaml`: local protocol fixtures, backed by the protocol crate's mock-server tests.

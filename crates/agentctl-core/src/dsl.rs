@@ -178,6 +178,8 @@ pub struct AgentDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_limit: Option<UsageLimitDefinition>,
     #[serde(default)]
+    pub stream: bool,
+    #[serde(default)]
     pub provider_options: JsonMap,
 }
 

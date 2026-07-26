@@ -66,6 +66,7 @@ For bounded static task expansion and child-level recovery, use [Matrix and fore
 For typed branching and durable decisions, use [Conditions and routers](docs/guides/CONDITIONS_AND_ROUTERS.md).
 For iterative work with a hard execution ceiling and iteration-level recovery, use [Bounded loops](docs/guides/BOUNDED_LOOPS.md).
 For typed reusable graphs with namespaced recovery boundaries, use [Reusable sub-workflows](docs/guides/SUB_WORKFLOWS.md).
+For bounded provider progress, JSONL output, and recorded stream replay, use [Durable provider streaming](docs/guides/DURABLE_STREAMING.md).
 
 ## Safety boundary
 
