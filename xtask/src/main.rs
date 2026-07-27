@@ -35,6 +35,9 @@ fn main() -> Result<()> {
         "resource-budget-live-openai" => acceptance::live_openai_budget(&root),
         "examples-verify" => examples_verify(&root),
         "examples-verify-live-openai" => acceptance::examples_live_openai(&root),
+        "examples-verify-live-openai-container" => {
+            acceptance::examples_live_openai_container(&root)
+        }
         "generate" => generate(&root),
         "package" => package(&root),
         "secret-scan" => {
@@ -43,7 +46,7 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask examples-verify-live-openai-container\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }

@@ -3995,11 +3995,11 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     ensure!(task_has(&retry_evidence, "analyze", "succeeded", "reused"));
     ensure!(task_has(&retry_evidence, "publish", "failed", "executed"));
     ensure!(
-        count_task_items(&retry_evidence, "/data/effects", "analyze", true) == 0,
+        model_effects_for_task(&retry_evidence, "analyze") == 0,
         "live retry repeated the successful upstream agent"
     );
     ensure!(
-        count_task_items(&retry_evidence, "/data/effects", "publish", true) == 1,
+        model_effects_for_task(&retry_evidence, "publish") == 1,
         "live retry did not make exactly one bounded provider attempt"
     );
 
@@ -4171,30 +4171,137 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         "local-complete-container-pending",
     )?;
 
+    reserve_live_requests(requests, LIVE_CONTAINER_MAX_REQUESTS)?;
+    let container = run_live_openai_container(root)?;
+    requests = requests.saturating_add(container.requests);
+    usage = usage.plus(container.usage);
+    tool_calls = tool_calls.saturating_add(container.tool_calls);
+    guard_live_budget(requests, &usage)?;
+    write_live_summary(
+        root,
+        &example_runs,
+        requests,
+        tool_calls,
+        &usage,
+        source_run_id,
+        repair_run_id,
+        replay_run_id,
+        "local-and-container-complete",
+    )?;
+    write_live_container_summary(root, &container)?;
+    println!(
+        "live OpenAI example verification passed: examples=7 model=gpt-5.6 requests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
+        usage.input,
+        usage.output,
+        usage.reasoning,
+        usage.cache_read,
+        usage.cache_write,
+        container.source_run_id,
+        container.repair_run_id,
+        container.replay_run_id,
+    );
+    Ok(())
+}
+
+pub fn examples_live_openai_container(root: &Path) -> Result<()> {
+    ensure!(
+        env::var_os("OPENAI_API_KEY").is_some(),
+        "OPENAI_API_KEY is required for the explicit live container continuation"
+    );
+    super::verify_example_matrix(root)?;
+    let summary_path = root.join(".release-evidence/selective-repair/live-summary.json");
+    let summary: Value = serde_json::from_slice(
+        &fs::read(&summary_path)
+            .with_context(|| format!("read prior live summary {}", summary_path.display()))?,
+    )?;
+    ensure_eq(&summary, "/status", "local-complete-container-pending")?;
+    ensure_eq(&summary, "/model", "gpt-5.6")?;
+    let examples = summary["examples"]
+        .as_array()
+        .context("prior live summary examples")?
+        .clone();
+    let mut requests = summary["requestCount"]
+        .as_u64()
+        .context("prior live request count")? as usize;
+    let mut tool_calls = summary["toolCallCount"]
+        .as_u64()
+        .context("prior live tool count")? as usize;
+    let mut usage = usage_from_summary(&summary)?;
+    let source_run_id = string_at(&summary, "/selectiveRepair/sourceRunId")?;
+    let repair_run_id = string_at(&summary, "/selectiveRepair/repairRunId")?;
+    let replay_run_id = string_at(&summary, "/selectiveRepair/replayRunId")?;
+
+    reserve_live_requests(requests, LIVE_CONTAINER_MAX_REQUESTS)?;
+    let container = run_live_openai_container(root)?;
+    requests = requests.saturating_add(container.requests);
+    tool_calls = tool_calls.saturating_add(container.tool_calls);
+    usage = usage.plus(container.usage);
+    guard_live_budget(requests, &usage)?;
+    write_live_summary(
+        root,
+        &examples,
+        requests,
+        tool_calls,
+        &usage,
+        source_run_id,
+        repair_run_id,
+        replay_run_id,
+        "local-and-container-complete",
+    )?;
+    write_live_container_summary(root, &container)?;
+    println!(
+        "live OpenAI container continuation passed: model=gpt-5.6 totalRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
+        usage.input,
+        usage.output,
+        usage.reasoning,
+        usage.cache_read,
+        usage.cache_write,
+        container.source_run_id,
+        container.repair_run_id,
+        container.replay_run_id,
+    );
+    Ok(())
+}
+
+// Source: analyzer 3 + publisher 1; repair: publisher 3.
+const LIVE_CONTAINER_MAX_REQUESTS: usize = 7;
+
+struct LiveContainerSummary {
+    source_run_id: String,
+    repair_run_id: String,
+    replay_run_id: String,
+    requests: usize,
+    tool_calls: usize,
+    usage: UsageTotals,
+}
+
+fn run_live_openai_container(root: &Path) -> Result<LiveContainerSummary> {
     let engine = container_engine()?;
     ensure_engine_ready(&engine)?;
     build_image(root, &engine)?;
-    let container_directory = tempfile::tempdir()?;
-    let layout = container_layout(container_directory.path(), true)?;
-    let source_container = SELECTIVE_REPAIR_SOURCE_WORKFLOW
-        .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
-        .replace(
-            "artifacts/selective-repair-result.txt",
-            "/artifacts/selective-repair-result.txt",
-        );
-    let target_container = SELECTIVE_REPAIR_TARGET_WORKFLOW
-        .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
-        .replace(
-            "artifacts/selective-repair-result.txt",
-            "/artifacts/selective-repair-result.txt",
-        );
+    let directory = tempfile::tempdir()?;
+    let layout = container_layout(directory.path(), true)?;
+    let source_container =
+        fs::read_to_string(root.join("examples/selective-repair-openai/source.workflow.yaml"))?
+            .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
+            .replace(
+                "artifacts/selective-repair-result.txt",
+                "/artifacts/selective-repair-result.txt",
+            );
+    let target_container =
+        fs::read_to_string(root.join("examples/selective-repair-openai/repaired.workflow.yaml"))?
+            .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
+            .replace(
+                "artifacts/selective-repair-result.txt",
+                "/artifacts/selective-repair-result.txt",
+            );
     write(
         &layout.workspace.join("fixture/service.txt"),
         "service=agentctl\nmarker=SELECTIVE_REPAIR_FIXTURE_CONFIRMED\n",
     )?;
     write(&layout.config.join("repair-source.yaml"), &source_container)?;
     write(&layout.config.join("repair-target.yaml"), &target_container)?;
-    let container_source_result = container_agentctl_with_openai(
+    let source = container_agentctl_with_openai(
         &engine,
         &layout,
         &[
@@ -4212,14 +4319,14 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         4,
         "live OCI repair source",
     )?;
-    let container_source_id = string_at(&container_source_result, "/error/runId")?;
-    let container_plan = container_agentctl(
+    let source_run_id = string_at(&source, "/error/runId")?.to_owned();
+    let plan = container_agentctl(
         &engine,
         &layout,
         &[
             "repair",
             "/config/repair-target.yaml",
-            container_source_id,
+            &source_run_id,
             "--from",
             "publish",
             "--plan",
@@ -4235,14 +4342,14 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         0,
         "live OCI repair plan",
     )?;
-    ensure_eq(&container_plan, "/data/reusedTasks/0", "analyze")?;
-    let container_repair_result = container_agentctl_with_openai(
+    ensure_eq(&plan, "/data/reusedTasks/0", "analyze")?;
+    let repair = container_agentctl_with_openai(
         &engine,
         &layout,
         &[
             "repair",
             "/config/repair-target.yaml",
-            container_source_id,
+            &source_run_id,
             "--from",
             "publish",
             "--workspace",
@@ -4257,51 +4364,38 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         0,
         "live OCI selective repair",
     )?;
-    let container_repair_id = string_at(&container_repair_result, "/data/runId")?;
-    let container_source_evidence = inspect_container(&engine, &layout, container_source_id)?;
-    let container_repair_evidence = inspect_container(&engine, &layout, container_repair_id)?;
-    ensure!(count_task_items(&container_repair_evidence, "/data/effects", "analyze", true) == 0);
-    ensure!(
-        count_task_items(
-            &container_repair_evidence,
-            "/data/toolCalls",
-            "analyze",
-            false
-        ) == 0
-    );
+    let repair_run_id = string_at(&repair, "/data/runId")?.to_owned();
+    let source_evidence = inspect_container(&engine, &layout, &source_run_id)?;
+    let repair_evidence = inspect_container(&engine, &layout, &repair_run_id)?;
+    ensure!(count_task_items(&repair_evidence, "/data/effects", "analyze", true) == 0);
+    ensure!(count_task_items(&repair_evidence, "/data/toolCalls", "analyze", false) == 0);
     ensure!(
         fs::read_to_string(layout.artifacts.join("selective-repair-result.txt"))?
             == "SELECTIVE_REPAIR_FIXTURE_CONFIRMED"
     );
-    let container_replay = replay_container(&engine, &layout, container_repair_id)?;
-    let container_replay_id = string_at(&container_replay, "/data/runId")?;
-    let container_replay_evidence = inspect_container(&engine, &layout, container_replay_id)?;
-    ensure!(array_len(&container_replay_evidence, "/data/effects")? == 0);
-    ensure!(array_len(&container_replay_evidence, "/data/toolCalls")? == 0);
-    ensure!(array_len(&container_replay_evidence, "/data/providerSessions")? == 0);
-    for evidence in [&container_source_evidence, &container_repair_evidence] {
+    let replay = replay_container(&engine, &layout, &repair_run_id)?;
+    let replay_run_id = string_at(&replay, "/data/runId")?.to_owned();
+    let replay_evidence = inspect_container(&engine, &layout, &replay_run_id)?;
+    ensure!(array_len(&replay_evidence, "/data/effects")? == 0);
+    ensure!(array_len(&replay_evidence, "/data/toolCalls")? == 0);
+    ensure!(array_len(&replay_evidence, "/data/providerSessions")? == 0);
+    let mut requests = 0_usize;
+    let mut tool_calls = 0_usize;
+    let mut usage = UsageTotals::default();
+    for evidence in [&source_evidence, &repair_evidence] {
         assert_secret_absent(evidence)?;
         requests = requests.saturating_add(model_effects(evidence));
         usage = usage.plus(usage_totals(evidence));
         tool_calls = tool_calls.saturating_add(array_len(evidence, "/data/toolCalls")?);
     }
-    guard_live_budget(requests, &usage)?;
-    write_live_summary(
-        root,
-        &example_runs,
-        requests,
-        tool_calls,
-        &usage,
+    Ok(LiveContainerSummary {
         source_run_id,
         repair_run_id,
         replay_run_id,
-        "local-and-container-complete",
-    )?;
-    println!(
-        "live OpenAI example verification passed: examples=6 model=gpt-5.6 requests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={container_source_id} containerRepairRunId={container_repair_id} containerReplayRunId={container_replay_id}",
-        usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write,
-    );
-    Ok(())
+        requests,
+        tool_calls,
+        usage,
+    })
 }
 
 fn run_error(
@@ -4680,7 +4774,23 @@ fn model_effects(value: &Value) -> usize {
         })
 }
 
-#[derive(Debug, Default)]
+fn model_effects_for_task(value: &Value, task_id: &str) -> usize {
+    value
+        .pointer("/data/effects")
+        .and_then(Value::as_array)
+        .map_or(0, |effects| {
+            effects
+                .iter()
+                .filter(|effect| {
+                    effect.pointer("/request/taskId").and_then(Value::as_str) == Some(task_id)
+                        && effect.pointer("/request/effectClass")
+                            == Some(&Value::String("model".to_owned()))
+                })
+                .count()
+        })
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 struct UsageTotals {
     input: u64,
     output: u64,
@@ -4737,6 +4847,27 @@ fn usage_totals(value: &Value) -> UsageTotals {
     total
 }
 
+fn usage_from_summary(value: &Value) -> Result<UsageTotals> {
+    let usage = value
+        .get("usage")
+        .and_then(Value::as_object)
+        .context("prior live summary usage")?;
+    let read = |name: &str| {
+        usage
+            .get(name)
+            .and_then(Value::as_u64)
+            .with_context(|| format!("prior live summary usage.{name}"))
+    };
+    Ok(UsageTotals {
+        input: read("inputTokens")?,
+        output: read("outputTokens")?,
+        reasoning: read("reasoningTokens")?,
+        cache_read: read("cacheReadTokens")?,
+        cache_write: read("cacheWriteTokens")?,
+        cost_microusd: read("providerReportedCostMicrousd")?,
+    })
+}
+
 fn guard_live_budget(requests: usize, usage: &UsageTotals) -> Result<()> {
     const MAX_REQUESTS: usize = 40;
     const MAX_COST_MICROUSD: u64 = 10_000_000;
@@ -4766,6 +4897,15 @@ fn guard_live_budget(requests: usize, usage: &UsageTotals) -> Result<()> {
     ensure!(
         guarded_cost < MAX_COST_MICROUSD,
         "live cost guard reached USD 10"
+    );
+    Ok(())
+}
+
+fn reserve_live_requests(requests: usize, additional: usize) -> Result<()> {
+    const MAX_REQUESTS: usize = 40;
+    ensure!(
+        requests.saturating_add(additional) <= MAX_REQUESTS,
+        "live request reservation would exceed the command budget: {requests} + {additional} > {MAX_REQUESTS}"
     );
     Ok(())
 }
@@ -4875,6 +5015,36 @@ fn write_live_summary(
         directory.join("live-summary.json"),
         format!("{}\n", serde_json::to_string_pretty(&value)?),
     )?;
+    Ok(())
+}
+
+fn write_live_container_summary(root: &Path, container: &LiveContainerSummary) -> Result<()> {
+    let path = root.join(".release-evidence/selective-repair/live-summary.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    value
+        .as_object_mut()
+        .context("live summary must be an object")?
+        .insert(
+            "container".to_owned(),
+            serde_json::json!({
+                "sourceRunId": container.source_run_id,
+                "repairRunId": container.repair_run_id,
+                "replayRunId": container.replay_run_id,
+                "requestCount": container.requests,
+                "toolCallCount": container.tool_calls,
+                "usage": {
+                    "inputTokens": container.usage.input,
+                    "outputTokens": container.usage.output,
+                    "reasoningTokens": container.usage.reasoning,
+                    "cacheReadTokens": container.usage.cache_read,
+                    "cacheWriteTokens": container.usage.cache_write,
+                    "providerReportedCostMicrousd": container.usage.cost_microusd,
+                },
+                "upstreamReused": true,
+                "replayFreshEffects": 0,
+            }),
+        );
+    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&value)?))?;
     Ok(())
 }
 
@@ -6570,5 +6740,11 @@ mod tests {
         assert!(normalize_container_image_id(&"a".repeat(63)).is_err());
         assert!(normalize_container_image_id(&format!("sha512:{}", "a".repeat(64))).is_err());
         assert!(normalize_container_image_id(&format!("sha256:{}", "g".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn live_request_reservations_fail_before_crossing_the_command_budget() {
+        reserve_live_requests(33, LIVE_CONTAINER_MAX_REQUESTS).expect("remaining requests fit");
+        assert!(reserve_live_requests(34, LIVE_CONTAINER_MAX_REQUESTS).is_err());
     }
 }
