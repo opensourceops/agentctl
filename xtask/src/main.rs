@@ -3,6 +3,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::{Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -22,6 +23,7 @@ fn main() -> Result<()> {
         .context("xtask must be inside the workspace")?
         .to_path_buf();
     match command.as_str() {
+        "extension-fixture" => process_extension_fixture(),
         "verify" => verify(&root),
         "docs-verify" => docs_verify(&root),
         "migration-verify" => migration_verify(&root),
@@ -44,6 +46,63 @@ fn main() -> Result<()> {
             Ok(())
         }
         other => bail!("unknown xtask command `{other}`"),
+    }
+}
+
+fn process_extension_fixture() -> Result<()> {
+    let marker = env::args()
+        .nth(2)
+        .context("extension fixture marker argument is required")?;
+    let mode = env::args()
+        .nth(3)
+        .context("extension fixture protocol mode is required")?;
+    match mode.as_str() {
+        "--agentctl-handshake" => {
+            print!(
+                "{}",
+                serde_json::json!({
+                    "protocolVersion": "agentctl.dev/process-extension/v1",
+                    "name": "xtask-fixture",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {"value": {"type": "string"}},
+                        "additionalProperties": false,
+                    },
+                    "outputSchema": {
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {"value": {"type": "string"}},
+                        "additionalProperties": false,
+                    },
+                    "capabilities": ["transform"],
+                })
+            );
+            Ok(())
+        }
+        "--agentctl-invoke" => {
+            let mut request = String::new();
+            std::io::stdin().read_to_string(&mut request)?;
+            let request: Value = serde_json::from_str(&request)?;
+            let effect_id = request["effectId"]
+                .as_str()
+                .context("extension fixture effectId")?;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(marker)?;
+            file.write_all(b"invocation")?;
+            print!(
+                "{}",
+                serde_json::json!({
+                    "protocolVersion": "agentctl.dev/process-extension/v1",
+                    "effectId": effect_id,
+                    "output": {"value": "extended"},
+                })
+            );
+            Ok(())
+        }
+        other => bail!("unknown extension fixture mode `{other}`"),
     }
 }
 
@@ -353,6 +412,11 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["schema"],
         &["migrate"],
         &["packs"],
+        &["packs", "inspect"],
+        &["packs", "verify"],
+        &["packs", "lock"],
+        &["packs", "update"],
+        &["packs", "verify-lock"],
         &["artifacts"],
         &["artifacts", "list"],
         &["artifacts", "inspect"],

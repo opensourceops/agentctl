@@ -1798,7 +1798,7 @@ const fn action_effect_class(kind: ActionKind) -> EffectClass {
         ActionKind::Assign | ActionKind::Assert => EffectClass::Pure,
         ActionKind::Read => EffectClass::Observe,
         ActionKind::Write => EffectClass::WorkspaceMutate,
-        ActionKind::ShellExec => EffectClass::ProcessExecution,
+        ActionKind::ShellExec | ActionKind::ProcessExtension => EffectClass::ProcessExecution,
         ActionKind::MemoryRead | ActionKind::MemoryWrite => EffectClass::InternalState,
         ActionKind::LongTermMemoryRead => EffectClass::Observe,
         ActionKind::LongTermMemoryWrite => EffectClass::ExternalMutate,
@@ -2569,6 +2569,7 @@ const fn action_predictability(kind: ActionKind) -> PlanPredictability {
         | ActionKind::MemoryWrite => PlanPredictability::FullyPredictable,
         ActionKind::Read | ActionKind::Write => PlanPredictability::PartiallyPredictable,
         ActionKind::ShellExec
+        | ActionKind::ProcessExtension
         | ActionKind::LongTermMemoryRead
         | ActionKind::LongTermMemoryWrite
         | ActionKind::McpCall

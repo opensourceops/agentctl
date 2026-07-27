@@ -31,6 +31,7 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock", "s
 clap = { version = "4.5.53", features = ["derive", "env", "string"] }
 clap_complete = "4.5.61"
 futures-util = "0.3.31"
+flate2 = "1.1.5"
 fs2 = "0.4.3"
 hex = "0.4.3"
 http = "1.4.0"
@@ -39,7 +40,7 @@ nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 opentelemetry = "0.31.0"
 parking_lot = "0.12.5"
 proptest = "1.9.0"
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.38.0", features = ["bundled", "chrono"] }
 schemars = { version = "1.2.1", features = ["preserve_order"] }
 semver = { version = "1.0.27", features = ["serde"] }
@@ -48,6 +49,10 @@ serde_json = { version = "1.0.145", features = ["preserve_order"] }
 serde_path_to_error = "0.1.20"
 serde_yaml_ng = "0.10.0"
 sha2 = "0.10.9"
+sigstore-trust-root = { version = "0.8.0", default-features = false }
+sigstore-types = "0.8.0"
+sigstore-verify = { version = "0.8.0", default-features = false, features = ["rustls"] }
+tar = "0.4.44"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "io-util", "sync"] }

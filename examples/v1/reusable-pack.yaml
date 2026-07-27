@@ -3,13 +3,15 @@ kind: Workflow
 metadata:
   name: reusable-pack
 spec:
+  packTrust:
+    unsigned: allow
   outputs:
     workflowValue: "${{ tasks.packed-workflow.output.value }}"
   packs:
     - name: example.utility
-      version: 1.0.0
-      path: example.pack.yaml
-      integrity: sha256:a9b4d56e33524e73b109a66373e60e207516a7834c28e841e0accd456162a9ab
+      version: "^1.0"
+      source:
+        path: example.pack.yaml
   tasks:
     - id: packed
       uses: action:example.utility.assign

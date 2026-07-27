@@ -22,7 +22,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 41;
+const ACCEPTANCE_SCENARIOS: usize = 42;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -2090,6 +2090,179 @@ pub fn run(root: &Path) -> Result<()> {
     let replay_inspect = inspect(&binary, &protocol_workspace, &a2a_db, replay_run_id)?;
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
     ensure_eq(&replay_inspect, "/data/protocolCalls/0/status", "recorded")?;
+
+    scenario(
+        42,
+        "packaged CLI locks transitive packs and gates bounded process extensions",
+    );
+    let repository_pack = root.join("examples/v1/reusable-pack.yaml");
+    let repository_lock = successful_json(
+        &binary,
+        root,
+        &strings([
+            "packs",
+            "verify-lock",
+            path(&repository_pack)?,
+            "--locked",
+            "--offline",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&repository_lock, "/data/valid", true)?;
+    ensure!(array_len(&repository_lock, "/data/packs")? == 2);
+
+    let pack_workspace = directory.path().join("pack-extension");
+    fs::create_dir_all(&pack_workspace)?;
+    let extension = env::current_exe()?;
+    let extension_command = serde_json::to_string(path(&extension)?)?;
+    let extension_basename = extension
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("xtask executable basename")?;
+    let invocation_marker = pack_workspace.join("invocations");
+    let marker_argument = serde_json::to_string(path(&invocation_marker)?)?;
+    let extension_manifest = pack_workspace.join("extension.pack.yaml");
+    write(
+        &extension_manifest,
+        &format!(
+            r#"apiVersion: agentctl.dev/pack/v1alpha1
+name: example.extension
+version: 1.0.0
+agentctl: ">=0.2.0, <1.0.0"
+actions:
+  transform:
+    kind: extension.process
+    command: {extension_command}
+    args: [extension-fixture, {marker_argument}]
+    protocolVersion: agentctl.dev/process-extension/v1
+    idempotency: keyed
+    capabilities: [transform]
+    inputSchema:
+      type: object
+      required: [value]
+      properties: {{ value: {{ type: string }} }}
+      additionalProperties: false
+    outputSchema:
+      type: object
+      required: [value]
+      properties: {{ value: {{ type: string }} }}
+      additionalProperties: false
+"#
+        ),
+    )?;
+    let extension_workflow = pack_workspace.join("workflow.yaml");
+    let workflow_source = |allow_unsigned_process: bool| {
+        format!(
+            r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: process-extension-acceptance }}
+spec:
+  outputs: {{ value: "${{{{ tasks.extend.output.value }}}}" }}
+  packTrust:
+    unsigned: warn
+    allowUnsignedProcess: {allow_unsigned_process}
+  packs:
+    - name: example.extension
+      version: "^1.0"
+      source: {{ path: extension.pack.yaml }}
+  policy:
+    workspaceRoot: .
+    processAllowlist: [{extension_basename}]
+    approval: never
+  tasks:
+    - id: extend
+      uses: action:example.extension.transform
+      with: {{ value: acceptance }}
+"#
+        )
+    };
+    write(&extension_workflow, &workflow_source(false))?;
+    let locked = successful_json(
+        &binary,
+        &pack_workspace,
+        &strings([
+            "packs",
+            "lock",
+            path(&extension_workflow)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure!(array_len(&locked, "/data/lock/packs")? == 1);
+    let denied = json_with_code(
+        &binary,
+        &pack_workspace,
+        &strings([
+            "run",
+            path(&extension_workflow)?,
+            "--db",
+            path(&pack_workspace.join("denied.db"))?,
+            "--workspace",
+            path(&pack_workspace)?,
+            "--locked",
+            "--offline",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        2,
+    )?;
+    ensure!(
+        string_at(&denied, "/error/message")?.contains("declares process execution"),
+        "unsigned process denial was not explicit"
+    );
+    ensure!(!invocation_marker.exists());
+
+    write(&extension_workflow, &workflow_source(true))?;
+    let extension_db = pack_workspace.join("extension.db");
+    let extension_run = successful_json(
+        &binary,
+        &pack_workspace,
+        &strings([
+            "run",
+            path(&extension_workflow)?,
+            "--db",
+            path(&extension_db)?,
+            "--workspace",
+            path(&pack_workspace)?,
+            "--locked",
+            "--offline",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&extension_run, "/data/output/value", "extended")?;
+    let extension_run_id = string_at(&extension_run, "/data/runId")?;
+    let extension_inspect = inspect(&binary, &pack_workspace, &extension_db, extension_run_id)?;
+    ensure_eq(
+        &extension_inspect,
+        "/data/effects/0/request/operation",
+        "extension.process",
+    )?;
+    let extension_replay = successful_json(
+        &binary,
+        &pack_workspace,
+        &strings([
+            "replay",
+            extension_run_id,
+            "--db",
+            path(&extension_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&extension_replay, "/data/output/value", "extended")?;
+    ensure!(fs::read_to_string(&invocation_marker)? == "invocation");
 
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())

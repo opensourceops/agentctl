@@ -53,9 +53,9 @@ complete, every entry must have exactly one final disposition:
 | STR-001 | Streaming | in progress | implemented |
 | MCP-001 | MCP resilience | verified | implemented |
 | A2A-001 | A2A resilience | verified | implemented |
-| PACK-001 | Pack resolution and lockfiles | open | implemented |
-| TRUST-001 | Pack integrity and signing | open | implemented |
-| EXT-001 | Plugin strategy | open | redesigned |
+| PACK-001 | Pack resolution and lockfiles | verified | implemented |
+| TRUST-001 | Pack integrity and signing | verified | implemented |
+| EXT-001 | Plugin strategy | verified | redesigned |
 | MEM-001 | Semantic memory | open | implemented |
 | PROV-001 | Stateless provider continuation | open | implemented |
 | OCI-001 | Container execution | in progress | implemented |
@@ -508,7 +508,10 @@ complete, every entry must have exactly one final disposition:
 
 ### PACK-001: Deterministic pack resolution and lockfile
 
-- Current behavior: only contained local manifests with direct integrity work.
+- Current behavior: manifest v1 resolves semantic constraints across contained
+  local paths, full-commit Git sources, and digest-pinned tar-gzip archives.
+  Lock v1 records the sorted concrete graph, source, compatibility, digest, and
+  trust result. `--locked` rejects drift and `--offline` requires cache hits.
 - User impact: reusable content has no dependencies, Git/archive source, locked
   graph, or offline resolution.
 - Security or durability impact: ad hoc fetching weakens reproducibility.
@@ -523,11 +526,19 @@ complete, every entry must have exactly one final disposition:
 - Examples: transitive local packs and pinned archive fixture.
 - Live evidence: not required.
 - Documentation: source/trust/lock workflows.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. Six focused CLI tests cover deterministic
+  transitive resolution, constraints, conflicts, cycles, path containment,
+  tamper, unreachable entries, pinned Git cache reuse, offline operation,
+  immutable archive download and extraction bounds, and link rejection.
+  Packaged acceptance scenario 42 verifies the checked-in two-pack graph through
+  the public `packs verify-lock`, run, and replay paths.
 
 ### TRUST-001: Pack authenticity and trust policy
 
-- Current behavior: SHA-256 proves sameness but not publisher identity.
+- Current behavior: every locked manifest has SHA-256 integrity and an explicit
+  unsigned or Sigstore trust result. Optional verification checks the standard
+  bundle, public-good trust root, certificate chain, identity, issuer,
+  transparency proof, and timestamp. Unsigned policy is deny, warn, or allow.
 - User impact: users must establish provenance manually.
 - Security or durability impact: a valid digest from an untrusted source can
   still execute dangerous content.
@@ -542,12 +553,20 @@ complete, every entry must have exactly one final disposition:
 - Examples: signed-fixture verification and explicit unsigned local pack.
 - Live evidence: deterministic verification fixture.
 - Documentation: trust model and keyless-signing caveats.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented. A public Cosign v3 fixture verifies
+  successfully through the embedded Rust verifier, even though its short-lived
+  certificate is now expired, because its signed timestamp proves validity at
+  signing time. Tampered bytes, invalid timing evidence, an unallowlisted
+  identity, and malformed bundles fail. Bundle digest and identity metadata are
+  locked. Unsigned process packs are denied before loading unless the workflow
+  explicitly acknowledges them.
 
 ### EXT-001: Isolated extension model
 
-- Current behavior: no executable plugin ABI; MCP and built-in process actions
-  are separate surfaces.
+- Current behavior: the supported contracts are reviewed packs, MCP, and
+  `extension.process`. The process protocol performs an exact version,
+  schema, and capability handshake before a separately bounded invocation with
+  a durable effect ID.
 - User impact: "plugin ABI" appears as an unresolved roadmap item.
 - Security or durability impact: an in-process native ABI would undermine Rust
   safety and process isolation.
@@ -563,7 +582,14 @@ complete, every entry must have exactly one final disposition:
 - Examples: local process-protocol extension.
 - Live evidence: not required.
 - Documentation: definitive plugin strategy and rejection of native libraries.
-- Final disposition: pending redesign evidence.
+- Final disposition: redesigned and implemented. Native in-process libraries
+  are rejected from the product surface. Three runtime tests cover successful
+  negotiation, output validation, secret redaction, replay without execution,
+  mismatch before invocation, output overflow, timeout, crash, and
+  cancellation. Existing policy and process-tree tests cover direct argv,
+  allowlists, environment selection, output capture, and termination. Packaged
+  acceptance scenario 42 proves unsigned trust gating, one invocation, effect
+  inspection, and effect-free replay.
 
 ### MEM-001: Optional semantic retrieval
 

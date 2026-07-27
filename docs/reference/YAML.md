@@ -32,7 +32,8 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `memory` | empty | Initial working memory and optional SQLite long-term namespace. |
 | `mcpServers` | `{}` | Pinned MCP Streamable HTTP peers. |
 | `a2aPeers` | `{}` | Pinned A2A Agent Card peers. |
-| `packs` | `[]` | Local reviewed pack references. |
+| `packs` | `[]` | Semver-constrained local, pinned Git, or immutable archive pack roots. |
+| `packTrust` | unsigned warning, process denied | Unsigned policy, Sigstore identity/issuer allowlist, and explicit unsigned-process acknowledgement. |
 | `runtime` | bounded defaults | Runtime controls. `maxConcurrency` defaults to `1` and accepts `1` through `64`. |
 | `output` | defaults | Output presentation contract. |
 
@@ -57,6 +58,11 @@ Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`,
 | `timeoutSeconds` | action or agent default | Must be within the implementation bound. |
 | `compensate` | none | Named effectful action, typed `with`, bounded retry, and timeout. Valid only on a potentially mutating task. |
 | failure behavior | fail | Unsupported dynamic control flow is rejected. |
+
+`extension.process` actions require
+`protocolVersion: agentctl.dev/process-extension/v1`, explicit idempotency,
+input and output JSON Schemas, a declared capability list, direct command/args,
+and bounded process limits. See [Extensions](../EXTENSIONS.md).
 
 Ready tasks are selected in YAML declaration order up to `maxConcurrency`.
 They read isolated durable snapshots and commit in compiled order. There is no

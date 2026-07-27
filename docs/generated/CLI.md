@@ -41,6 +41,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
   -V, --version          Print version
 ```
@@ -59,6 +61,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -76,6 +80,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -90,19 +96,36 @@ Arguments:
   <FILE>
 
 Options:
-      --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --db <DB>
+          [default: .agentctl/runtime.db]
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --inputs <INPUTS>
+
       --inputs-file <INPUTS_FILE>
+
       --verbose
+
       --input <KEY=VALUE>
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --workspace <WORKSPACE>
+
       --timeout-seconds <TIMEOUT_SECONDS>
+
       --check
+
       --diff
+
       --interactive
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl resume`
@@ -116,15 +139,28 @@ Arguments:
   <RUN_ID>
 
 Options:
-      --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --db <DB>
+          [default: .agentctl/runtime.db]
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --diff
+
       --interactive
+
       --verbose
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
       --workspace <WORKSPACE>
+
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --timeout-seconds <TIMEOUT_SECONDS>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl replay`
@@ -142,6 +178,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -156,15 +194,28 @@ Arguments:
   <RUN_ID>
 
 Options:
-      --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --db <DB>
+          [default: .agentctl/runtime.db]
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --interactive
+
       --diff
+
       --verbose
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
       --workspace <WORKSPACE>
+
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --timeout-seconds <TIMEOUT_SECONDS>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl repair`
@@ -180,18 +231,35 @@ Arguments:
 
 Options:
       --from <FROM>
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --plan
+
       --restart-successful
+
       --verbose
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
       --reason <REASON>
-      --db <DB>                            [default: .agentctl/runtime.db]
+
+      --db <DB>
+          [default: .agentctl/runtime.db]
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --interactive
+
       --diff
+
       --workspace <WORKSPACE>
+
       --timeout-seconds <TIMEOUT_SECONDS>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl retry`
@@ -207,19 +275,37 @@ Arguments:
 
 Options:
       --failed
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --from <FROM>
+
       --plan
+
       --verbose
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
       --restart-successful
+
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --reason <REASON>
-      --db <DB>                            [default: .agentctl/runtime.db]
+
+      --db <DB>
+          [default: .agentctl/runtime.db]
       --interactive
+
       --diff
+
       --workspace <WORKSPACE>
+
       --timeout-seconds <TIMEOUT_SECONDS>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl compensate`
@@ -233,17 +319,32 @@ Arguments:
   <SOURCE_RUN_ID>
 
 Options:
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
       --task <TASK>
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --plan
-      --db <DB>                            [default: .agentctl/runtime.db]
+
+      --db <DB>
+          [default: .agentctl/runtime.db]
       --verbose
+
       --interactive
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
       --diff
+
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --workspace <WORKSPACE>
+
       --timeout-seconds <TIMEOUT_SECONDS>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ## `agentctl runs`
@@ -262,6 +363,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -279,6 +382,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -297,6 +402,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -315,6 +422,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -333,6 +442,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -354,6 +465,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -370,6 +483,8 @@ Options:
       --task <TASK>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -385,6 +500,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -411,6 +528,10 @@ Options:
 
       --evidence-file <EVIDENCE_FILE>
 
+      --offline
+          Forbid pack network access and require cached Git/archive sources
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
       --result-file <RESULT_FILE>
 
       --result-schema-file <RESULT_SCHEMA_FILE>
@@ -440,6 +561,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -455,6 +578,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -472,6 +597,8 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --reason <REASON>
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -489,6 +616,8 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --reason <REASON>
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -507,6 +636,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -522,6 +653,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -536,6 +669,8 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --model <MODEL>    [default: gpt-5.6]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -553,6 +688,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -568,6 +705,8 @@ Options:
       --write <WRITE>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -586,6 +725,8 @@ Options:
       --write <WRITE>
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -599,11 +740,109 @@ Usage: agentctl packs [OPTIONS] <COMMAND>
 Commands:
   inspect
   verify
+  lock         Resolve the complete graph and write agentctl.pack.lock
+  update       Refresh the locked graph from immutable sources
+  verify-lock  Verify a lockfile, source digests, signatures, and trust policy
 
 Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help             Print help
+```
+
+## `agentctl packs inspect`
+
+```text
+Usage: agentctl packs inspect [OPTIONS] <MANIFEST>
+
+Arguments:
+  <MANIFEST>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help             Print help
+```
+
+## `agentctl packs verify`
+
+```text
+Usage: agentctl packs verify [OPTIONS] --integrity <INTEGRITY> <MANIFEST>
+
+Arguments:
+  <MANIFEST>
+
+Options:
+      --integrity <INTEGRITY>
+      --output <OUTPUT>        [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>          [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline                Forbid pack network access and require cached Git/archive sources
+      --locked                 Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help                   Print help
+```
+
+## `agentctl packs lock`
+
+```text
+Resolve the complete graph and write agentctl.pack.lock
+
+Usage: agentctl packs lock [OPTIONS] <WORKFLOW>
+
+Arguments:
+  <WORKFLOW>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help             Print help
+```
+
+## `agentctl packs update`
+
+```text
+Refresh the locked graph from immutable sources
+
+Usage: agentctl packs update [OPTIONS] <WORKFLOW>
+
+Arguments:
+  <WORKFLOW>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
+      --pack <PACK>
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help             Print help
+```
+
+## `agentctl packs verify-lock`
+
+```text
+Verify a lockfile, source digests, signatures, and trust policy
+
+Usage: agentctl packs verify-lock [OPTIONS] <WORKFLOW>
+
+Arguments:
+  <WORKFLOW>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -626,6 +865,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -640,6 +881,8 @@ Options:
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --task <TASK>
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -655,6 +898,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -671,6 +916,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -688,6 +935,8 @@ Options:
       --overwrite
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -697,12 +946,22 @@ Options:
 Usage: agentctl artifacts gc [OPTIONS]
 
 Options:
-      --older-than-days <OLDER_THAN_DAYS>  [default: 30]
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
+      --older-than-days <OLDER_THAN_DAYS>
+          [default: 30]
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
       --dry-run
+
       --verbose
-  -h, --help                               Print help
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help
+          Print help
 ```
 
 ## `agentctl db`
@@ -722,6 +981,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -739,6 +1000,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -753,6 +1016,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -770,6 +1035,8 @@ Options:
       --key-env <KEY_ENV>  Environment variable containing a base64-encoded 32-byte key
       --dry-run
       --verbose
+      --offline            Forbid pack network access and require cached Git/archive sources
+      --locked             Require agentctl.pack.lock and reject all source or graph drift
   -h, --help               Print help
 ```
 
@@ -787,6 +1054,8 @@ Options:
       --key-env <KEY_ENV>  Environment variable containing a base64-encoded 32-byte key
       --dry-run
       --verbose
+      --offline            Forbid pack network access and require cached Git/archive sources
+      --locked             Require agentctl.pack.lock and reject all source or graph drift
   -h, --help               Print help
 ```
 
@@ -806,6 +1075,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -817,12 +1088,22 @@ Garbage-collect expired memory and old terminal runs
 Usage: agentctl gc [OPTIONS]
 
 Options:
-      --db <DB>                            [default: .agentctl/runtime.db]
-      --output <OUTPUT>                    [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>                      [default: auto] [possible values: auto, always, never]
-      --older-than-days <OLDER_THAN_DAYS>  [default: 30]
+      --db <DB>
+          [default: .agentctl/runtime.db]
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
+      --older-than-days <OLDER_THAN_DAYS>
+          [default: 30]
       --verbose
-  -h, --help                               Print help
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help
+          Print help
 ```
 
 ## `agentctl completion`
@@ -839,6 +1120,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -853,6 +1136,8 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```
 
@@ -867,5 +1152,7 @@ Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
   -h, --help             Print help
 ```

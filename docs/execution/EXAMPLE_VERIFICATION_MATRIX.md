@@ -34,7 +34,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/condition.yaml` | Conditional scheduling | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Canonical | passed |
 | `examples/v1/crash-resume.yaml` | Durable interruption fixture | fake | resumable | 0 | 0 | Acceptance equivalent | Canonical | N/A | N/A | N/A | Durable state | passed |
 | `examples/v1/dataflow.yaml` | Typed task dataflow | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Canonical | passed |
-| `examples/v1/example.pack.yaml` | Native reusable pack manifest | N/A | pack manifest | 0 | 0 | Canonical consumer | N/A | N/A | N/A | Digest checked | Canonical | passed |
+| `examples/v1/example.pack.yaml` | Native transitive reusable pack manifest | N/A | pack manifest | 0 | 0 | Canonical consumer | N/A | N/A | N/A | Locked dependency graph | Canonical | passed |
 | `examples/v1/fake-provider.yaml` | Deterministic provider task | fake | success | 0 | 0 | Canonical | Canonical | N/A | N/A | N/A | Canonical | passed |
 | `examples/v1/google-live.yaml` | Google native provider | Google | credentialed execution | 0 | 0 | N/A | Protocol mock | External opt-in | N/A | N/A | Static | passed |
 | `examples/v1/hello.yaml` | Minimal assign workflow | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Canonical | passed |
@@ -45,7 +45,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/openai-live.yaml` | Minimal OpenAI response | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | N/A | N/A | Live gate | live passed |
 | `examples/v1/parallel.yaml` | Deterministic parallel batch | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | Atomic ordered memory merge | Canonical | passed |
 | `examples/v1/policy-denial.yaml` | Denied mutation | deterministic | policy failure | 0 | 0 | Canonical expected failure | N/A | N/A | N/A | No mutation | JSON error | passed |
-| `examples/v1/reusable-pack.yaml` | Native reusable pack consumer | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | Pack digest | Canonical | passed |
+| `examples/v1/reusable-pack.yaml` | Locked transitive pack consumer | deterministic | success | 0 | 0 | Canonical plus acceptance scenario 42 | N/A | N/A | N/A | Lock, digests, graph, offline | Canonical | passed |
 | `examples/v1/router.yaml` | Typed deterministic route selection | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Decision and skipped branch | passed |
 | `examples/v1/secret-reference.yaml` | Environment reference contract | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | N/A | N/A | Secret-safe live gate | live passed |
 | `examples/v1/structured-handoff.yaml` | Two bounded roles with a typed durable handoff | fake | success | 0 | 0 | Canonical | Canonical | Pending bounded OpenAI scenario | N/A | N/A | Role outputs and handoff payload | passed |

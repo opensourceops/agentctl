@@ -3,7 +3,7 @@ use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -36,6 +36,8 @@ pub enum ProcessRunError {
         stream: &'static str,
         message: String,
     },
+    #[error("failed to write subprocess stdin: {0}")]
+    Write(String),
     #[error("failed to wait for subprocess: {0}")]
     Wait(#[source] io::Error),
     #[error("subprocess timed out after {seconds} seconds")]
@@ -79,15 +81,41 @@ enum PipeEvent {
     Chunk(Stream, Vec<u8>),
     Eof,
     ReadError(Stream, String),
+    InputError(String),
 }
 
 pub async fn run_bounded_process(
+    command: Command,
+    limits: ProcessOutputLimits,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+) -> Result<BoundedProcessOutput, ProcessRunError> {
+    run_bounded_process_inner(command, None, limits, timeout, cancellation).await
+}
+
+pub async fn run_bounded_process_with_input(
+    command: Command,
+    input: Vec<u8>,
+    limits: ProcessOutputLimits,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+) -> Result<BoundedProcessOutput, ProcessRunError> {
+    run_bounded_process_inner(command, Some(input), limits, timeout, cancellation).await
+}
+
+async fn run_bounded_process_inner(
     mut command: Command,
+    input: Option<Vec<u8>>,
     limits: ProcessOutputLimits,
     timeout: Duration,
     cancellation: &CancellationToken,
 ) -> Result<BoundedProcessOutput, ProcessRunError> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    } else {
+        command.stdin(Stdio::null());
+    }
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command.spawn().map_err(ProcessRunError::Spawn)?;
@@ -102,7 +130,23 @@ pub async fn run_bounded_process(
     })?;
     let (sender, mut receiver) = mpsc::channel(PIPE_CHANNEL_CAPACITY);
     let stdout_task = tokio::spawn(read_pipe(stdout, Stream::Stdout, sender.clone()));
-    let stderr_task = tokio::spawn(read_pipe(stderr, Stream::Stderr, sender));
+    let stderr_task = tokio::spawn(read_pipe(stderr, Stream::Stderr, sender.clone()));
+    if let Some(input) = input {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ProcessRunError::Write("stdin pipe was unavailable".to_owned()))?;
+        tokio::spawn(async move {
+            let result = async {
+                stdin.write_all(&input).await?;
+                stdin.shutdown().await
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = sender.send(PipeEvent::InputError(error.to_string())).await;
+            }
+        });
+    }
     let deadline = Instant::now() + timeout;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -147,6 +191,9 @@ pub async fn run_bounded_process(
                     stream: stream.name(),
                     message,
                 });
+            }
+            Some(PipeEvent::InputError(message)) => {
+                break Err(ProcessRunError::Write(message));
             }
             None => {
                 break Err(ProcessRunError::Read {

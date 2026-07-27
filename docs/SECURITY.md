@@ -22,7 +22,15 @@
 - Optional application-level state encryption uses versioned AES-256-GCM envelopes with per-value random nonces, field-bound authenticated data, key IDs, environment references, transactional migration/rotation, and database triggers that reject plaintext or stale-key writes after enablement. Missing, wrong, unsupported, or tampered keys/envelopes fail closed.
 - Repair never mutates a terminal source. Reuse requires versioned definition/input/contract/output/state metadata and verified content-addressed artifact sizes and SHA-256 digests. Artifact ingestion uses atomic no-clobber writes, immutable blobs, bounded leases, and a cross-process GC lock. Repair creation and reused-task/reference materialization are one SQLite transaction.
 - A recorded replay cannot be a repair source because it has no direct effect ledger. A materialized reused/recorded task cannot be selected for restart without returning to direct effect history. Repaired agents start fresh provider sessions.
-- Packs require a supported manifest/version and can be checked against SHA-256 integrity.
+- Pack graphs are content-locked. Local paths remain contained; Git commits are
+  fully pinned; immutable archives are redirect-free, digest-checked, and
+  extraction-bounded. Optional Sigstore bundles verify an allowlisted identity
+  and issuer against the embedded public-good trust root. Unsigned process packs
+  cannot load without an explicit review acknowledgement.
+- Process extensions negotiate an exact version, schemas, and capabilities
+  before invocation. They use direct argv, cleared selected environment,
+  bounded input/output/time, process-tree cancellation, a durable effect
+  identity, and secret redaction.
 - The workspace forbids unsafe Rust, denies warnings, locks dependencies, checks licenses/sources/advisories, scans secret patterns, and keeps live tests outside CI.
 
 ## Limitations
@@ -32,8 +40,9 @@ a secret helper, can access anything the operating-system identity can access.
 Redaction cannot prevent an authorized recipient from transforming a secret
 before exfiltration. Host allowlists do not defend against every DNS rebinding,
 proxy, local-service, or compromised endpoint scenario; use network isolation
-for hostile workflows. SHA-256 integrity establishes sameness, not author
-identity. State encryption is application-level selected-field protection, not
+for hostile workflows. SHA-256 integrity establishes sameness; Sigstore
+identity depends on the configured issuer, subject, bundle evidence, and
+installed trust root. State encryption is application-level selected-field protection, not
 full-database encryption, access control, or a secret store.
 
 Prompts, file content, model output, remote artifacts, and tool output may be confidential or malicious. Treat them as data, validate before mutation, minimize trace export, and isolate untrusted automation. Workflow, input, pack, direct-read, existing-write-target, and instruction files are capped at 1 MiB. Approval is a decision point, not proof that an operation is safe. At-most-once recovery may leave an uncertain external outcome for human reconciliation.

@@ -8,8 +8,8 @@ use std::time::Duration;
 use agentctl_core::compiler::{CompiledPlan, PlanPredictability, TaskUse, compile};
 use agentctl_core::dsl::{
     API_VERSION, ActionDefinition, ActionKind, ApprovalRequirement, CompensationTrigger,
-    EffectClass, FailureBehavior, Idempotency, Risk, TaskDefinition, ToolDefinition, ToolKind,
-    Workflow,
+    EffectClass, FailureBehavior, Idempotency, PROCESS_EXTENSION_PROTOCOL_VERSION, Risk,
+    TaskDefinition, ToolDefinition, ToolKind, Workflow,
 };
 use agentctl_core::effect::{
     ActionResult, ChangeStatus, EffectRecord, EffectRequest, EffectStatus,
@@ -45,7 +45,9 @@ use uuid::Uuid;
 mod process;
 pub mod secret;
 
-use process::{ProcessOutputLimits, ProcessRunError, run_bounded_process};
+use process::{
+    ProcessOutputLimits, ProcessRunError, run_bounded_process, run_bounded_process_with_input,
+};
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
@@ -4875,6 +4877,12 @@ impl Runtime {
                                             ),
                                         }
                                     }
+                                    ProcessRunError::Write(message) => RuntimeError::Task {
+                                        task: task.task_id.clone(),
+                                        message: format!(
+                                            "failed to write subprocess stdin: {message}"
+                                        ),
+                                    },
                                     ProcessRunError::OutputLimitExceeded { .. } => unreachable!(),
                                 };
                                 self.store.mark_effect_uncertain(
@@ -4887,6 +4895,20 @@ impl Runtime {
                         }
                     }
                 }
+            }
+            ActionKind::ProcessExtension => {
+                self.execute_process_extension(
+                    workflow,
+                    run,
+                    task,
+                    action,
+                    input,
+                    policy,
+                    trace_id,
+                    options,
+                    cancellation,
+                )
+                .await
             }
             ActionKind::LongTermMemoryRead => {
                 let namespace = workflow
@@ -5097,6 +5119,315 @@ impl Runtime {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_process_extension(
+        &self,
+        workflow: &Workflow,
+        run: &agentctl_store::RunRecord,
+        task: &TaskRecord,
+        action: &ActionDefinition,
+        input: Value,
+        policy: &PolicyEngine,
+        trace_id: &str,
+        options: RunOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskExecution, RuntimeError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Handshake {
+            protocol_version: String,
+            name: String,
+            input_schema: Value,
+            output_schema: Value,
+            capabilities: Vec<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct InvocationResult {
+            protocol_version: String,
+            effect_id: String,
+            output: Value,
+        }
+
+        if options.check {
+            return Ok(TaskExecution::Complete {
+                output: serde_json::json!({
+                    "status": "requires_execution",
+                    "changed": false,
+                    "predictability": "requires_execution",
+                }),
+                memory: None,
+            });
+        }
+        let command = action.command.as_deref().ok_or_else(|| {
+            RuntimeError::InvalidState("extension.process requires `command`".to_owned())
+        })?;
+        let protocol_version = action.protocol_version.as_deref().ok_or_else(|| {
+            RuntimeError::InvalidState("extension.process requires `protocolVersion`".to_owned())
+        })?;
+        let input_schema = action.input_schema.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidState("extension.process requires `inputSchema`".to_owned())
+        })?;
+        let output_schema = action.output_schema.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidState("extension.process requires `outputSchema`".to_owned())
+        })?;
+        validate_output_contract(input_schema, &input).map_err(|message| RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!("extension input contract failed: {message}"),
+        })?;
+        policy.authorize_process(command)?;
+        let cwd = action
+            .cwd
+            .as_deref()
+            .map(|path| policy.resolve_read_path(path))
+            .transpose()?
+            .unwrap_or_else(|| self.base_path.clone());
+        let mut resolved_environment = BTreeMap::new();
+        let mut environment_digests = BTreeMap::new();
+        let secret_resolver = secret::SecretResolver::restricted(policy.clone());
+        for (name, reference) in &action.env {
+            policy.authorize_environment(name)?;
+            let value = secret_resolver
+                .resolve(reference, cancellation)
+                .await
+                .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
+            environment_digests.insert(
+                name.clone(),
+                serde_json::json!({
+                    "source": reference.source_description(),
+                    "valueDigest": digest(value.expose().as_bytes()),
+                }),
+            );
+            resolved_environment.insert(name.clone(), value);
+        }
+        let request = EffectRequest::new(
+            &run.run_id,
+            &task.task_id,
+            task.attempt,
+            1,
+            "extension.process",
+            EffectClass::ProcessExecution,
+            Risk::High,
+            action.idempotency.unwrap_or(Idempotency::Unknown),
+            serde_json::json!({
+                "command": command,
+                "args": action.args,
+                "cwd": action.cwd,
+                "environment": environment_digests,
+                "protocolVersion": protocol_version,
+                "inputSchemaDigest": digest(&serde_json::to_vec(input_schema)?),
+                "outputSchemaDigest": digest(&serde_json::to_vec(output_schema)?),
+                "capabilities": action.capabilities,
+                "input": input,
+                "stdoutLimitBytes": action.stdout_limit_bytes(),
+                "stderrLimitBytes": action.stderr_limit_bytes(),
+                "combinedOutputLimitBytes": action.combined_output_limit_bytes(),
+            }),
+            "invoke a reviewed bounded process extension",
+            trace_id,
+        );
+        match self.prepare_effect(
+            &request,
+            policy,
+            None,
+            "extension.process",
+            "process.execute",
+            options.interactive,
+        )? {
+            PreparedEffect::Paused => Ok(TaskExecution::Paused),
+            PreparedEffect::Recorded(output) => {
+                validate_output_contract(output_schema, &output).map_err(|message| {
+                    RuntimeError::InvalidState(format!(
+                        "recorded extension output contract failed: {message}"
+                    ))
+                })?;
+                Ok(TaskExecution::Complete {
+                    output,
+                    memory: None,
+                })
+            }
+            PreparedEffect::Execute => {
+                self.store
+                    .mark_effect_started(&request.id, self.clock.now())?;
+                let timeout = Duration::from_secs(
+                    action
+                        .timeout_seconds
+                        .unwrap_or(task_timeout(workflow, &task.task_id)),
+                );
+                let limits = ProcessOutputLimits {
+                    stdout_bytes: action.stdout_limit_bytes(),
+                    stderr_bytes: action.stderr_limit_bytes(),
+                    combined_bytes: action.combined_output_limit_bytes(),
+                };
+                let make_command = |mode: &str| {
+                    let mut process = Command::new(command);
+                    process
+                        .args(&action.args)
+                        .arg(mode)
+                        .current_dir(&cwd)
+                        .env_clear()
+                        .kill_on_drop(true);
+                    for (name, value) in &resolved_environment {
+                        process.env(name, value.expose());
+                    }
+                    process
+                };
+                let handshake_output = run_bounded_process(
+                    make_command("--agentctl-handshake"),
+                    limits,
+                    timeout,
+                    cancellation,
+                )
+                .await;
+                let handshake_output = match handshake_output {
+                    Ok(output) if output.status.success() => output,
+                    Ok(output) => {
+                        let message = format!("extension handshake exited with {}", output.status);
+                        self.store
+                            .complete_effect(&request.id, Err(&message), self.clock.now())?;
+                        return Err(RuntimeError::Task {
+                            task: task.task_id.clone(),
+                            message,
+                        });
+                    }
+                    Err(error) => {
+                        let runtime_error = process_extension_error(task, error);
+                        self.store.complete_effect(
+                            &request.id,
+                            Err(&runtime_error.to_string()),
+                            self.clock.now(),
+                        )?;
+                        return Err(runtime_error);
+                    }
+                };
+                let secrets = resolved_environment
+                    .values()
+                    .map(agentctl_core::secret::SecretValue::expose)
+                    .collect::<Vec<_>>();
+                let handshake_text =
+                    redact_text(&String::from_utf8_lossy(&handshake_output.stdout), &secrets);
+                let handshake: Handshake = match serde_json::from_str(&handshake_text) {
+                    Ok(handshake) => handshake,
+                    Err(error) => {
+                        let error = RuntimeError::Task {
+                            task: task.task_id.clone(),
+                            message: format!("extension handshake is not valid JSON: {error}"),
+                        };
+                        self.store.complete_effect(
+                            &request.id,
+                            Err(&error.to_string()),
+                            self.clock.now(),
+                        )?;
+                        return Err(error);
+                    }
+                };
+                let handshake_valid = handshake.protocol_version == protocol_version
+                    && handshake.protocol_version == PROCESS_EXTENSION_PROTOCOL_VERSION
+                    && !handshake.name.is_empty()
+                    && handshake.input_schema == *input_schema
+                    && handshake.output_schema == *output_schema
+                    && handshake.capabilities == action.capabilities;
+                if !handshake_valid {
+                    let message =
+                        "extension handshake version, schemas, or capabilities do not match the action contract"
+                            .to_owned();
+                    self.store
+                        .complete_effect(&request.id, Err(&message), self.clock.now())?;
+                    return Err(RuntimeError::Task {
+                        task: task.task_id.clone(),
+                        message,
+                    });
+                }
+                let invocation = serde_json::to_vec(&serde_json::json!({
+                    "protocolVersion": protocol_version,
+                    "effectId": request.id,
+                    "input": input,
+                }))?;
+                let invocation_output = run_bounded_process_with_input(
+                    make_command("--agentctl-invoke"),
+                    invocation,
+                    limits,
+                    timeout,
+                    cancellation,
+                )
+                .await;
+                let invocation_output = match invocation_output {
+                    Ok(output) if output.status.success() => output,
+                    Ok(output) => {
+                        let error = RuntimeError::ExternalEffectUncertain(format!(
+                            "extension invocation exited with {} after effect dispatch",
+                            output.status
+                        ));
+                        self.store.mark_effect_uncertain(
+                            &request.id,
+                            &error.to_string(),
+                            self.clock.now(),
+                        )?;
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        let error = process_extension_error(task, error);
+                        self.store.mark_effect_uncertain(
+                            &request.id,
+                            &error.to_string(),
+                            self.clock.now(),
+                        )?;
+                        return Err(error);
+                    }
+                };
+                let response_text = redact_text(
+                    &String::from_utf8_lossy(&invocation_output.stdout),
+                    &secrets,
+                );
+                let response: InvocationResult = match serde_json::from_str(&response_text) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let error = RuntimeError::ExternalEffectUncertain(format!(
+                            "extension invocation returned malformed JSON after effect dispatch: {error}"
+                        ));
+                        self.store.mark_effect_uncertain(
+                            &request.id,
+                            &error.to_string(),
+                            self.clock.now(),
+                        )?;
+                        return Err(error);
+                    }
+                };
+                if response.protocol_version != protocol_version || response.effect_id != request.id
+                {
+                    let error = RuntimeError::ExternalEffectUncertain(
+                        "extension invocation response identity does not match the request"
+                            .to_owned(),
+                    );
+                    self.store.mark_effect_uncertain(
+                        &request.id,
+                        &error.to_string(),
+                        self.clock.now(),
+                    )?;
+                    return Err(error);
+                }
+                if let Err(message) = validate_output_contract(output_schema, &response.output) {
+                    let error = RuntimeError::ExternalEffectUncertain(format!(
+                        "extension output contract failed after effect dispatch: {message}"
+                    ));
+                    self.store.mark_effect_uncertain(
+                        &request.id,
+                        &error.to_string(),
+                        self.clock.now(),
+                    )?;
+                    return Err(error);
+                }
+                self.store
+                    .complete_effect(&request.id, Ok(&response.output), self.clock.now())?;
+                Ok(TaskExecution::Complete {
+                    output: response.output,
+                    memory: None,
+                })
             }
         }
     }
@@ -6152,6 +6483,35 @@ fn validate_output_contract(schema: &Value, output: &Value) -> Result<(), String
     validator
         .validate(output)
         .map_err(|error| error.to_string())
+}
+
+fn process_extension_error(task: &TaskRecord, error: ProcessRunError) -> RuntimeError {
+    match error {
+        ProcessRunError::Spawn(error) | ProcessRunError::Wait(error) => RuntimeError::Io(error),
+        ProcessRunError::Read { stream, message } => RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!("failed to capture extension {stream}: {message}"),
+        },
+        ProcessRunError::Write(message) => RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!("failed to write extension request: {message}"),
+        },
+        ProcessRunError::Timeout { seconds } => RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!("extension timed out after {seconds} seconds and was terminated"),
+        },
+        ProcessRunError::Cancelled => RuntimeError::Cancelled,
+        ProcessRunError::OutputLimitExceeded {
+            stream,
+            limit_bytes,
+            ..
+        } => RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!(
+                "extension {stream} exceeded the configured {limit_bytes}-byte output limit"
+            ),
+        },
+    }
 }
 
 fn task_definition_fingerprint(
@@ -13181,6 +13541,307 @@ spec:
             )
             .expect("secret scan");
         assert_eq!(occurrences, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_extension_negotiates_contract_and_replays_without_execution() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let extension = directory.path().join("fixture-extension");
+        let invocations = directory.path().join("invocations");
+        let secret = "extension-secret-must-not-persist";
+        fs::create_dir(directory.path().join("secrets")).expect("secrets");
+        fs::write(directory.path().join("secrets/token"), secret).expect("secret");
+        fs::write(
+            &extension,
+            format!(
+                r#"#!/bin/sh
+case "$1" in
+  --agentctl-handshake)
+    printf '%s' '{{"protocolVersion":"agentctl.dev/process-extension/v1","name":"fixture","inputSchema":{{"type":"object","required":["value"],"properties":{{"value":{{"type":"string"}}}},"additionalProperties":false}},"outputSchema":{{"type":"object","required":["value","secret"],"properties":{{"value":{{"type":"string"}},"secret":{{"type":"string"}}}},"additionalProperties":false}},"capabilities":["transform"]}}'
+    ;;
+  --agentctl-invoke)
+    read -r request
+    effect_id=$(printf '%s' "$request" | sed -n 's/.*"effectId":"\([^"]*\)".*/\1/p')
+    printf invocation >> '{}'
+    printf '{{"protocolVersion":"agentctl.dev/process-extension/v1","effectId":"%s","output":{{"value":"done","secret":"%s"}}}}' "$effect_id" "$SECRET"
+    ;;
+  *) exit 64 ;;
+esac
+"#,
+                invocations.display()
+            ),
+        )
+        .expect("extension");
+        fs::set_permissions(&extension, fs::Permissions::from_mode(0o755))
+            .expect("extension permissions");
+        let source = format!(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: process-extension }}
+spec:
+  outputs: {{ value: "${{{{ tasks.extend.output.value }}}}" }}
+  policy:
+    workspaceRoot: .
+    processAllowlist: [fixture-extension]
+    environmentAllowlist: [SECRET]
+    secretFileRoots: [secrets]
+    approval: never
+  actions:
+    extend:
+      kind: extension.process
+      command: "{}"
+      protocolVersion: agentctl.dev/process-extension/v1
+      idempotency: keyed
+      capabilities: [transform]
+      env:
+        SECRET: {{ file: secrets/token }}
+      inputSchema:
+        type: object
+        required: [value]
+        properties: {{ value: {{ type: string }} }}
+        additionalProperties: false
+      outputSchema:
+        type: object
+        required: [value, secret]
+        properties:
+          value: {{ type: string }}
+          secret: {{ type: string }}
+        additionalProperties: false
+  tasks:
+    - id: extend
+      uses: action:extend
+      with: {{ value: input }}
+"#,
+            extension.display()
+        );
+        let (workflow, plan) = compile_fixture(&source);
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("extension run");
+        assert_eq!(outcome.output.expect("output")["value"], "done");
+        let effect = &store.list_effects(&outcome.run_id).expect("effects")[0];
+        assert_eq!(
+            effect.result.as_ref().expect("effect result")["secret"],
+            "[REDACTED]"
+        );
+        assert!(
+            !serde_json::to_string(effect)
+                .expect("effect json")
+                .contains(secret)
+        );
+        assert_eq!(
+            fs::read_to_string(&invocations).expect("invocations"),
+            "invocation"
+        );
+        let replay = runtime.replay(&outcome.run_id).await.expect("replay");
+        assert_eq!(replay.output.expect("replay output")["value"], "done");
+        assert_eq!(
+            fs::read_to_string(&invocations).expect("invocations"),
+            "invocation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_extension_refuses_mismatched_handshake_before_invocation() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let extension = directory.path().join("bad-extension");
+        let marker = directory.path().join("invoked");
+        fs::write(
+            &extension,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--agentctl-handshake" ]; then
+  printf '%s' '{{"protocolVersion":"agentctl.dev/process-extension/v0","name":"bad","inputSchema":{{"type":"object"}},"outputSchema":{{"type":"object"}},"capabilities":[]}}'
+else
+  touch '{}'
+fi
+"#,
+                marker.display()
+            ),
+        )
+        .expect("extension");
+        fs::set_permissions(&extension, fs::Permissions::from_mode(0o755))
+            .expect("extension permissions");
+        let source = format!(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: bad-process-extension }}
+spec:
+  policy:
+    workspaceRoot: .
+    processAllowlist: [bad-extension]
+    approval: never
+  actions:
+    extend:
+      kind: extension.process
+      command: "{}"
+      protocolVersion: agentctl.dev/process-extension/v1
+      idempotency: at_most_once
+      inputSchema: {{ type: object }}
+      outputSchema: {{ type: object }}
+  tasks: [{{ id: extend, uses: "action:extend" }}]
+"#,
+            extension.display()
+        );
+        let (workflow, plan) = compile_fixture(&source);
+        let store = SqliteStore::open_memory().expect("store");
+        let run_id = match runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected handshake failure, got {other:?}"),
+        };
+        assert!(!marker.exists());
+        let effect = &store.list_effects(&run_id).expect("effects")[0];
+        assert_eq!(effect.status, EffectStatus::Failed);
+        assert!(
+            effect
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("handshake"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_extension_bounds_output_timeout_crash_and_cancellation() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let extension = directory.path().join("bounded-extension");
+        let marker = directory.path().join("cancel-started");
+        fs::write(
+            &extension,
+            format!(
+                r#"#!/bin/sh
+behavior="$1"
+mode="$2"
+if [ "$mode" = "--agentctl-handshake" ]; then
+  printf '%s' '{{"protocolVersion":"agentctl.dev/process-extension/v1","name":"bounded","inputSchema":{{"type":"object"}},"outputSchema":{{"type":"object"}},"capabilities":[]}}'
+  exit 0
+fi
+read -r request
+case "$behavior" in
+  overflow) while :; do printf 1234567890; done ;;
+  timeout) sleep 2 ;;
+  crash) exit 70 ;;
+  cancel) touch '{}'; sleep 10 ;;
+esac
+"#,
+                marker.display()
+            ),
+        )
+        .expect("extension");
+        fs::set_permissions(&extension, fs::Permissions::from_mode(0o755))
+            .expect("extension permissions");
+        let source_for = |behavior: &str, timeout: u64| {
+            format!(
+                r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: bounded-{behavior} }}
+spec:
+  policy:
+    workspaceRoot: .
+    processAllowlist: [bounded-extension]
+    approval: never
+  actions:
+    extend:
+      kind: extension.process
+      command: "{}"
+      args: [{behavior}]
+      protocolVersion: agentctl.dev/process-extension/v1
+      idempotency: at_most_once
+      timeoutSeconds: {timeout}
+      stdoutLimitBytes: 1024
+      stderrLimitBytes: 1024
+      combinedOutputLimitBytes: 2048
+      inputSchema: {{ type: object }}
+      outputSchema: {{ type: object }}
+  tasks: [{{ id: extend, uses: "action:extend" }}]
+"#,
+                extension.display()
+            )
+        };
+
+        for (behavior, timeout) in [("overflow", 2), ("timeout", 1), ("crash", 2)] {
+            let (workflow, plan) = compile_fixture(&source_for(behavior, timeout));
+            let store = SqliteStore::open_memory().expect("store");
+            let run_id = match runtime(store.clone(), directory.path())
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await
+            {
+                Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+                other => panic!("expected {behavior} failure, got {other:?}"),
+            };
+            let effect = &store.list_effects(&run_id).expect("effects")[0];
+            assert_eq!(
+                effect.status,
+                EffectStatus::Uncertain,
+                "{behavior}: {:?}",
+                effect.error
+            );
+        }
+
+        let (workflow, plan) = compile_fixture(&source_for("cancel", 20));
+        let store = SqliteStore::open_memory().expect("store");
+        let cancellation = CancellationToken::new();
+        let trigger = cancellation.clone();
+        let observed_marker = marker.clone();
+        tokio::spawn(async move {
+            while !observed_marker.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            trigger.cancel();
+        });
+        let cancelled = runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &cancellation,
+            )
+            .await
+            .expect("durably cancelled run");
+        assert_eq!(cancelled.state, RunState::Cancelled);
+        assert_eq!(
+            store.list_effects(&cancelled.run_id).expect("effects")[0].status,
+            EffectStatus::Uncertain
+        );
     }
 
     #[cfg(unix)]

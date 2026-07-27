@@ -1,13 +1,15 @@
+mod packs;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentctl_core::compiler::provider_capabilities;
-use agentctl_core::diagnostic::Diagnostic;
+use agentctl_core::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 use agentctl_core::dsl::{ProviderKind, SecretReference, Workflow, parse_workflow, schema_json};
 use agentctl_core::pack::{PackManifest, verify_pack};
 use agentctl_core::policy::PolicyEngine;
@@ -46,6 +48,8 @@ const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 static VERBOSE_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
 static STREAM_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
+static PACK_OFFLINE: AtomicBool = AtomicBool::new(false);
+static PACK_LOCKED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -61,6 +65,12 @@ struct Cli {
     color: ColorMode,
     #[arg(long, global = true)]
     verbose: bool,
+    /// Forbid pack network access and require cached Git/archive sources.
+    #[arg(long, global = true)]
+    offline: bool,
+    /// Require agentctl.pack.lock and reject all source or graph drift.
+    #[arg(long, global = true)]
+    locked: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -433,6 +443,20 @@ enum PackCommand {
         #[arg(long)]
         integrity: String,
     },
+    /// Resolve the complete graph and write agentctl.pack.lock.
+    Lock {
+        workflow: PathBuf,
+    },
+    /// Refresh the locked graph from immutable sources.
+    Update {
+        workflow: PathBuf,
+        #[arg(long)]
+        pack: Option<String>,
+    },
+    /// Verify a lockfile, source digests, signatures, and trust policy.
+    VerifyLock {
+        workflow: PathBuf,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -617,6 +641,8 @@ async fn main() {
     };
     let output = cli.output;
     VERBOSE_OUTPUT.store(cli.verbose, Ordering::Relaxed);
+    PACK_OFFLINE.store(cli.offline, Ordering::Relaxed);
+    PACK_LOCKED.store(cli.locked, Ordering::Relaxed);
     COLOR_OUTPUT.store(
         color_enabled(cli.color, io::stdout().is_terminal()),
         Ordering::Relaxed,
@@ -1831,6 +1857,82 @@ fn pack_command(output: OutputFormat, args: PackArgs) -> Result<u8, CliError> {
                 "pack integrity verified".to_owned(),
             )?;
         }
+        PackCommand::Lock { workflow } => {
+            let source = read_text(&workflow)?;
+            let parsed = parse_workflow(&source, &workflow.display().to_string())
+                .map_err(diagnostics_error)?;
+            let lock = packs::generate_lock(
+                &parsed.workflow,
+                &workflow,
+                PACK_OFFLINE.load(Ordering::Relaxed),
+            )
+            .map_err(CliError::validation)?;
+            let path = packs::write_lock(&workflow, &lock).map_err(CliError::validation)?;
+            print_value(
+                output,
+                "PackLock",
+                &serde_json::json!({"path": path, "lock": lock}),
+                parsed.diagnostics,
+                format!("locked {} pack(s) at {}", lock.packs.len(), path.display()),
+            )?;
+        }
+        PackCommand::Update { workflow, pack } => {
+            let source = read_text(&workflow)?;
+            let parsed = parse_workflow(&source, &workflow.display().to_string())
+                .map_err(diagnostics_error)?;
+            if let Some(name) = &pack
+                && !parsed
+                    .workflow
+                    .spec
+                    .packs
+                    .iter()
+                    .any(|reference| reference.name == *name)
+            {
+                return Err(CliError::validation(format!(
+                    "workflow does not declare root pack `{name}`"
+                )));
+            }
+            let lock = packs::generate_lock(
+                &parsed.workflow,
+                &workflow,
+                PACK_OFFLINE.load(Ordering::Relaxed),
+            )
+            .map_err(CliError::validation)?;
+            let path = packs::write_lock(&workflow, &lock).map_err(CliError::validation)?;
+            print_value(
+                output,
+                "PackLockUpdate",
+                &serde_json::json!({"path": path, "updated": pack, "lock": lock}),
+                parsed.diagnostics,
+                format!("updated {} pack(s) at {}", lock.packs.len(), path.display()),
+            )?;
+        }
+        PackCommand::VerifyLock { workflow } => {
+            let source = read_text(&workflow)?;
+            let parsed = parse_workflow(&source, &workflow.display().to_string())
+                .map_err(diagnostics_error)?;
+            let loaded = packs::load_for_workflow(
+                &parsed.workflow,
+                &workflow,
+                packs::PackOptions {
+                    offline: PACK_OFFLINE.load(Ordering::Relaxed),
+                    locked: true,
+                },
+            )
+            .map_err(CliError::validation)?;
+            print_value(
+                output,
+                "PackLockVerification",
+                &serde_json::json!({
+                    "path": packs::lock_path(&workflow),
+                    "valid": true,
+                    "packs": loaded.packs.iter().map(|(entry, _)| entry).collect::<Vec<_>>(),
+                    "warnings": loaded.warnings,
+                }),
+                parsed.diagnostics,
+                format!("verified {} locked pack(s)", loaded.packs.len()),
+            )?;
+        }
     }
     Ok(EXIT_OK)
 }
@@ -2241,50 +2343,45 @@ fn load_and_compile(
     let source = read_text(path)?;
     let parsed = parse_workflow(&source, &path.display().to_string()).map_err(diagnostics_error)?;
     let mut workflow = parsed.workflow;
-    load_packs(&mut workflow, path)?;
+    let loaded = packs::load_for_workflow(
+        &workflow,
+        path,
+        packs::PackOptions {
+            offline: PACK_OFFLINE.load(Ordering::Relaxed),
+            locked: PACK_LOCKED.load(Ordering::Relaxed),
+        },
+    )
+    .map_err(CliError::validation)?;
+    let mut diagnostics = parsed.diagnostics;
+    diagnostics.extend(loaded.warnings.into_iter().map(|message| {
+        Diagnostic {
+        code: DiagnosticCode::PolicyDenied,
+        severity: Severity::Warning,
+        message,
+        file: path.display().to_string(),
+        line: None,
+        column: None,
+        path: Some("$.spec.packs".to_owned()),
+        help: Some(
+            "sign the pack with a trusted Sigstore identity or choose an explicit unsigned policy"
+                .to_owned(),
+        ),
+    }
+    }));
+    load_packs(&mut workflow, loaded.packs)?;
     let plan = compile(&workflow, &path.display().to_string()).map_err(diagnostics_error)?;
-    Ok((workflow, plan, parsed.diagnostics))
+    Ok((workflow, plan, diagnostics))
 }
 
-fn load_packs(workflow: &mut Workflow, workflow_path: &Path) -> Result<(), CliError> {
-    let base = workflow_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let canonical_base = std::fs::canonicalize(base)
-        .map_err(|error| CliError::validation(format!("{}: {error}", base.display())))?;
-    for reference in workflow.spec.packs.clone() {
-        let relative = Path::new(&reference.path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-        {
+fn load_packs(
+    workflow: &mut Workflow,
+    packs: Vec<(agentctl_core::pack::PackLockEntry, PackManifest)>,
+) -> Result<(), CliError> {
+    for (entry, mut pack) in packs {
+        if pack.name != entry.name || pack.version != entry.version {
             return Err(CliError::validation(format!(
-                "pack `{}` path must remain under the workflow directory",
-                reference.name
-            )));
-        }
-        let path = base.join(relative);
-        let canonical = std::fs::canonicalize(&path)
-            .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))?;
-        if !canonical.starts_with(&canonical_base) {
-            return Err(CliError::validation(format!(
-                "pack `{}` resolves outside the workflow directory",
-                reference.name
-            )));
-        }
-        verify_pack(&canonical, &reference.integrity)
-            .map_err(|error| CliError::validation(error.to_string()))?;
-        let source = read_text(&canonical)?;
-        let mut pack: PackManifest = serde_yaml_ng::from_str(&source)
-            .map_err(|error| CliError::validation(format!("{}: {error}", canonical.display())))?;
-        pack.validate()
-            .map_err(|error| CliError::validation(error.to_string()))?;
-        if pack.name != reference.name || pack.version != reference.version {
-            return Err(CliError::validation(format!(
-                "pack reference `{}@{}` does not match manifest `{}@{}`",
-                reference.name, reference.version, pack.name, pack.version
+                "locked pack `{}@{}` does not match manifest `{}@{}`",
+                entry.name, entry.version, pack.name, pack.version
             )));
         }
         let qualify = |name: &str| format!("{}.{}", pack.name, name);

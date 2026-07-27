@@ -159,6 +159,14 @@
           },
           "default": []
         },
+        "packTrust": {
+          "$ref": "#/$defs/PackTrustDefinition",
+          "default": {
+            "unsigned": "warn",
+            "identities": [],
+            "allowUnsignedProcess": false
+          }
+        },
         "runtime": {
           "$ref": "#/$defs/RuntimeDefinition",
           "default": {
@@ -572,6 +580,21 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "protocolVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputSchema": true,
+        "outputSchema": true,
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -587,6 +610,7 @@
         "builtin.read",
         "builtin.write",
         "builtin.shell.exec",
+        "extension.process",
         "builtin.memory.read",
         "builtin.memory.write",
         "builtin.long_term_memory.read",
@@ -1248,19 +1272,164 @@
         "version": {
           "type": "string"
         },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackSignature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "path": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "integrity": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
-        "version",
-        "path",
-        "integrity"
+        "version"
+      ]
+    },
+    "PackSource": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "git": {
+              "type": "string"
+            },
+            "rev": {
+              "type": "string"
+            },
+            "manifest": {
+              "type": "string",
+              "default": "agentctl.pack.yaml"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "git",
+            "rev"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "integrity": {
+              "type": "string"
+            },
+            "manifest": {
+              "type": "string",
+              "default": "agentctl.pack.yaml"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "integrity"
+          ]
+        }
+      ]
+    },
+    "PackSignature": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": "string"
+        },
+        "identity": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "identity",
+        "issuer"
+      ]
+    },
+    "PackTrustDefinition": {
+      "type": "object",
+      "properties": {
+        "unsigned": {
+          "$ref": "#/$defs/UnsignedPackPolicy",
+          "default": "warn"
+        },
+        "identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PackIdentity"
+          },
+          "default": []
+        },
+        "allowUnsignedProcess": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "UnsignedPackPolicy": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "warn",
+        "allow"
+      ]
+    },
+    "PackIdentity": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "issuer"
       ]
     },
     "RuntimeDefinition": {

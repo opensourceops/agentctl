@@ -26,8 +26,25 @@ Free-form `team:` orchestration is rejected. Convert each role to an explicit
 agent task and each payload transfer to a typed handoff task; see
 [Structured role handoffs](guides/STRUCTURED_HANDOFFS.md).
 
-Legacy workflows depending on packs, broad built-in tool profiles, remote MCP/A2A shape, MongoDB memory, provider-specific endpoint fields, or embedded credentials require manual conversion. The translator intentionally refuses to guess security-sensitive intent.
+Legacy exact local pack references remain readable and warn until
+`agentctl packs lock` writes `agentctl.pack.lock`. Convert `path` and
+`integrity` fields to a typed `source`, select `packTrust.unsigned`, and review
+`allowUnsignedProcess` before enabling any process-capable pack. Native dynamic
+libraries are not supported; migrate local executors to `extension.process` or
+remote tools to MCP.
+
+Legacy workflows depending on broad built-in tool profiles, remote MCP/A2A
+shape, MongoDB memory, provider-specific endpoint fields, or embedded
+credentials require manual conversion. The translator intentionally refuses to
+guess security-sensitive intent.
 
 ## Separate product decisions
 
-A public pack registry and general A2A resubmission are not compatibility promises for v1alpha1. MCP reconnect is bounded by explicit idempotency and schema stability. A2A continuation observes only a persisted task ID. Bounded loops, namespaced sub-workflows, explicit source-linked compensation, graph-native structured handoffs, durable streaming, and protocol continuation records are additive; hidden or model-controlled orchestration is intentionally unsupported.
+A public pack registry, in-process plugin ABI, and general A2A resubmission are
+not compatibility promises for v1alpha1. Pack lock v1, the bounded process
+protocol v1, and source/trust policy are additive. MCP reconnect is bounded by
+explicit idempotency and schema stability. A2A continuation observes only a
+persisted task ID. Bounded loops, namespaced sub-workflows, explicit
+source-linked compensation, graph-native structured handoffs, durable
+streaming, and protocol continuation records are additive; hidden or
+model-controlled orchestration is intentionally unsupported.

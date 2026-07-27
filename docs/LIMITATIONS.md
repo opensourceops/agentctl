@@ -23,8 +23,6 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
 
-- pack dependency resolution, lockfiles, immutable remote sources, integrity, and trust policy;
-- the selected isolated extension process protocol;
 - semantic and hybrid long-term-memory retrieval;
 - enforceable network, process-isolation, usage, resource, and cost budgets;
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
@@ -76,6 +74,15 @@ These core workstreams are tracked in the framework limitation burn-down and are
   `effects continue-remote` can resume polling or streaming of a known task,
   retrieve bounded same-origin artifacts, and make the recovered boundary
   reusable by retry.
+- Pack resolution has no hosted registry or version discovery. Every root and
+  dependency names one local, pinned Git, or immutable archive source. The
+  checked-in lock is per workflow directory. Sigstore verification uses the
+  trust root embedded in the installed agentctl version; rotate agentctl when
+  public-good trust material changes.
+- `extension.process` is a reviewed process contract, not a native ABI or OS
+  sandbox. Handshake is a non-mutating protocol promise; invocation failures
+  after dispatch remain uncertain. Use containers or stronger platform
+  isolation for hostile executables.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.

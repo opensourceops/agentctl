@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Severity};
+use crate::pack::{PackSignature, PackSource};
 
 pub const API_VERSION: &str = "agentctl.dev/v1alpha1";
 
@@ -65,6 +66,8 @@ pub struct WorkflowSpec {
     pub a2a_peers: BTreeMap<String, A2aPeerDefinition>,
     #[serde(default)]
     pub packs: Vec<PackReference>,
+    #[serde(default)]
+    pub pack_trust: PackTrustDefinition,
     #[serde(default)]
     pub runtime: RuntimeDefinition,
     #[serde(default)]
@@ -252,8 +255,17 @@ pub struct ActionDefinition {
     pub stderr_limit_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combined_output_limit_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
+pub const PROCESS_EXTENSION_PROTOCOL_VERSION: &str = "agentctl.dev/process-extension/v1";
 pub const DEFAULT_PROCESS_STREAM_LIMIT_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_PROCESS_COMBINED_LIMIT_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PROCESS_OUTPUT_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
@@ -283,13 +295,24 @@ impl ActionDefinition {
         let has_output_limit = self.stdout_limit_bytes.is_some()
             || self.stderr_limit_bytes.is_some()
             || self.combined_output_limit_bytes.is_some();
-        if self.kind != ActionKind::ShellExec && has_output_limit {
-            return Err("process output limits are only valid for builtin.shell.exec actions");
+        let process_action = matches!(
+            self.kind,
+            ActionKind::ShellExec | ActionKind::ProcessExtension
+        );
+        if !process_action && has_output_limit {
+            return Err(
+                "process output limits are only valid for builtin.shell.exec or extension.process actions",
+            );
         }
-        if self.idempotency.is_some() && self.kind != ActionKind::McpCall {
-            return Err("idempotency is only valid for mcp.call actions");
+        if self.idempotency.is_some()
+            && !matches!(
+                self.kind,
+                ActionKind::McpCall | ActionKind::ProcessExtension
+            )
+        {
+            return Err("idempotency is only valid for mcp.call or extension.process actions");
         }
-        if self.kind != ActionKind::ShellExec {
+        if !process_action {
             return Ok(());
         }
         if self.timeout_seconds.is_some_and(|value| value == 0) {
@@ -319,6 +342,47 @@ impl ActionDefinition {
                 return Err(message);
             }
         }
+        if self.kind == ActionKind::ProcessExtension {
+            if self.command.as_deref().is_none_or(str::is_empty) {
+                return Err("extension.process requires command");
+            }
+            if self.protocol_version.as_deref() != Some(PROCESS_EXTENSION_PROTOCOL_VERSION) {
+                return Err(
+                    "extension.process protocolVersion must be agentctl.dev/process-extension/v1",
+                );
+            }
+            if self.idempotency.is_none() {
+                return Err("extension.process requires explicit idempotency");
+            }
+            let Some(input_schema) = &self.input_schema else {
+                return Err("extension.process requires inputSchema");
+            };
+            if jsonschema::validator_for(input_schema).is_err() {
+                return Err("extension.process inputSchema must be valid JSON Schema");
+            }
+            let Some(output_schema) = &self.output_schema else {
+                return Err("extension.process requires outputSchema");
+            };
+            if jsonschema::validator_for(output_schema).is_err() {
+                return Err("extension.process outputSchema must be valid JSON Schema");
+            }
+            if self.capabilities.iter().any(String::is_empty) {
+                return Err("extension.process capabilities must not contain empty values");
+            }
+            let unique = self
+                .capabilities
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique.len() != self.capabilities.len() {
+                return Err("extension.process capabilities must be unique");
+            }
+        } else if self.protocol_version.is_some()
+            || self.input_schema.is_some()
+            || self.output_schema.is_some()
+            || !self.capabilities.is_empty()
+        {
+            return Err("extension protocol fields are only valid for extension.process actions");
+        }
         Ok(())
     }
 }
@@ -335,6 +399,8 @@ pub enum ActionKind {
     Write,
     #[serde(rename = "builtin.shell.exec")]
     ShellExec,
+    #[serde(rename = "extension.process")]
+    ProcessExtension,
     #[serde(rename = "builtin.memory.read")]
     MemoryRead,
     #[serde(rename = "builtin.memory.write")]
@@ -733,8 +799,41 @@ fn default_a2a_version() -> String {
 pub struct PackReference {
     pub name: String,
     pub version: String,
-    pub path: String,
-    pub integrity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PackSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<PackSignature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackTrustDefinition {
+    #[serde(default)]
+    pub unsigned: UnsignedPackPolicy,
+    #[serde(default)]
+    pub identities: Vec<PackIdentity>,
+    #[serde(default)]
+    pub allow_unsigned_process: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackIdentity {
+    pub identity: String,
+    pub issuer: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsignedPackPolicy {
+    Deny,
+    #[default]
+    Warn,
+    Allow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

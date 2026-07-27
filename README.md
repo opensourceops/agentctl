@@ -69,11 +69,16 @@ For typed reusable graphs with namespaced recovery boundaries, use [Reusable sub
 For bounded provider progress, JSONL output, and recorded stream replay, use [Durable provider streaming](docs/guides/DURABLE_STREAMING.md).
 For schema-checked MCP reconnect and task-ID-based A2A continuation, use
 [MCP support](docs/MCP.md) and [A2A support](docs/A2A.md).
+For deterministic dependency locking and publisher policy, use
+[Packs](docs/PACKS.md). For reviewed local executables, use the
+[bounded process extension protocol](docs/EXTENSIONS.md).
 
 ## Safety boundary
 
 - Secrets are environment, mounted-file, or policy-gated process references, never inline values or CLI flags.
 - Files, processes, providers, MCP servers, and A2A peers require explicit policy grants.
+- Pack sources are locked by digest; optional Sigstore identity verification
+  and explicit unsigned-process policy run before pack actions are loaded.
 - Every non-pure operation is recorded before execution. A crash after an at-most-once effect starts is reported as uncertain and is never silently repeated.
 - Model turns, output tokens, tool calls, retries, and time are bounded.
 - Shell stdout/stderr capture is bounded, concurrently drained, and terminated/reaped on output, timeout, or cancellation limits.
