@@ -2133,7 +2133,27 @@ impl Runtime {
                 ));
                 continue;
             }
-            let input_digest = resolved_input_digest(inputs, &memory, &outputs, target_task)?;
+            let input_digest = match resolved_input_digest(inputs, &memory, &outputs, target_task) {
+                Ok(input_digest) => input_digest,
+                Err(error) => {
+                    blocked(
+                        "resolved_input_unavailable",
+                        format!(
+                            "resolved inputs for task `{task_id}` cannot be reconstructed from reusable predecessors: {error}"
+                        ),
+                        false,
+                        &mut blocks,
+                        &mut blocked_task_ids,
+                    );
+                    task_plans.push(blocked_task_plan(
+                        task_id,
+                        Some(source_task.state),
+                        source_fingerprint,
+                        target_fingerprint,
+                    ));
+                    continue;
+                }
+            };
             if source_task.input_digest.as_deref() != Some(&input_digest) {
                 blocked(
                     "resolved_input_digest_mismatch",
@@ -13282,6 +13302,69 @@ spec:
             BudgetCounters::default()
         );
         assert_eq!(replay.output, outcome.output);
+    }
+
+    #[tokio::test]
+    async fn retry_plan_reports_unavailable_reused_inputs_without_aborting() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store, directory.path()).with_registry(
+            RuntimeRegistry::default().with_provider("fake", Arc::new(PromptEchoProvider)),
+        );
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: retry-plan-diagnostics }
+spec:
+  providers:
+    fake: { kind: fake }
+  agents:
+    untyped:
+      provider: fake
+      model: fake
+      instructions: return a plain response
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  tasks:
+    - { id: generate, uses: "agent:untyped", with: { prompt: durable } }
+    - id: consume
+      uses: "action:assign"
+      needs: [generate]
+      with: { value: "${{ tasks.generate.output.text }}" }
+    - { id: fail, uses: "action:assert", needs: [consume], with: { that: false } }
+"#;
+        let (workflow, compiled) = compile_fixture(source);
+        let source_run_id = match runtime
+            .start(
+                &workflow,
+                &compiled,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected source failure, got {other:?}"),
+        };
+
+        let plan = runtime
+            .plan_retry(&source_run_id, &workflow, &compiled, &[], true, false)
+            .expect("incompatible retry plan is still returned");
+        assert!(!plan.compatible);
+        assert!(
+            plan.blocked_reuse
+                .iter()
+                .any(|block| block.task_id == "generate"
+                    && block.rule == "missing_output_contract")
+        );
+        assert!(
+            plan.blocked_reuse
+                .iter()
+                .any(|block| block.task_id == "consume"
+                    && block.rule == "resolved_input_unavailable")
+        );
     }
 
     #[tokio::test]
