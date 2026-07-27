@@ -5100,7 +5100,6 @@ struct ProtocolFixtureServer {
 impl ProtocolFixtureServer {
     fn start() -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
         let state = Arc::new(ProtocolFixtureState::default());
         let thread_state = Arc::clone(&state);
@@ -5110,20 +5109,14 @@ impl ProtocolFixtureServer {
             while !thread_shutdown.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        if thread_shutdown.load(Ordering::SeqCst) {
+                            break;
+                        }
                         let _ = serve_protocol_request(&mut stream, address, &thread_state);
                     }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::WouldBlock
-                                | std::io::ErrorKind::Interrupted
-                                | std::io::ErrorKind::ConnectionAborted
-                                | std::io::ErrorKind::ConnectionReset
-                        ) =>
-                    {
+                    Err(_) => {
                         thread::sleep(Duration::from_millis(2));
                     }
-                    Err(_) => break,
                 }
             }
         });
