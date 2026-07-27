@@ -92,6 +92,20 @@ Each executable extension declares schemas, capabilities, effects, limits, and
 policy requirements. Process and MCP execution remain isolated effect
 boundaries.
 
+## Network contract
+
+Required provider and protocol URLs are preflighted before run persistence.
+Policy fixes the HTTP(S) schemes, exact or wildcard hosts, effective ports,
+private-network authority, proxy authority, optional custom CA reference,
+DNS/connect bound, and response-byte ceiling. Direct destinations resolve
+once, every IPv4 and IPv6 answer is authorized, and the accepted answer is
+pinned into the client. Redirects and Unix sockets are unsupported.
+
+Private addresses and environment proxies fail by default. Explicit proxy
+authority delegates routing and resolution to that trusted proxy. These
+controls are defense in depth; they do not replace container, VM, identity, or
+platform egress isolation for hostile workflows.
+
 ## Explicit non-goals
 
 - hosted SaaS, public control plane, or public pack registry;

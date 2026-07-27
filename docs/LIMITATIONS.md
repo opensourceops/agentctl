@@ -23,7 +23,7 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
 
-- enforceable network, process-isolation, usage, resource, and cost budgets;
+- enforceable process-isolation, usage, resource, and cost budgets;
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
 - reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
 
@@ -90,6 +90,12 @@ These core workstreams are tracked in the framework limitation burn-down and are
   always explicit.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
+- Network preflight validates the HTTP(S) scheme, host, effective port, and
+  every resolved IPv4/IPv6 address before run creation, then pins accepted
+  direct DNS answers. Private addresses and environment proxies are denied by
+  default; redirects and Unix sockets are disabled. Explicit `allowProxy`
+  delegates routing and destination resolution to that trusted proxy, so use
+  external egress isolation for hostile workflows.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
 - Successful tasks from databases created before schema 5 require explicit `runs analyze`/`runs upgrade`. Only provable metadata is imported; unprovable boundaries are returned as conservative safe repair roots.

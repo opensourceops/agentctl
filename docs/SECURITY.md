@@ -15,7 +15,15 @@
   before persistence or output.
 - Canonical read/write roots reject `..` and symlink escape. Writes use temporary files and rename.
 - Processes require an allowed executable basename, direct argv, cleared environment, selected variables, validated output/timeout bounds, concurrent stdout/stderr draining, and cancellation. Output-limit, timeout, and cancellation paths terminate and reap the child; diagnostics are bounded and omit captured output when secret environment values are present.
-- Network destinations require an exact/wildcard host grant. Provider and protocol clients disable redirects and use rustls.
+- Required provider and protocol destinations are authorized before run
+  persistence. Scheme, effective port, and host must be granted. Every resolved
+  address is checked against private/reserved policy and the complete accepted
+  answer is pinned into the direct HTTP client, preventing a second DNS lookup.
+  Empty or mixed public/private answers fail closed. Redirects and Unix sockets
+  are disabled. Environment proxies are ignored by default. TLS uses rustls;
+  optional custom CA bundles are certificate-only protected references.
+  DNS/connect time, protocol operation time, task time, and response bytes are
+  bounded.
 - Tool input and output JSON Schemas are enforced. Models, MCP annotations, A2A cards, remote schemas, and results cannot grant capabilities.
 - Requests are ledgered before effects. Global denial or approval cannot be weakened by a tool contract. Approval is durable; non-interactive mode pauses with exit `3` or uses an explicitly stricter deny/fail mode, never a prompt or implicit approval.
 - SQLite uses foreign keys, WAL/busy timeout, version checks, checksummed checkpoints, and mode `0600` on Unix.
@@ -43,9 +51,11 @@
 Path and executable allowlists are not a sandbox. A permitted program, including
 a secret helper, can access anything the operating-system identity can access.
 Redaction cannot prevent an authorized recipient from transforming a secret
-before exfiltration. Host allowlists do not defend against every DNS rebinding,
-proxy, local-service, or compromised endpoint scenario; use network isolation
-for hostile workflows. SHA-256 integrity establishes sameness; Sigstore
+before exfiltration. Enabling `allowProxy` explicitly delegates routing and
+name resolution to the configured environment proxy, so treat that proxy as a
+trusted network boundary. An authorized or compromised endpoint can still
+exfiltrate data it legitimately receives. Use external egress isolation for
+hostile workflows. SHA-256 integrity establishes sameness; Sigstore
 identity depends on the configured issuer, subject, bundle evidence, and
 installed trust root. State encryption is application-level selected-field protection, not
 full-database encryption, access control, or a secret store.

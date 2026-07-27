@@ -102,7 +102,8 @@ cargo xtask acceptance-container
 | MCP/A2A resilience | 15 protocol tests, 80 runtime tests, schema 13 migration/encryption/replay tests, and `cargo xtask protocol-resilience` passed | packaged CLI scenario 41 reconnects MCP once and continues one known A2A task through CAS, retry, and replay without resubmission | verified |
 | Packs/trust/extensions | 6 resolver/trust tests and 3 focused runtime protocol tests cover graph, sources, locks, Sigstore, trust gating, bounds, cancellation, redaction, and replay | packaged CLI scenario 42 verifies a two-pack lock plus one explicitly authorized process extension invocation and effect-free replay | verified |
 | Semantic memory | typed contracts; stable text/vector/hybrid ranking; filters, namespace, expiry, corrupt-dimension, encryption, external-adapter, OpenAI WireMock, credential-preflight, repair, and replay tests passed | packaged CLI scenario 43 covers hybrid retrieval, explicit promotion, CLI put/search/reindex, changed-memory repair, and effect-free replay | verified |
-| Network/isolation/budgets | pending | pending | open |
+| Network enforcement | scheme/host/port, IPv4/IPv6 classification, every-answer validation, DNS pinning, proxy default deny, redirect refusal, CA success/failure, response bounds, and deterministic credential preflight passed | packaged CLI scenario 44 denies private egress before persistence or I/O | verified |
+| Process isolation and budgets | pending | pending | open |
 | Container/cross-platform | baseline defect recorded | pending | in progress |
 | OpenAI live matrix | retained selective-repair evidence only | pending | open |
 | Canonical and Pages docs | limitation register created | pending | in progress |

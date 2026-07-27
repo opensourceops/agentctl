@@ -37,6 +37,28 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `runtime` | bounded defaults | Runtime controls. `maxConcurrency` defaults to `1` and accepts `1` through `64`. |
 | `output` | defaults | Output presentation contract. |
 
+## Network policy
+
+`policy.networkAllowlist` contains exact hosts or `*.suffix` subdomain rules.
+The wildcard never matches the suffix apex. Every network action also uses the
+following `policy.network` fields:
+
+| Field | Default | Validation and behavior |
+| --- | --- | --- |
+| `allowedSchemes` | `[https, http]` | Nonempty subset of `https` and `http`. |
+| `allowedPorts` | `[]` | Empty permits the scheme's known or explicit port; otherwise the effective port must appear here. Port `0` is invalid. |
+| `allowPrivate` | `false` | When false, private, loopback, link-local, shared, documentation, benchmark, unspecified, multicast, and reserved IPv4/IPv6 answers fail. |
+| `allowProxy` | `false` | When false, environment proxy discovery is disabled. Enabling it explicitly trusts that proxy's routing and resolution. |
+| `customCa` | none | Environment, mounted-file, or policy-gated process secret reference containing only PEM certificates. Environment references must appear in `environmentAllowlist`. |
+| `connectTimeoutSeconds` | `10` | Bounds DNS resolution and TCP connection setup; valid range is 1 through 120. |
+| `maxResponseBytes` | `8388608` | Upper network response bound; valid range is 1 through 67108864 and composes with lower adapter limits. |
+
+Required provider, MCP, and A2A URLs are checked before a run record is
+created. Agentctl resolves the destination, rejects the complete answer if any
+address is forbidden, and pins all accepted addresses into the direct client.
+Redirects and Unix-socket transports are disabled. See [Network
+policy](../guides/NETWORK_POLICY.md).
+
 ## Tasks
 
 Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`,

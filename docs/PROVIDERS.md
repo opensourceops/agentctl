@@ -10,7 +10,13 @@ The core defines provider-neutral messages, text/reasoning/tool content, strict 
 | `anthropic` | Messages API | native content/tool/thinking blocks, structured output instruction, usage and stop mapping | `ANTHROPIC_API_KEY` |
 | `google` | Gemini `generateContent` | native contents/function declarations/calls/results, thought-signature continuation, response schema, token usage | `GEMINI_API_KEY` |
 
-Endpoints must pass the workflow network allowlist. Redirects are disabled.
+Endpoints must pass the workflow scheme, host, effective-port, and resolved-IP
+policy. Every DNS answer must be allowed, and direct clients pin the accepted
+answer to prevent resolution drift. Private addresses and environment proxies
+are denied by default. Redirects and Unix-socket transports are disabled.
+Response bytes and DNS/connect time are bounded, composed with the provider
+task timeout and the adapter's lower hard limit. See [Network
+policy](guides/NETWORK_POLICY.md).
 Credentials and configured headers accept environment, mounted-file, or
 policy-gated process references. Provider credentials in the fresh execution
 closure are preflighted before a new run record or effect; custom headers

@@ -46,6 +46,7 @@ dependencies = [
  "chrono",
  "hex",
  "jsonschema",
+ "rustls-pki-types",
  "schemars",
  "semver",
  "serde",

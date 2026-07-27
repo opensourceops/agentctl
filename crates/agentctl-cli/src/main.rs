@@ -3,6 +3,7 @@ mod packs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,6 +13,7 @@ use agentctl_core::compiler::provider_capabilities;
 use agentctl_core::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 use agentctl_core::dsl::{ProviderKind, SecretReference, Workflow, parse_workflow, schema_json};
 use agentctl_core::memory::{MemoryEntry, MemoryQuery, MemorySearchMode, local_hash_embedding};
+use agentctl_core::network::HttpTransportSecurity;
 use agentctl_core::pack::{PackManifest, verify_pack};
 use agentctl_core::policy::PolicyEngine;
 use agentctl_core::provider::{ContentBlock, Message, ModelProvider, ProviderRequest};
@@ -37,7 +39,7 @@ use clap_complete::Shell;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
-use url::Url;
+use url::{Host, Url};
 
 const EXIT_OK: u8 = 0;
 const EXIT_VALIDATION: u8 = 2;
@@ -2735,6 +2737,18 @@ async fn build_registry(
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
                 }
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(embedding) =
                     memory_embedding.filter(|embedding| embedding.provider == *name)
                 {
@@ -2778,6 +2792,18 @@ async fn build_registry(
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
                 }
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 registry = registry.with_provider(
                     name,
                     Arc::new(AnthropicProvider::new(config).map_err(remote_error)?),
@@ -2807,6 +2833,18 @@ async fn build_registry(
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
                 }
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 registry = registry.with_provider(
                     name,
                     Arc::new(GoogleProvider::new(config).map_err(remote_error)?),
@@ -2826,7 +2864,7 @@ async fn build_registry(
                     cancellation,
                 )
                 .await?;
-                let config = HttpProviderConfig {
+                let mut config = HttpProviderConfig {
                     endpoint,
                     credential,
                     resolved_credential,
@@ -2847,7 +2885,20 @@ async fn build_registry(
                     } else {
                         BTreeMap::new()
                     },
+                    transport: HttpTransportSecurity::default(),
                 };
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 registry = registry.with_provider(
                     name,
                     Arc::new(OpenAiProvider::azure(config).map_err(remote_error)?),
@@ -2873,14 +2924,19 @@ async fn build_registry(
             let headers =
                 resolve_protocol_headers(&definition.headers, &restricted_secrets, cancellation)
                     .await?;
+            let url = Url::parse(&definition.url).map_err(|error| {
+                CliError::validation(format!("MCP server `{name}` URL: {error}"))
+            })?;
+            let transport =
+                prepare_http_transport(&tool_policy, &url, &restricted_secrets, cancellation)
+                    .await?;
             let client = McpClient::new(ProtocolHttpConfig {
-                url: Url::parse(&definition.url).map_err(|error| {
-                    CliError::validation(format!("MCP server `{name}` URL: {error}"))
-                })?,
+                url,
                 headers,
                 header_references: definition.headers.clone(),
                 header_resolver: Some(Arc::new(restricted_secrets.clone())),
                 timeout: Duration::from_secs(definition.timeout_seconds),
+                transport,
             })
             .map_err(remote_error)?;
             mcp.insert(name.clone(), Arc::new(client));
@@ -2892,14 +2948,19 @@ async fn build_registry(
             let headers =
                 resolve_protocol_headers(&definition.headers, &restricted_secrets, cancellation)
                     .await?;
+            let url = Url::parse(&definition.card_url).map_err(|error| {
+                CliError::validation(format!("A2A peer `{name}` card URL: {error}"))
+            })?;
+            let transport =
+                prepare_http_transport(&tool_policy, &url, &restricted_secrets, cancellation)
+                    .await?;
             let client = A2aClient::new(ProtocolHttpConfig {
-                url: Url::parse(&definition.card_url).map_err(|error| {
-                    CliError::validation(format!("A2A peer `{name}` card URL: {error}"))
-                })?,
+                url,
                 headers,
                 header_references: definition.headers.clone(),
                 header_resolver: Some(Arc::new(restricted_secrets.clone())),
                 timeout: Duration::from_secs(definition.timeout_seconds),
+                transport,
             })
             .map_err(remote_error)?
             .with_poll_bounds(
@@ -2930,6 +2991,114 @@ async fn preflight_provider_credential(
         .await
         .map(Some)
         .map_err(|error| secret_cli_error(name, error, EXIT_REMOTE))
+}
+
+async fn prepare_http_transport(
+    policy: &PolicyEngine,
+    target: &Url,
+    resolver: &SecretResolver,
+    cancellation: &CancellationToken,
+) -> Result<HttpTransportSecurity, CliError> {
+    policy
+        .authorize_network(target)
+        .map_err(network_policy_error)?;
+    let parsed_ip = match target.host() {
+        Some(Host::Ipv4(address)) => Some(IpAddr::V4(address)),
+        Some(Host::Ipv6(address)) => Some(IpAddr::V6(address)),
+        Some(Host::Domain(_)) => None,
+        None => return Err(CliError::validation("network URL requires a host")),
+    };
+    let host = parsed_ip.map_or_else(
+        || target.host_str().unwrap_or_default().to_owned(),
+        |address| address.to_string(),
+    );
+    let port = target
+        .port_or_known_default()
+        .ok_or_else(|| CliError::validation("network URL requires a known port"))?;
+    let network = policy.network_policy();
+    let connect_timeout = Duration::from_secs(network.connect_timeout_seconds);
+    let mut resolved_addresses = if let Some(address) = parsed_ip {
+        vec![SocketAddr::new(address, port)]
+    } else {
+        let lookup = tokio::time::timeout(
+            connect_timeout,
+            tokio::net::lookup_host((host.as_str(), port)),
+        );
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                return Err(CliError {
+                    code: EXIT_CANCELLED,
+                    message: "network resolution was cancelled".to_owned(),
+                    diagnostics: Vec::new(),
+                    run_id: None,
+                    trace_id: None,
+                });
+            }
+            result = lookup => {
+                match result {
+                    Ok(Ok(addresses)) => addresses.collect::<Vec<_>>(),
+                    Ok(Err(_)) => {
+                        return Err(network_resolution_error(
+                            &host,
+                            "DNS resolution failed",
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(network_resolution_error(
+                            &host,
+                            "DNS resolution timed out",
+                        ));
+                    }
+                }
+            }
+        }
+    };
+    resolved_addresses.sort_unstable();
+    resolved_addresses.dedup();
+    policy
+        .authorize_resolved_addresses(&resolved_addresses)
+        .map_err(network_policy_error)?;
+
+    let custom_ca_pem = if let Some(reference) = &network.custom_ca {
+        Some(
+            resolver
+                .resolve(reference, cancellation)
+                .await
+                .map_err(|error| secret_cli_error("network custom CA", error, EXIT_POLICY))?,
+        )
+    } else {
+        None
+    };
+    let max_response_bytes = usize::try_from(network.max_response_bytes)
+        .map_err(|_| CliError::validation("network response limit exceeds platform capacity"))?;
+    Ok(HttpTransportSecurity {
+        resolved_host: parsed_ip.is_none().then_some(host),
+        resolved_addresses,
+        allow_proxy: network.allow_proxy,
+        connect_timeout,
+        max_response_bytes,
+        custom_ca_pem,
+    })
+}
+
+fn network_policy_error(error: impl ToString) -> CliError {
+    CliError {
+        code: EXIT_POLICY,
+        message: error.to_string(),
+        diagnostics: Vec::new(),
+        run_id: None,
+        trace_id: None,
+    }
+}
+
+fn network_resolution_error(host: &str, reason: &str) -> CliError {
+    CliError {
+        code: EXIT_REMOTE,
+        message: format!("{reason} for authorized host `{host}`"),
+        diagnostics: Vec::new(),
+        run_id: None,
+        trace_id: None,
+    }
 }
 
 async fn resolve_protocol_headers(
@@ -3379,10 +3548,12 @@ metadata: { name: reachable-secret }
 spec:
   policy:
     secretFileRoots: [secrets]
-    networkAllowlist: [api.openai.com]
+    networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
   providers:
     openai:
       kind: openai
+      endpoint: http://127.0.0.1:9/v1/responses
       credential: { file: secrets/openai }
   agents:
     answer:
@@ -3468,9 +3639,12 @@ metadata: { name: memory-secret }
 spec:
   policy:
     secretFileRoots: [secrets]
+    networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
   providers:
     embeddings:
       kind: openai
+      endpoint: http://127.0.0.1:9/v1/responses
       credential: { file: secrets/openai }
   memory:
     longTerm:

@@ -15,6 +15,26 @@ For the repository acceptance wrapper, set `AGENTCTL_BUILD_CA_FILE=/protected/pa
 
 The `Containerfile` combines the secret with public roots on a tmpfs mount for the single Cargo build step. The CA value is not a build argument, image environment value, build-context file, layer, history value, runtime file, or artifact. Never use `--insecure`, `CARGO_HTTP_CHECK_REVOKE=false`, a TLS-verification disable flag, or a committed certificate.
 
+Runtime TLS interception is separate from build TLS. Mount a reviewed
+certificate-only PEM bundle read-only, authorize its parent under
+`secretFileRoots`, and reference it through `policy.network.customCa`:
+
+```yaml
+spec:
+  policy:
+    secretFileRoots: [/run/agentctl-ca]
+    networkAllowlist: [api.internal.example]
+    network:
+      allowedSchemes: [https]
+      allowedPorts: [443]
+      customCa: { file: /run/agentctl-ca/runtime-ca.pem }
+```
+
+The adapter adds the bundle to rustls in memory. The bundle is not copied into
+SQLite, effects, traces, or artifact storage. Invalid, empty, private-key, or
+mixed-object PEM input fails before dispatch. See [Network
+policy](guides/NETWORK_POLICY.md).
+
 ## Mounts and inputs
 
 | Path | Contract |

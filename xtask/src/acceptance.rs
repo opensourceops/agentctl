@@ -22,7 +22,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 43;
+const ACCEPTANCE_SCENARIOS: usize = 44;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -2383,6 +2383,29 @@ spec:
     let memory_replay_inspect = inspect(&binary, root, &memory_db, memory_replay_id)?;
     ensure!(array_len(&memory_replay_inspect, "/data/effects")? == 0);
 
+    scenario(
+        44,
+        "network preflight denies private destinations before persistence or I/O",
+    );
+    let network_denied_workflow = workspace.join("network-private-denied.yaml");
+    write(&network_denied_workflow, NETWORK_PRIVATE_DENIED_WORKFLOW)?;
+    let network_denied_db = directory.path().join("network-private-denied.db");
+    let network_denied = json_with_code(
+        &binary,
+        &workspace,
+        &run_args(
+            &network_denied_workflow,
+            &network_denied_db,
+            &workspace,
+            &[],
+        ),
+        3,
+    )?;
+    ensure!(
+        string_at(&network_denied, "/error/message")?.contains("network address is not authorized")
+    );
+    ensure!(!network_denied_db.exists());
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -4738,6 +4761,7 @@ metadata: { name: mcp-resilience-acceptance }
 spec:
   policy:
     networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
     approval: never
   mcpServers:
     fixture:
@@ -4769,6 +4793,7 @@ spec:
     result: "${{ tasks.consume.output.output.value }}"
   policy:
     networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
     approval: never
   a2aPeers:
     fixture:
@@ -4801,6 +4826,31 @@ spec:
       needs: [delegate]
       with:
         value: "${{ tasks.delegate.output.id }}"
+"#;
+
+const NETWORK_PRIVATE_DENIED_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: network-private-denied }
+spec:
+  policy:
+    networkAllowlist: [127.0.0.1]
+    approval: never
+  mcpServers:
+    fixture:
+      url: http://127.0.0.1:9/mcp
+      protocolVersion: 2025-11-25
+      timeoutSeconds: 1
+  actions:
+    invoke:
+      kind: mcp.call
+      idempotency: idempotent
+  tasks:
+    - id: invoke
+      uses: action:invoke
+      with:
+        server: fixture
+        tool: unreachable
+        arguments: {}
 "#;
 
 const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

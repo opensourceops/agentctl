@@ -668,6 +668,8 @@ pub struct PolicyDefinition {
     #[serde(default)]
     pub network_allowlist: Vec<String>,
     #[serde(default)]
+    pub network: NetworkPolicyDefinition,
+    #[serde(default)]
     pub process_allowlist: Vec<String>,
     #[serde(default)]
     pub secret_file_roots: Vec<String>,
@@ -692,6 +694,7 @@ impl Default for PolicyDefinition {
             writable_roots: Vec::new(),
             environment_allowlist: Vec::new(),
             network_allowlist: Vec::new(),
+            network: NetworkPolicyDefinition::default(),
             process_allowlist: Vec::new(),
             secret_file_roots: Vec::new(),
             secret_process_allowlist: Vec::new(),
@@ -702,6 +705,51 @@ impl Default for PolicyDefinition {
             non_interactive: NonInteractiveMode::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NetworkPolicyDefinition {
+    #[serde(default = "default_network_schemes")]
+    pub allowed_schemes: Vec<String>,
+    #[serde(default)]
+    pub allowed_ports: Vec<u16>,
+    #[serde(default)]
+    pub allow_private: bool,
+    #[serde(default)]
+    pub allow_proxy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_ca: Option<SecretReference>,
+    #[serde(default = "default_network_connect_timeout_seconds")]
+    pub connect_timeout_seconds: u64,
+    #[serde(default = "default_network_response_limit_bytes")]
+    pub max_response_bytes: u64,
+}
+
+impl Default for NetworkPolicyDefinition {
+    fn default() -> Self {
+        Self {
+            allowed_schemes: default_network_schemes(),
+            allowed_ports: Vec::new(),
+            allow_private: false,
+            allow_proxy: false,
+            custom_ca: None,
+            connect_timeout_seconds: default_network_connect_timeout_seconds(),
+            max_response_bytes: default_network_response_limit_bytes(),
+        }
+    }
+}
+
+fn default_network_schemes() -> Vec<String> {
+    vec!["https".to_owned(), "http".to_owned()]
+}
+
+const fn default_network_connect_timeout_seconds() -> u64 {
+    crate::network::DEFAULT_NETWORK_CONNECT_TIMEOUT_SECONDS
+}
+
+const fn default_network_response_limit_bytes() -> u64 {
+    crate::network::DEFAULT_NETWORK_RESPONSE_LIMIT_BYTES
 }
 
 fn default_workspace_root() -> String {
@@ -1166,6 +1214,88 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
             .with_path("spec.runtime.maxConcurrency"),
         );
     }
+    if workflow.spec.policy.network.allowed_schemes.is_empty()
+        || workflow
+            .spec
+            .policy
+            .network
+            .allowed_schemes
+            .iter()
+            .any(|scheme| !matches!(scheme.as_str(), "http" | "https"))
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "policy.network.allowedSchemes must contain only http or https",
+            )
+            .with_path("spec.policy.network.allowedSchemes"),
+        );
+    }
+    if workflow.spec.policy.network.allowed_ports.contains(&0) {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "policy.network.allowedPorts must not contain port 0",
+            )
+            .with_path("spec.policy.network.allowedPorts"),
+        );
+    }
+    if workflow.spec.policy.network.connect_timeout_seconds == 0
+        || workflow.spec.policy.network.connect_timeout_seconds
+            > crate::network::MAX_NETWORK_CONNECT_TIMEOUT_SECONDS
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                format!(
+                    "policy.network.connectTimeoutSeconds must be between 1 and {}",
+                    crate::network::MAX_NETWORK_CONNECT_TIMEOUT_SECONDS
+                ),
+            )
+            .with_path("spec.policy.network.connectTimeoutSeconds"),
+        );
+    }
+    if workflow.spec.policy.network.max_response_bytes == 0
+        || workflow.spec.policy.network.max_response_bytes
+            > crate::network::MAX_NETWORK_RESPONSE_LIMIT_BYTES
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                format!(
+                    "policy.network.maxResponseBytes must be between 1 and {}",
+                    crate::network::MAX_NETWORK_RESPONSE_LIMIT_BYTES
+                ),
+            )
+            .with_path("spec.policy.network.maxResponseBytes"),
+        );
+    }
+    if let Some(custom_ca) = &workflow.spec.policy.network.custom_ca {
+        validate_secret_reference(
+            custom_ca,
+            "network custom CA",
+            "spec.policy.network.customCa",
+            &workflow.spec.policy,
+            file,
+            &mut diagnostics,
+        );
+        if let SecretReference::Environment { env } = custom_ca
+            && !workflow.spec.policy.environment_allowlist.contains(env)
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::InvalidSecretReference,
+                    file,
+                    "network custom CA environment variable is not in policy.environmentAllowlist",
+                )
+                .with_path("spec.policy.network.customCa"),
+            );
+        }
+    }
     if workflow.spec.runtime.default_timeout_seconds == 0
         || workflow.spec.runtime.default_timeout_seconds > MAX_PROCESS_TIMEOUT_SECONDS
     {
@@ -1617,6 +1747,38 @@ spec:
         );
         let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("bad env name");
         assert_eq!(diagnostics[0].code, DiagnosticCode::InvalidSecretReference);
+    }
+
+    #[test]
+    fn validates_network_security_bounds_and_custom_ca_policy() {
+        let invalid = MINIMAL.replace(
+            "  actions:",
+            "  policy:\n    network:\n      allowedSchemes: [ftp]\n      allowedPorts: [0]\n      connectTimeoutSeconds: 0\n      maxResponseBytes: 0\n      customCa: { env: CORP_CA_PEM }\n  actions:",
+        );
+        let diagnostics =
+            parse_workflow(&invalid, "network-invalid.yaml").expect_err("invalid network policy");
+        let paths = diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.path.as_deref())
+            .collect::<Vec<_>>();
+        for expected in [
+            "spec.policy.network.allowedSchemes",
+            "spec.policy.network.allowedPorts",
+            "spec.policy.network.connectTimeoutSeconds",
+            "spec.policy.network.maxResponseBytes",
+            "spec.policy.network.customCa",
+        ] {
+            assert!(
+                paths.contains(&expected),
+                "missing diagnostic for {expected}"
+            );
+        }
+
+        let valid = MINIMAL.replace(
+            "  actions:",
+            "  policy:\n    environmentAllowlist: [CORP_CA_PEM]\n    network:\n      allowedSchemes: [https]\n      allowedPorts: [443]\n      connectTimeoutSeconds: 5\n      maxResponseBytes: 4096\n      customCa: { env: CORP_CA_PEM }\n  actions:",
+        );
+        parse_workflow(&valid, "network-valid.yaml").expect("valid network policy");
     }
 
     #[test]

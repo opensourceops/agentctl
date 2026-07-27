@@ -11,7 +11,18 @@ nearest existing parent and must remain under a writable root. Secret files
 must be existing regular files canonically contained by `secretFileRoots`.
 Parent traversal and symlink escape fail. Network rules match an exact hostname
 or `*.suffix` subdomains; suffix lookalikes and the wildcard apex do not match.
-HTTP redirects are disabled. Process allowlisting checks the executable
+Before a required provider, MCP, or A2A adapter is created, agentctl validates
+the scheme and effective port, resolves the destination once, checks every
+returned IPv4 and IPv6 address, and pins the accepted answer into the HTTP
+client. Private, loopback, link-local, shared, documentation, benchmark,
+unspecified, multicast, and reserved addresses fail unless `allowPrivate` is
+explicitly enabled. HTTP redirects and Unix-socket transports are disabled.
+Environment proxy discovery is disabled unless `allowProxy` is explicit.
+TLS uses rustls and the platform roots; an optional protected `customCa`
+reference may add a certificate-only PEM bundle. DNS/connect time and response
+bytes are bounded. See [Network policy](guides/NETWORK_POLICY.md).
+
+Process allowlisting checks the executable
 basename and then launches direct argv with a cleared environment. Secret
 helpers use their separate `secretProcessAllowlist` and stricter 60-second,
 64-KiB maximums. See [Secret references](guides/SECRET_REFERENCES.md).

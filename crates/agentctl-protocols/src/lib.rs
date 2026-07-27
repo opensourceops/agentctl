@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentctl_core::dsl::{ActionKind, Idempotency, SecretReference};
+use agentctl_core::network::{HttpTransportSecurity, custom_ca_pem_is_valid};
 use agentctl_core::secret::{SecretSourceResolver, SecretValue};
 use agentctl_runtime::{
     ExternalActionContext, ExternalActionHandler, ExternalEventSink, ExternalStreamEvent,
@@ -74,6 +75,7 @@ pub struct ProtocolHttpConfig {
     pub header_references: BTreeMap<String, SecretReference>,
     pub header_resolver: Option<Arc<dyn SecretSourceResolver>>,
     pub timeout: Duration,
+    pub transport: HttpTransportSecurity,
 }
 
 impl ProtocolHttpConfig {
@@ -85,14 +87,35 @@ impl ProtocolHttpConfig {
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout,
+            transport: HttpTransportSecurity::default(),
         }
     }
 }
 
-fn client() -> Result<Client, ProtocolError> {
-    Client::builder()
+fn client(config: &ProtocolHttpConfig) -> Result<Client, ProtocolError> {
+    let mut builder = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("agentctl/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(config.transport.connect_timeout);
+    if !config.transport.allow_proxy {
+        builder = builder.no_proxy();
+    }
+    if let Some(host) = &config.transport.resolved_host
+        && !config.transport.resolved_addresses.is_empty()
+    {
+        builder = builder.resolve_to_addrs(host, &config.transport.resolved_addresses);
+    }
+    if let Some(pem) = &config.transport.custom_ca_pem {
+        if !custom_ca_pem_is_valid(pem.expose()) {
+            return Err(ProtocolError::Transport(
+                "network custom CA PEM is invalid".to_owned(),
+            ));
+        }
+        let certificate = reqwest::Certificate::from_pem(pem.expose().as_bytes())
+            .map_err(|_| ProtocolError::Transport("network custom CA PEM is invalid".to_owned()))?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    builder
         .build()
         .map_err(|error| ProtocolError::Transport(error.to_string()))
 }
@@ -132,7 +155,7 @@ pub struct McpClient {
 impl McpClient {
     pub fn new(config: ProtocolHttpConfig) -> Result<Self, ProtocolError> {
         Ok(Self {
-            client: client()?,
+            client: client(&config)?,
             headers: Mutex::new(config.headers.clone()),
             config,
             session_id: Mutex::new(None),
@@ -485,6 +508,7 @@ impl McpClient {
             &headers,
             events,
             "mcp.stream",
+            self.config.transport.max_response_bytes,
         )
         .await?;
         let mut result = None;
@@ -659,7 +683,7 @@ pub struct A2aClient {
 impl A2aClient {
     pub fn new(config: ProtocolHttpConfig) -> Result<Self, ProtocolError> {
         Ok(Self {
-            client: client()?,
+            client: client(&config)?,
             headers: Mutex::new(config.headers.clone()),
             card_config: config,
             card: Mutex::new(None),
@@ -705,8 +729,14 @@ impl A2aClient {
             ProtocolError::Authentication("credential refresh did not authorize Agent Card".into())
         })?;
         let headers = self.current_headers()?;
-        let card: AgentCard =
-            response_json(response, self.card_config.timeout, cancellation, &headers).await?;
+        let card: AgentCard = response_json(
+            response,
+            self.card_config.timeout,
+            cancellation,
+            &headers,
+            self.card_config.transport.max_response_bytes,
+        )
+        .await?;
         if card.name.trim().is_empty() || card.supported_interfaces.is_empty() {
             return Err(ProtocolError::Malformed(
                 "Agent Card requires a name and supportedInterfaces".to_owned(),
@@ -1016,8 +1046,14 @@ impl A2aClient {
             )
             .await?;
         let headers = self.current_headers()?;
-        let values =
-            response_values(response, self.card_config.timeout, cancellation, &headers).await?;
+        let values = response_values(
+            response,
+            self.card_config.timeout,
+            cancellation,
+            &headers,
+            self.card_config.transport.max_response_bytes,
+        )
+        .await?;
         values.into_iter().map(json_rpc_result).collect()
     }
 
@@ -1038,6 +1074,7 @@ impl A2aClient {
             &headers,
             events,
             event_type,
+            self.card_config.transport.max_response_bytes,
         )
         .await
         .map(|(values, _)| values)
@@ -1052,7 +1089,14 @@ impl A2aClient {
         let (_, response) = self.rpc_response(method, params, cancellation).await?;
         let headers = self.current_headers()?;
         json_rpc_result(
-            response_value(response, self.card_config.timeout, cancellation, &headers).await?,
+            response_value(
+                response,
+                self.card_config.timeout,
+                cancellation,
+                &headers,
+                self.card_config.transport.max_response_bytes,
+            )
+            .await?,
         )
     }
 
@@ -1139,7 +1183,13 @@ impl A2aClient {
             if !response.status().is_success() {
                 return Err(http_error(response).await);
             }
-            return bounded_response(response, self.card_config.timeout, cancellation).await;
+            return bounded_response(
+                response,
+                self.card_config.timeout,
+                cancellation,
+                self.card_config.transport.max_response_bytes,
+            )
+            .await;
         }
         Err(ProtocolError::Authentication(
             "credential refresh did not authorize A2A artifact retrieval".to_owned(),
@@ -1775,11 +1825,12 @@ async fn response_json<T: for<'de> Deserialize<'de>>(
     timeout: Duration,
     cancellation: &CancellationToken,
     headers: &BTreeMap<String, SecretValue>,
+    max_response_bytes: usize,
 ) -> Result<T, ProtocolError> {
     if !response.status().is_success() {
         return Err(http_error(response).await);
     }
-    let bytes = bounded_response(response, timeout, cancellation).await?;
+    let bytes = bounded_response(response, timeout, cancellation, max_response_bytes).await?;
     let mut value: Value = serde_json::from_slice(&bytes)
         .map_err(|error| ProtocolError::Malformed(error.to_string()))?;
     redact_header_secrets(&mut value, headers);
@@ -1791,8 +1842,9 @@ async fn response_value(
     timeout: Duration,
     cancellation: &CancellationToken,
     headers: &BTreeMap<String, SecretValue>,
+    max_response_bytes: usize,
 ) -> Result<Value, ProtocolError> {
-    response_values(response, timeout, cancellation, headers)
+    response_values(response, timeout, cancellation, headers, max_response_bytes)
         .await?
         .into_iter()
         .last()
@@ -1804,10 +1856,19 @@ async fn response_values(
     timeout: Duration,
     cancellation: &CancellationToken,
     headers: &BTreeMap<String, SecretValue>,
+    max_response_bytes: usize,
 ) -> Result<Vec<Value>, ProtocolError> {
-    response_values_with_events(response, timeout, cancellation, headers, None, "")
-        .await
-        .map(|(values, _)| values)
+    response_values_with_events(
+        response,
+        timeout,
+        cancellation,
+        headers,
+        None,
+        "",
+        max_response_bytes,
+    )
+    .await
+    .map(|(values, _)| values)
 }
 
 async fn response_values_with_events(
@@ -1817,6 +1878,7 @@ async fn response_values_with_events(
     headers: &BTreeMap<String, SecretValue>,
     events: Option<&dyn ExternalEventSink>,
     event_type: &str,
+    max_response_bytes: usize,
 ) -> Result<(Vec<Value>, bool), ProtocolError> {
     if !response.status().is_success() {
         return Err(http_error(response).await);
@@ -1835,9 +1897,10 @@ async fn response_values_with_events(
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|error| ProtocolError::Transport(error.to_string()))?;
                 total = total.saturating_add(chunk.len());
-                if total > MAX_PROTOCOL_RESPONSE_BYTES {
+                let limit = MAX_PROTOCOL_RESPONSE_BYTES.min(max_response_bytes);
+                if total > limit {
                     return Err(ProtocolError::Malformed(format!(
-                        "response exceeds {MAX_PROTOCOL_RESPONSE_BYTES} bytes"
+                        "response exceeds {limit} bytes"
                     )));
                 }
                 buffer.extend_from_slice(&chunk);
@@ -1875,7 +1938,7 @@ async fn response_values_with_events(
             () = cancellation.cancelled() => Err(ProtocolError::Cancelled),
         }
     } else {
-        let bytes = bounded_response(response, timeout, cancellation).await?;
+        let bytes = bounded_response(response, timeout, cancellation, max_response_bytes).await?;
         let mut value = serde_json::from_slice(&bytes)
             .map_err(|error| ProtocolError::Malformed(error.to_string()))?;
         redact_header_secrets(&mut value, headers);
@@ -1948,15 +2011,17 @@ async fn bounded_response(
     response: Response,
     timeout: Duration,
     cancellation: &CancellationToken,
+    max_response_bytes: usize,
 ) -> Result<Vec<u8>, ProtocolError> {
     let collect = async move {
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| ProtocolError::Transport(error.to_string()))?;
-            if bytes.len().saturating_add(chunk.len()) > MAX_PROTOCOL_RESPONSE_BYTES {
+            let limit = MAX_PROTOCOL_RESPONSE_BYTES.min(max_response_bytes);
+            if bytes.len().saturating_add(chunk.len()) > limit {
                 return Err(ProtocolError::Malformed(format!(
-                    "response exceeds {MAX_PROTOCOL_RESPONSE_BYTES} bytes"
+                    "response exceeds {limit} bytes"
                 )));
             }
             bytes.extend_from_slice(&chunk);
@@ -2319,6 +2384,7 @@ mod tests {
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client");
         let cancellation = CancellationToken::new();
@@ -2350,6 +2416,7 @@ mod tests {
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client");
         assert!(matches!(
@@ -2535,6 +2602,7 @@ mod tests {
             )]),
             header_resolver: Some(Arc::new(RefreshedSecret)),
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client");
         client
@@ -2621,6 +2689,7 @@ mod tests {
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client")
         .with_poll_bounds(2, Duration::from_millis(1));
@@ -3070,6 +3139,7 @@ spec:
             )]),
             header_resolver: Some(Arc::new(RefreshedSecret)),
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client")
         .with_poll_bounds(1, Duration::from_millis(1));
@@ -3190,11 +3260,118 @@ spec:
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout: Duration::from_millis(10),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client");
         assert!(matches!(
             client.discover(&CancellationToken::new()).await,
             Err(ProtocolError::Timeout(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn protocol_transport_pins_dns_and_bounds_responses() {
+        let server = MockServer::start().await;
+        let origin = format!("http://agentctl.test:{}", server.address().port());
+        Mock::given(method("GET"))
+            .and(path("/agent-card.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "pinned-agent",
+                "description": "fixture",
+                "supportedInterfaces": [{
+                    "url": format!("{origin}/a2a"),
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": A2A_PROTOCOL_VERSION
+                }],
+                "capabilities": {"streaming": false},
+                "skills": []
+            })))
+            .mount(&server)
+            .await;
+        let mut pinned = ProtocolHttpConfig::fixed(
+            Url::parse(&format!("{origin}/agent-card.json")).expect("url"),
+            BTreeMap::new(),
+            Duration::from_secs(2),
+        );
+        pinned.transport.resolved_host = Some("agentctl.test".to_owned());
+        pinned.transport.resolved_addresses = vec![*server.address()];
+        A2aClient::new(pinned)
+            .expect("client")
+            .discover(&CancellationToken::new())
+            .await
+            .expect("pinned discovery");
+
+        Mock::given(method("GET"))
+            .and(path("/oversized-card.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "oversized-agent",
+                "description": "x".repeat(1024),
+                "supportedInterfaces": [{
+                    "url": format!("{}/a2a", server.uri()),
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": A2A_PROTOCOL_VERSION
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let mut oversized = ProtocolHttpConfig::fixed(
+            Url::parse(&format!("{}/oversized-card.json", server.uri())).expect("url"),
+            BTreeMap::new(),
+            Duration::from_secs(2),
+        );
+        oversized.transport.max_response_bytes = 128;
+        assert!(matches!(
+            A2aClient::new(oversized)
+                .expect("client")
+                .discover(&CancellationToken::new())
+                .await,
+            Err(ProtocolError::Malformed(message))
+                if message.contains("response exceeds 128 bytes")
+        ));
+    }
+
+    #[tokio::test]
+    async fn protocol_transport_rejects_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/agent-card.json", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/agent-card.json"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = A2aClient::new(ProtocolHttpConfig::fixed(
+            Url::parse(&format!("{}/redirect", server.uri())).expect("url"),
+            BTreeMap::new(),
+            Duration::from_secs(2),
+        ))
+        .expect("client");
+        assert!(matches!(
+            client.discover(&CancellationToken::new()).await,
+            Err(ProtocolError::Http { status: 302, .. })
+        ));
+        server.verify().await;
+    }
+
+    #[test]
+    fn protocol_transport_rejects_an_invalid_custom_ca() {
+        let mut config = ProtocolHttpConfig::fixed(
+            Url::parse("https://agentctl.test/a2a").expect("url"),
+            BTreeMap::new(),
+            Duration::from_secs(2),
+        );
+        config.transport.custom_ca_pem = Some(SecretValue::from("not a PEM certificate"));
+        assert!(matches!(
+            A2aClient::new(config),
+            Err(ProtocolError::Transport(message))
+                if message == "network custom CA PEM is invalid"
         ));
     }
 
@@ -3220,6 +3397,7 @@ spec:
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client");
         assert!(matches!(
@@ -3238,6 +3416,7 @@ spec:
             header_references: BTreeMap::new(),
             header_resolver: None,
             timeout: Duration::from_secs(2),
+            transport: HttpTransportSecurity::default(),
         })
         .expect("client");
         let cancellation = CancellationToken::new();

@@ -5,6 +5,7 @@ pub mod diagnostic;
 pub mod dsl;
 pub mod effect;
 pub mod memory;
+pub mod network;
 pub mod pack;
 pub mod policy;
 pub mod provider;

@@ -83,6 +83,7 @@ dependencies = [
  "hex",
  "jsonschema",
  "proptest",
+ "rustls-pki-types",
  "schemars",
  "semver",
  "serde",

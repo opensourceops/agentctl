@@ -9764,6 +9764,7 @@ metadata: { name: continued-a2a }
 spec:
   policy:
     networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
     approval: never
   a2aPeers:
     local:

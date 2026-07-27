@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
 
 use crate::dsl::{
-    ApprovalMode, ApprovalRequirement, EffectClass, NonInteractiveMode, PolicyDefinition, Risk,
+    ApprovalMode, ApprovalRequirement, EffectClass, NetworkPolicyDefinition, NonInteractiveMode,
+    PolicyDefinition, Risk,
 };
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,8 @@ pub enum PolicyError {
     PathEscape(String),
     #[error("network destination is not authorized: {0}")]
     NetworkDenied(String),
+    #[error("network address is not authorized: {0}")]
+    NetworkAddressDenied(String),
     #[error("environment variable is not authorized: {0}")]
     EnvironmentDenied(String),
     #[error("process is not authorized: {0}")]
@@ -180,6 +184,11 @@ impl PolicyEngine {
     }
 
     #[must_use]
+    pub fn network_policy(&self) -> &NetworkPolicyDefinition {
+        &self.policy.network
+    }
+
+    #[must_use]
     pub fn decide_with_approval(
         &self,
         context: &PolicyContext,
@@ -257,27 +266,78 @@ impl PolicyEngine {
     }
 
     pub fn authorize_network(&self, target: &Url) -> Result<(), PolicyError> {
-        if target.scheme() != "https" && target.scheme() != "http" {
+        if !self
+            .policy
+            .network
+            .allowed_schemes
+            .iter()
+            .any(|scheme| scheme == target.scheme())
+            || !matches!(target.scheme(), "https" | "http")
+            || !target.username().is_empty()
+            || target.password().is_some()
+        {
             return Err(PolicyError::NetworkDenied(target.to_string()));
         }
-        let host = target
-            .host_str()
-            .ok_or_else(|| PolicyError::NetworkDenied(target.to_string()))?;
-        if self
+        let parsed_ip = match target.host() {
+            Some(Host::Ipv4(address)) => Some(IpAddr::V4(address)),
+            Some(Host::Ipv6(address)) => Some(IpAddr::V6(address)),
+            Some(Host::Domain(_)) => None,
+            None => return Err(PolicyError::NetworkDenied(target.to_string())),
+        };
+        let host = parsed_ip.map_or_else(
+            || target.host_str().unwrap_or_default().to_owned(),
+            |address| address.to_string(),
+        );
+        if !self
             .policy
             .network_allowlist
             .iter()
-            .any(|rule| host_matches(host, rule))
+            .any(|rule| host_matches(&host, rule))
         {
-            Ok(())
-        } else {
-            Err(PolicyError::NetworkDenied(host.to_owned()))
+            return Err(PolicyError::NetworkDenied(host));
         }
+        let port = target
+            .port_or_known_default()
+            .ok_or_else(|| PolicyError::NetworkDenied(target.to_string()))?;
+        if !self.policy.network.allowed_ports.is_empty()
+            && !self.policy.network.allowed_ports.contains(&port)
+        {
+            return Err(PolicyError::NetworkDenied(format!("{host}:{port}")));
+        }
+        if let Some(address) = parsed_ip {
+            self.authorize_resolved_ip(address)?;
+        }
+        Ok(())
     }
 
     pub fn authorize_redirect(&self, from: &Url, to: &Url) -> Result<(), PolicyError> {
         self.authorize_network(from)?;
         self.authorize_network(to)
+    }
+
+    pub fn authorize_resolved_addresses(
+        &self,
+        addresses: &[SocketAddr],
+    ) -> Result<(), PolicyError> {
+        if addresses.is_empty() {
+            return Err(PolicyError::NetworkAddressDenied(
+                "DNS returned no addresses".to_owned(),
+            ));
+        }
+        for address in addresses {
+            self.authorize_resolved_ip(address.ip())?;
+        }
+        Ok(())
+    }
+
+    pub fn authorize_resolved_ip(&self, address: IpAddr) -> Result<(), PolicyError> {
+        if address.is_unspecified() || address.is_multicast() {
+            return Err(PolicyError::NetworkAddressDenied(address.to_string()));
+        }
+        if !self.policy.network.allow_private && !public_ip(address) {
+            return Err(PolicyError::NetworkAddressDenied(address.to_string()));
+        }
+        Ok(())
     }
 
     pub fn authorize_environment(&self, name: &str) -> Result<(), PolicyError> {
@@ -394,6 +454,32 @@ fn host_matches(host: &str, rule: &str) -> bool {
     rule.strip_prefix("*.").map_or(host == rule, |suffix| {
         host != suffix && host.ends_with(&format!(".{suffix}"))
     })
+}
+
+fn public_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let [a, b, c, _] = address.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        IpAddr::V6(address) => {
+            let segments = address.segments();
+            (segments[0] & 0xe000) == 0x2000 && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+        }
+    }
 }
 
 /// Replace sensitive values before audit, persistence, or tracing.
@@ -539,6 +625,98 @@ mod tests {
             engine
                 .authorize_network(&Url::parse("https://api.example.com.evil/a").expect("url"))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn network_policy_enforces_origin_and_every_resolved_address() {
+        let root = tempdir().expect("temp dir");
+        let engine = PolicyEngine::new(
+            PolicyDefinition {
+                workspace_root: root.path().display().to_string(),
+                network_allowlist: vec![
+                    "api.example.com".to_owned(),
+                    "127.0.0.1".to_owned(),
+                    "::1".to_owned(),
+                ],
+                network: NetworkPolicyDefinition {
+                    allowed_schemes: vec!["https".to_owned()],
+                    allowed_ports: vec![443],
+                    ..NetworkPolicyDefinition::default()
+                },
+                ..PolicyDefinition::default()
+            },
+            root.path(),
+        )
+        .expect("policy");
+
+        assert!(
+            engine
+                .authorize_network(&Url::parse("https://api.example.com/v1").expect("url"))
+                .is_ok()
+        );
+        for denied in [
+            "http://api.example.com/v1",
+            "https://api.example.com:8443/v1",
+            "https://user:password@api.example.com/v1",
+            "https://127.0.0.1/v1",
+            "https://[::1]/v1",
+        ] {
+            assert!(
+                engine
+                    .authorize_network(&Url::parse(denied).expect("url"))
+                    .is_err(),
+                "{denied} must be denied"
+            );
+        }
+
+        assert!(
+            engine
+                .authorize_resolved_addresses(&[
+                    "93.184.216.34:443".parse().expect("public address"),
+                    "127.0.0.1:443".parse().expect("private address"),
+                ])
+                .is_err()
+        );
+        assert!(
+            engine
+                .authorize_resolved_addresses(&[
+                    "[2606:4700:4700::1111]:443"
+                        .parse()
+                        .expect("public IPv6 address"),
+                    "[::1]:443".parse().expect("loopback IPv6 address"),
+                ])
+                .is_err()
+        );
+        assert!(engine.authorize_resolved_addresses(&[]).is_err());
+    }
+
+    #[test]
+    fn network_policy_can_explicitly_allow_private_addresses() {
+        let root = tempdir().expect("temp dir");
+        let engine = PolicyEngine::new(
+            PolicyDefinition {
+                workspace_root: root.path().display().to_string(),
+                network_allowlist: vec!["127.0.0.1".to_owned()],
+                network: NetworkPolicyDefinition {
+                    allow_private: true,
+                    ..NetworkPolicyDefinition::default()
+                },
+                ..PolicyDefinition::default()
+            },
+            root.path(),
+        )
+        .expect("policy");
+
+        assert!(
+            engine
+                .authorize_network(&Url::parse("http://127.0.0.1:8765/mcp").expect("url"))
+                .is_ok()
+        );
+        assert!(
+            engine
+                .authorize_resolved_addresses(&["127.0.0.1:8765".parse().expect("private address")])
+                .is_ok()
         );
     }
 

@@ -40,7 +40,7 @@ complete, every entry must have exactly one final disposition:
 | RET-001 | Terminal-run retry | verified | implemented |
 | ENC-001 | Sensitive-state encryption | verified | implemented |
 | SEC-001 | Secret providers | verified | implemented |
-| NET-001 | Network policy | open | implemented |
+| NET-001 | Network policy | verified | implemented |
 | ISO-001 | Process isolation | open | redesigned |
 | BUD-001 | Resource and cost budgets | open | implemented |
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
@@ -673,23 +673,35 @@ complete, every entry must have exactly one final disposition:
 
 ### NET-001: Network destination enforcement
 
-- Current behavior: exact/wildcard host grants and disabled redirects exist.
-- User impact: users cannot constrain ports, schemes, private networks, proxies,
-  Unix sockets, custom CAs, or response size consistently.
-- Security or durability impact: DNS rebinding, proxy routing, and local-service
-  access remain residual SSRF paths.
+- Current behavior: exact/wildcard host grants compose with HTTP(S) scheme,
+  effective-port, resolved-address, private-network, proxy, CA, connect-time,
+  and response-size policy. Redirects and Unix sockets are disabled.
+- User impact: public endpoints can be narrowed to HTTPS/443, while intentional
+  local and internal peers require explicit private-network authority.
+- Security or durability impact: direct clients validate the complete DNS
+  answer and pin it before dispatch. Proxy routing is disabled by default;
+  explicit proxy opt-in is documented as a trust delegation.
 - Product decision: resolve and validate each destination against scheme, host,
   port, IP class, proxy, redirect, and TLS/CA policy at the adapter boundary.
 - Required implementation: resolved-IP checks, private-range controls,
   rebinding defense, explicit proxy and Unix-socket denial, response limits,
-  shared timeouts, and protected custom-CA references.
-- Migration impact: policy schema defaults preserve current public HTTPS use.
-- Tests: DNS changes, private/link-local/loopback IPs, ports, schemes,
-  redirects, proxies, CA success/failure, oversized responses, and IPv6.
-- Examples: constrained MCP/provider policies.
-- Live evidence: public OpenAI route under explicit HTTPS/443 policy.
-- Documentation: network model and external egress boundary.
-- Final disposition: pending implementation evidence.
+  bounded DNS/connect setup, and protected custom-CA references.
+- Migration impact: public HTTP(S) scheme defaults remain compatible. Private
+  destinations now require `allowPrivate: true`; environment proxies require
+  `allowProxy: true`.
+- Tests: core policy and DSL tests cover credentials in URLs, schemes, ports,
+  empty and mixed DNS answers, loopback/private/public IPv4 and IPv6, explicit
+  private opt-in, limits, and custom-CA reference policy. Provider and protocol
+  tests cover pinned synthetic DNS, redirect refusal, CA bundle success and
+  failure, and policy-composed response limits.
+- Examples: constrained MCP and A2A examples explicitly authorize localhost.
+- Live evidence: the final public OpenAI matrix remains tracked separately; the
+  security decisions here are proven without credentialed traffic.
+- Documentation: network guide, policy, YAML, provider, security, threat model,
+  limitations, architecture, and ADR 0019.
+- Final disposition: implemented and verified by focused adapter/core tests,
+  generated schema verification, and packaged CLI acceptance scenario 44,
+  which denies a private destination before database creation or network I/O.
 
 ### ISO-001: Honest process isolation
 

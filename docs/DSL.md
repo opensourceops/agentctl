@@ -23,6 +23,13 @@ trace, or inspection output. See [Secret references](guides/SECRET_REFERENCES.md
 
 `policy.workspaceRoot` is the default boundary for relative file paths. Each `writableRoots` entry may be workspace-relative or an explicit absolute mount such as `/artifacts`. Ordinary reads remain workspace-confined. After a successful authorized mutation, the runtime may read that exact output through its writable-root boundary to ingest the bounded regular file into durable CAS; this does not grant tasks general read access to the external root.
 
+`policy.networkAllowlist` grants exact hosts or `*.suffix` subdomains.
+`policy.network` constrains `allowedSchemes`, `allowedPorts`,
+`allowPrivate`, `allowProxy`, `customCa`, `connectTimeoutSeconds`, and
+`maxResponseBytes`. Private addresses and proxies default to denied. Required
+provider and protocol endpoints are resolved, checked, and pinned before run
+state is created. See [Network policy](guides/NETWORK_POLICY.md).
+
 The compiler validates missing references, duplicate tasks, cycles, task-aware templates, tool references, provider capabilities, agent limits, concurrency bounds, and working-memory conflicts before execution. `maxConcurrency` accepts `1` through `64` and defaults to `1`. Independent ready tasks are selected in compiled order, execute against durable isolated memory snapshots, and commit atomically in compiled order. Literal working-memory keys are inferred; templated keys require `memoryWrites`. See [Deterministic parallel tasks](guides/PARALLEL_TASKS.md).
 
 Static `foreach` lists and matrix axes expand at compile time into stable child

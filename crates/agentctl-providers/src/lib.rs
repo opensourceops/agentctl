@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use agentctl_core::dsl::{ReasoningEffort, SecretReference};
+use agentctl_core::network::{HttpTransportSecurity, custom_ca_pem_is_valid};
 use agentctl_core::provider::{
     ContentBlock, ContinuationState, EmbeddingProvider, FinishReason, Message, ModelProvider,
     ProviderError, ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderStreamSink,
@@ -86,7 +87,7 @@ impl OpenAiEmbeddingProvider {
         }
         let endpoint = openai_embeddings_endpoint(&config.endpoint)?;
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
             endpoint,
             model,
@@ -135,7 +136,13 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             http = http.header("OpenAI-Project", project);
         }
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_openai_embedding(&response, dimensions)
     }
 }
@@ -150,6 +157,7 @@ pub struct HttpProviderConfig {
     pub project: Option<String>,
     pub api_version: Option<String>,
     pub headers: BTreeMap<String, SecretValue>,
+    pub transport: HttpTransportSecurity,
 }
 
 impl HttpProviderConfig {
@@ -164,6 +172,7 @@ impl HttpProviderConfig {
             project: None,
             api_version: None,
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         }
     }
 
@@ -178,6 +187,7 @@ impl HttpProviderConfig {
             project: None,
             api_version: None,
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         }
     }
 
@@ -192,14 +202,35 @@ impl HttpProviderConfig {
             project: None,
             api_version: None,
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         }
     }
 }
 
-fn secure_client() -> Result<Client, ProviderError> {
-    Client::builder()
+fn secure_client(config: &HttpProviderConfig) -> Result<Client, ProviderError> {
+    let mut builder = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("agentctl/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(config.transport.connect_timeout);
+    if !config.transport.allow_proxy {
+        builder = builder.no_proxy();
+    }
+    if let Some(host) = &config.transport.resolved_host
+        && !config.transport.resolved_addresses.is_empty()
+    {
+        builder = builder.resolve_to_addrs(host, &config.transport.resolved_addresses);
+    }
+    if let Some(pem) = &config.transport.custom_ca_pem {
+        if !custom_ca_pem_is_valid(pem.expose()) {
+            return Err(ProviderError::Malformed(
+                "network custom CA PEM is invalid".to_owned(),
+            ));
+        }
+        let certificate = reqwest::Certificate::from_pem(pem.expose().as_bytes())
+            .map_err(|_| ProviderError::Malformed("network custom CA PEM is invalid".to_owned()))?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    builder
         .build()
         .map_err(|error| ProviderError::Malformed(error.to_string()))
 }
@@ -277,7 +308,7 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     pub fn new(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
             azure: false,
         })
@@ -285,7 +316,7 @@ impl OpenAiProvider {
 
     pub fn azure(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
             azure: true,
         })
@@ -334,7 +365,13 @@ impl ModelProvider for OpenAiProvider {
             http = http.header("OpenAI-Project", project);
         }
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_openai(response)
     }
 
@@ -383,7 +420,14 @@ impl ModelProvider for OpenAiProvider {
             http = http.header("OpenAI-Project", project);
         }
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send_openai_stream(http, sink, cancellation, &secrets).await?;
+        let response = send_openai_stream(
+            http,
+            sink,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_openai(response)
     }
 }
@@ -678,7 +722,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
         })
     }
@@ -711,7 +755,13 @@ impl ModelProvider for AnthropicProvider {
             .header("x-api-key", credential.expose())
             .header("anthropic-version", ANTHROPIC_VERSION);
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_anthropic(response, request)
     }
 }
@@ -886,7 +936,7 @@ pub struct GoogleProvider {
 impl GoogleProvider {
     pub fn new(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
         })
     }
@@ -919,7 +969,13 @@ impl ModelProvider for GoogleProvider {
             });
         let http = http.header("x-goog-api-key", credential.expose());
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_google(response, request)
     }
 }
@@ -1289,6 +1345,7 @@ async fn send_openai_stream(
     sink: &dyn ProviderStreamSink,
     cancellation: &CancellationToken,
     secrets: &[&str],
+    max_response_bytes: usize,
 ) -> Result<Value, ProviderError> {
     let response = tokio::select! {
         response = request.send() => response.map_err(normalize_transport)?,
@@ -1321,9 +1378,10 @@ async fn send_openai_stream(
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(normalize_transport)?;
         received = received.saturating_add(chunk.len());
-        if received > MAX_PROVIDER_STREAM_BYTES {
+        let limit = MAX_PROVIDER_STREAM_BYTES.min(max_response_bytes);
+        if received > limit {
             return Err(ProviderError::Malformed(format!(
-                "stream exceeds {MAX_PROVIDER_STREAM_BYTES} bytes"
+                "stream exceeds {limit} bytes"
             )));
         }
         buffer.extend_from_slice(&chunk);
@@ -1463,6 +1521,7 @@ async fn send(
     request: reqwest::RequestBuilder,
     cancellation: &CancellationToken,
     secrets: &[&str],
+    max_response_bytes: usize,
 ) -> Result<Value, ProviderError> {
     let response = tokio::select! {
         response = request.send() => response.map_err(normalize_transport)?,
@@ -1486,19 +1545,22 @@ async fn send(
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(normalize_transport)?;
-        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
+        let limit = MAX_PROVIDER_RESPONSE_BYTES.min(max_response_bytes);
+        if bytes.len().saturating_add(chunk.len()) > limit {
             return Err(ProviderError::Malformed(format!(
-                "response exceeds {MAX_PROVIDER_RESPONSE_BYTES} bytes"
+                "response exceeds {limit} bytes"
             )));
         }
         bytes.extend_from_slice(&chunk);
     }
-    let mut body: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| ProviderError::Malformed(error.to_string()))?;
-    redact_value(&mut body, secrets);
     if status.is_success() {
+        let mut body: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| ProviderError::Malformed(error.to_string()))?;
+        redact_value(&mut body, secrets);
         Ok(body)
     } else {
+        let mut body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        redact_value(&mut body, secrets);
         let message = body
             .pointer("/error/message")
             .or_else(|| body.get("message"))
@@ -1636,6 +1698,26 @@ mod tests {
     use agentctl_core::tool::ToolContract;
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDETCCAfmgAwIBAgIUQHzD3SnUaJsT7HKOkZH+TTIuqbswDQYJKoZIhvcNAQEL
+BQAwGDEWMBQGA1UEAwwNYWdlbnRjdGwudGVzdDAeFw0yNjA3MjcwNjM0NThaFw0y
+NjA3MjgwNjM0NThaMBgxFjAUBgNVBAMMDWFnZW50Y3RsLnRlc3QwggEiMA0GCSqG
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQC28TUKNYIA6cu3Vf8Vqmvpa3xGS41x4Z1f
+x5wlLUF3LH+aS2xrEvkdxxgwVpNGPXGymPtKepInAtaHWgrcY7EF1iRpOr3IFD81
+iUoK1MjNUtBu2Aq6M77hsK89473X0BIIE5ECsoHCaO7m8MwBQu1b1T7eleo0qADH
+VFAxDjZl4ZB/SHzr1hW8Z/tK9aQ5T2fGGJRmlH2K13JiRcqW4mB5WOUkBFQxUF/9
+GUhBPVvftEZphAKNNlTRyFe0mIbmC5tq66aoNd1baYufP+0ptd+5y9nIqx1Qltw1
+2Am5GkFZEYKgSjztsS5qtMtAsUh0oYekIHA6MGOmsJu5gxNsy/d/AgMBAAGjUzBR
+MB0GA1UdDgQWBBRiEXFf6JE+ppbbI8XNoS69EZAjVTAfBgNVHSMEGDAWgBRiEXFf
+6JE+ppbbI8XNoS69EZAjVTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUA
+A4IBAQAv63jTIpJzZ4qpEVHdhJFqhbPN0lHcGoWKptujN7nk4towPkmktZPh1ypL
+VgG4uoBeBR47vHPorQRKktk00DD9YXd6JYMALUpBXevukXIi6kuaqr2w4PqVJB5C
+rBy+W0yvWag6hv7/ptDWvfJrYTV2dzOgNpS2/NUms2SaQTXNooail1UyVj+PeoFX
+T2gIwaJA5cZGocMC1/dspskyV2a32eH51bbobwdMbYrfqujWvSV2CX954r+eSfu8
+Nae+Wpy1dTP85fXTHRBmfJooV1sQPVbZEBGYiv1bbLnLVyxl0Vl5s7FGLevIUTF4
+CtKEl+CNRhcXc/b/4bqdwn9pC6iT
+-----END CERTIFICATE-----"#;
 
     #[derive(Default)]
     struct RecordingStreamSink(Mutex<Vec<ProviderStreamEvent>>);
@@ -1793,6 +1875,101 @@ mod tests {
         assert_eq!(response.usage.cache_read_tokens, 3);
         assert_eq!(response.usage.cache_write_tokens, 5);
         assert_eq!(response.usage.reasoning_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn provider_transport_pins_the_authorized_dns_answer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_pinned",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "pinned"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!(
+            "http://agentctl.test:{}/v1/responses",
+            server.address().port()
+        );
+        config.transport.resolved_host = Some("agentctl.test".to_owned());
+        config.transport.resolved_addresses = vec![*server.address()];
+
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete(&request(), &CancellationToken::new())
+            .await
+            .expect("pinned response");
+        assert_eq!(response.text, "pinned");
+    }
+
+    #[tokio::test]
+    async fn provider_transport_rejects_redirects_and_oversized_responses() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/redirect"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}/redirected", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/redirected"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut redirect = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        redirect.endpoint = format!("{}/redirect", server.uri());
+        assert!(matches!(
+            OpenAiProvider::new(redirect)
+                .expect("provider")
+                .complete(&request(), &CancellationToken::new())
+                .await,
+            Err(ProviderError::Http { status: 307, .. })
+        ));
+
+        Mock::given(method("POST"))
+            .and(path("/oversized"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_oversized",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "x".repeat(1024)}]}]
+            })))
+            .mount(&server)
+            .await;
+        let mut oversized = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        oversized.endpoint = format!("{}/oversized", server.uri());
+        oversized.transport.max_response_bytes = 128;
+        assert!(matches!(
+            OpenAiProvider::new(oversized)
+                .expect("provider")
+                .complete(&request(), &CancellationToken::new())
+                .await,
+            Err(ProviderError::Malformed(message)) if message.contains("response exceeds 128 bytes")
+        ));
+        server.verify().await;
+    }
+
+    #[test]
+    fn provider_transport_accepts_a_certificate_bundle_and_rejects_invalid_ca() {
+        let mut valid = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        valid.transport.custom_ca_pem = Some(SecretValue::from(TEST_CA_PEM));
+        assert!(OpenAiProvider::new(valid).is_ok());
+
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.transport.custom_ca_pem = Some(SecretValue::from("not a PEM certificate"));
+        match OpenAiProvider::new(config) {
+            Err(ProviderError::Malformed(message)) => {
+                assert_eq!(message, "network custom CA PEM is invalid");
+            }
+            Err(error) => panic!("unexpected custom CA error: {error}"),
+            Ok(_) => panic!("invalid custom CA was accepted"),
+        }
     }
 
     #[tokio::test]
@@ -2004,6 +2181,7 @@ mod tests {
             project: None,
             api_version: Some("v1".to_owned()),
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         };
         let response = OpenAiProvider::azure(config)
             .expect("provider")

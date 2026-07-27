@@ -122,6 +122,17 @@
             "writableRoots": [],
             "environmentAllowlist": [],
             "networkAllowlist": [],
+            "network": {
+              "allowedSchemes": [
+                "https",
+                "http"
+              ],
+              "allowedPorts": [],
+              "allowPrivate": false,
+              "allowProxy": false,
+              "connectTimeoutSeconds": 10,
+              "maxResponseBytes": 8388608
+            },
             "processAllowlist": [],
             "secretFileRoots": [],
             "secretProcessAllowlist": [],
@@ -1082,6 +1093,20 @@
           },
           "default": []
         },
+        "network": {
+          "$ref": "#/$defs/NetworkPolicyDefinition",
+          "default": {
+            "allowedSchemes": [
+              "https",
+              "http"
+            ],
+            "allowedPorts": [],
+            "allowPrivate": false,
+            "allowProxy": false,
+            "connectTimeoutSeconds": 10,
+            "maxResponseBytes": 8388608
+          }
+        },
         "processAllowlist": {
           "type": "array",
           "items": {
@@ -1131,6 +1156,62 @@
         "nonInteractive": {
           "$ref": "#/$defs/NonInteractiveMode",
           "default": "pause"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NetworkPolicyDefinition": {
+      "type": "object",
+      "properties": {
+        "allowedSchemes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "https",
+            "http"
+          ]
+        },
+        "allowedPorts": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "default": []
+        },
+        "allowPrivate": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowProxy": {
+          "type": "boolean",
+          "default": false
+        },
+        "customCa": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connectTimeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 10
+        },
+        "maxResponseBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 8388608
         }
       },
       "additionalProperties": false

@@ -5,6 +5,8 @@ metadata:
 spec:
   policy:
     networkAllowlist: [127.0.0.1]
+    network:
+      allowPrivate: true
     approval: never
   mcpServers:
     local:
