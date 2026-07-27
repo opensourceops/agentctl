@@ -23,7 +23,7 @@ The selected standard runner labels are `ubuntu-24.04` (x64), `macos-14` (arm64)
 2. Enable GitHub Actions if repository or organization policy currently disables them.
 3. Allow the pinned GitHub, Anchore, and Aqua actions, or approve their exact SHAs under the organization action policy.
 4. Require the checks listed in [Release process](../RELEASE_PROCESS.md) on the protected release branch.
-5. Optionally define protected secret `AGENTCTL_BUILD_CA_PEM` only when the hosted build network uses a private CA. Do not configure provider API keys for these workflows.
+5. Optionally define protected secret `AGENTCTL_BUILD_CA_PEM` only when `main` or manually dispatched hosted builds use a private CA. Pull-request runs do not receive it. Do not configure provider API keys for these workflows.
 6. Retain artifacts for at least the configured 14 days and record workflow URLs/digests in the RC evidence.
 
 The optional CA is written to a mode-restricted runner temporary file, mounted into the builder as `agentctl_ca`, combined with public roots only on tmpfs, and removed in an `always()` cleanup step. It is not a Dockerfile argument, image environment variable, ordinary build context file, or uploaded artifact.

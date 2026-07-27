@@ -20,7 +20,7 @@ docker build --secret id=agentctl_ca,src=/protected/path/build-ca.pem \
   --tag agentctl:local --file Containerfile .
 ```
 
-For the repository acceptance wrapper, set `AGENTCTL_BUILD_CA_FILE=/protected/path/build-ca.pem` before `cargo xtask acceptance-container`. Hosted CI accepts the protected secret `AGENTCTL_BUILD_CA_PEM`, materializes it only in the runner's temporary directory, and removes it after the build.
+For the repository acceptance wrapper, set `AGENTCTL_BUILD_CA_FILE=/protected/path/build-ca.pem` before `cargo xtask acceptance-container`. Hosted `main` and manually dispatched runs accept the protected secret `AGENTCTL_BUILD_CA_PEM`, materialize it only in the runner's temporary directory, and remove it after the build. Pull-request runs never receive that secret.
 
 The `Containerfile` combines the secret with public roots on a tmpfs mount for the single Cargo build step. The CA value is not a build argument, image environment value, build-context file, layer, history value, runtime file, or artifact. Never use `--insecure`, `CARGO_HTTP_CHECK_REVOKE=false`, a TLS-verification disable flag, or a committed certificate.
 

@@ -67,7 +67,7 @@ For the candidate workflow run:
 - Secret-scan finding: stop, revoke any real credential, remove it from the complete history using the repository's incident procedure, then rerun both history and tree scans.
 - Dependency or image finding: review the advisory and remediate or document an explicit time-bounded exception before release. The default HIGH/CRITICAL image gate ignores only unfixed findings.
 - SBOM failure or missing artifact: treat as a release failure. SBOM generation is not best-effort.
-- Container CA failure: configure only `AGENTCTL_BUILD_CA_PEM` as a protected repository/organization secret. Do not use insecure Cargo, Git, curl, or container flags.
+- Container CA failure on `main` or a manually dispatched run: configure only `AGENTCTL_BUILD_CA_PEM` as a protected repository/organization secret. Pull-request runs intentionally cannot receive it. Do not use insecure Cargo, Git, curl, or container flags.
 
 ## Release decision
 

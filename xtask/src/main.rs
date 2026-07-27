@@ -1028,7 +1028,24 @@ fn verify_workflow_action_pins(root: &Path) -> Result<()> {
             continue;
         }
         let source = fs::read_to_string(&path)?;
+        let handles_pull_requests = source.lines().any(|line| line.trim() == "pull_request:");
+        let mut secret_step_is_pull_request_safe = false;
         for (index, line) in source.lines().enumerate() {
+            if line.starts_with("      - ") {
+                secret_step_is_pull_request_safe = false;
+            } else if line.trim() == "if: github.event_name != 'pull_request'" {
+                secret_step_is_pull_request_safe = true;
+            }
+            if handles_pull_requests
+                && line.contains("${{ secrets.")
+                && !secret_step_is_pull_request_safe
+            {
+                bail!(
+                    "{}:{} pull-request workflow secret requires an explicit non-PR step guard",
+                    path.display(),
+                    index + 1
+                );
+            }
             let Some(reference) = line.trim_start().strip_prefix("- uses: ") else {
                 continue;
             };

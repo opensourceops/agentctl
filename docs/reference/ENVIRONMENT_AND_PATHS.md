@@ -27,7 +27,7 @@ State encryption accepts an environment-variable reference through `--key-env`. 
 | --- | --- | --- |
 | `AGENTCTL_CONTAINER_ENGINE` | local acceptance | Select `docker` or `podman` when auto-detection is unsuitable. |
 | `AGENTCTL_BUILD_CA_FILE` | local container build | Path to a reviewed CA bundle supplied as a build secret. |
-| `AGENTCTL_BUILD_CA_PEM` | hosted container workflow | Protected secret materialized temporarily by CI. |
+| `AGENTCTL_BUILD_CA_PEM` | non-PR hosted container workflow | Protected secret materialized temporarily by `main` or manually dispatched CI; pull-request runs never receive it. |
 
 Normal `cargo xtask docs-verify`, `cargo xtask verify`, and `cargo xtask acceptance` need no provider credential.
 
