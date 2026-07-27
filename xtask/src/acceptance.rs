@@ -4169,6 +4169,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         repair_run_id,
         replay_run_id,
         "local-complete-container-pending",
+        None,
     )?;
 
     reserve_live_requests(requests, LIVE_CONTAINER_MAX_REQUESTS)?;
@@ -4187,8 +4188,8 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         repair_run_id,
         replay_run_id,
         "local-and-container-complete",
+        Some(&container),
     )?;
-    write_live_container_summary(root, &container)?;
     println!(
         "live OpenAI example verification passed: examples=7 model=gpt-5.6 requests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
         usage.input,
@@ -4231,6 +4232,7 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
     let repair_run_id = string_at(&summary, "/selectiveRepair/repairRunId")?;
     let replay_run_id = string_at(&summary, "/selectiveRepair/replayRunId")?;
 
+    guard_live_budget(requests, &usage)?;
     reserve_live_requests(requests, LIVE_CONTAINER_MAX_REQUESTS)?;
     let container = run_live_openai_container(root)?;
     requests = requests.saturating_add(container.requests);
@@ -4247,8 +4249,8 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
         repair_run_id,
         replay_run_id,
         "local-and-container-complete",
+        Some(&container),
     )?;
-    write_live_container_summary(root, &container)?;
     println!(
         "live OpenAI container continuation passed: model=gpt-5.6 totalRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
         usage.input,
@@ -4388,6 +4390,10 @@ fn run_live_openai_container(root: &Path) -> Result<LiveContainerSummary> {
         usage = usage.plus(usage_totals(evidence));
         tool_calls = tool_calls.saturating_add(array_len(evidence, "/data/toolCalls")?);
     }
+    ensure!(
+        requests <= LIVE_CONTAINER_MAX_REQUESTS,
+        "live container used {requests} model requests after reserving {LIVE_CONTAINER_MAX_REQUESTS}"
+    );
     Ok(LiveContainerSummary {
         source_run_id,
         repair_run_id,
@@ -4985,10 +4991,11 @@ fn write_live_summary(
     repair_run_id: &str,
     replay_run_id: &str,
     status: &str,
+    container: Option<&LiveContainerSummary>,
 ) -> Result<()> {
     let directory = root.join(".release-evidence/selective-repair");
     fs::create_dir_all(&directory)?;
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "formatVersion": 1,
         "status": status,
         "model": "gpt-5.6",
@@ -5011,40 +5018,35 @@ fn write_live_summary(
         },
         "examples": examples,
     });
+    if let Some(container) = container {
+        value
+            .as_object_mut()
+            .context("live summary must be an object")?
+            .insert(
+                "container".to_owned(),
+                serde_json::json!({
+                    "sourceRunId": container.source_run_id,
+                    "repairRunId": container.repair_run_id,
+                    "replayRunId": container.replay_run_id,
+                    "requestCount": container.requests,
+                    "toolCallCount": container.tool_calls,
+                    "usage": {
+                        "inputTokens": container.usage.input,
+                        "outputTokens": container.usage.output,
+                        "reasoningTokens": container.usage.reasoning,
+                        "cacheReadTokens": container.usage.cache_read,
+                        "cacheWriteTokens": container.usage.cache_write,
+                        "providerReportedCostMicrousd": container.usage.cost_microusd,
+                    },
+                    "upstreamReused": true,
+                    "replayFreshEffects": 0,
+                }),
+            );
+    }
     fs::write(
         directory.join("live-summary.json"),
         format!("{}\n", serde_json::to_string_pretty(&value)?),
     )?;
-    Ok(())
-}
-
-fn write_live_container_summary(root: &Path, container: &LiveContainerSummary) -> Result<()> {
-    let path = root.join(".release-evidence/selective-repair/live-summary.json");
-    let mut value: Value = serde_json::from_slice(&fs::read(&path)?)?;
-    value
-        .as_object_mut()
-        .context("live summary must be an object")?
-        .insert(
-            "container".to_owned(),
-            serde_json::json!({
-                "sourceRunId": container.source_run_id,
-                "repairRunId": container.repair_run_id,
-                "replayRunId": container.replay_run_id,
-                "requestCount": container.requests,
-                "toolCallCount": container.tool_calls,
-                "usage": {
-                    "inputTokens": container.usage.input,
-                    "outputTokens": container.usage.output,
-                    "reasoningTokens": container.usage.reasoning,
-                    "cacheReadTokens": container.usage.cache_read,
-                    "cacheWriteTokens": container.usage.cache_write,
-                    "providerReportedCostMicrousd": container.usage.cost_microusd,
-                },
-                "upstreamReused": true,
-                "replayFreshEffects": 0,
-            }),
-        );
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&value)?))?;
     Ok(())
 }
 
@@ -6746,5 +6748,42 @@ mod tests {
     fn live_request_reservations_fail_before_crossing_the_command_budget() {
         reserve_live_requests(33, LIVE_CONTAINER_MAX_REQUESTS).expect("remaining requests fit");
         assert!(reserve_live_requests(34, LIVE_CONTAINER_MAX_REQUESTS).is_err());
+    }
+
+    #[test]
+    fn completed_live_summary_includes_container_evidence_in_one_write() {
+        let root = tempfile::tempdir().expect("temporary evidence root");
+        let container = LiveContainerSummary {
+            source_run_id: "source".to_owned(),
+            repair_run_id: "repair".to_owned(),
+            replay_run_id: "replay".to_owned(),
+            requests: 5,
+            tool_calls: 3,
+            usage: UsageTotals::default(),
+        };
+        write_live_summary(
+            root.path(),
+            &[],
+            5,
+            3,
+            &UsageTotals::default(),
+            "local-source",
+            "local-repair",
+            "local-replay",
+            "local-and-container-complete",
+            Some(&container),
+        )
+        .expect("write summary");
+        let summary: Value = serde_json::from_slice(
+            &fs::read(
+                root.path()
+                    .join(".release-evidence/selective-repair/live-summary.json"),
+            )
+            .expect("read summary"),
+        )
+        .expect("parse summary");
+        assert_eq!(summary["status"], "local-and-container-complete");
+        assert_eq!(summary["container"]["sourceRunId"], "source");
+        assert_eq!(summary["container"]["requestCount"], 5);
     }
 }
