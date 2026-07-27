@@ -41,7 +41,7 @@ complete, every entry must have exactly one final disposition:
 | ENC-001 | Sensitive-state encryption | verified | implemented |
 | SEC-001 | Secret providers | verified | implemented |
 | NET-001 | Network policy | verified | implemented |
-| ISO-001 | Process isolation | open | redesigned |
+| ISO-001 | Process isolation | in progress | implemented |
 | BUD-001 | Resource and cost budgets | open | implemented |
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
 | DYN-001 | Foreach and matrix | in progress | implemented |
@@ -705,24 +705,39 @@ complete, every entry must have exactly one final disposition:
 
 ### ISO-001: Honest process isolation
 
-- Current behavior: direct argv, cleared environment, output/time bounds, and
-  process-group termination exist, but policy is not an OS sandbox.
-- User impact: users may overestimate allowlists.
-- Security or durability impact: an allowed executable has the host identity's
-  full authority.
+- Current behavior: every shell and process-extension action exposes
+  plan-visible `process` or `container` isolation. Existing actions default to
+  bounded host-process mode, explicitly not a sandbox.
+- User impact: users can select a portable stronger boundary without confusing
+  executable policy with isolation.
+- Security or durability impact: host mode retains the agentctl identity.
+  Container mode uses a local digest-pinned image with fixed read-only,
+  networkless, non-root, capability-dropped, resource-bounded invocation.
 - Product decision: require an explicit isolation mode. `process` is the honest
   host mode; `container` is the portable strong boundary. Optional platform
   backends can be added when detected, but no weak emulation is claimed.
-- Required implementation: DSL/plan visibility, fail-closed requested backend,
-  resource limits where supported, container invocation contract, and explicit
-  unsupported diagnostics on macOS/Windows/Linux backends.
+- Required implementation: implemented DSL/plan visibility, fail-closed
+  engine/image preflight, memory/CPU/PID/output/time limits, forced named
+  container cleanup, protected engine environment, direct entrypoint, and
+  explicit unsupported native-backend documentation.
 - Migration impact: existing actions default to documented host-process mode.
-- Tests: environment, working directory, process tree, resource bounds,
-  unavailable backend, and container isolation.
-- Examples: host and container-isolated process action.
-- Live evidence: container acceptance only.
-- Documentation: policy versus isolation.
-- Final disposition: pending redesign evidence.
+- Tests: 61 core tests and 8 focused process tests cover defaults, invalid
+  combinations, plan visibility, engine-safe environment, working directory,
+  process tree, output/time/cancellation, cleanup construction, and container
+  resource/security flags. Packaged CLI acceptance scenario 45 proves a
+  requested missing engine fails before process effect dispatch.
+- Examples: `examples/v1/process-isolation.yaml` contains explicit host and
+  content-addressed container actions.
+- Live evidence: the OCI gate now invokes a real action inside the exact
+  repository image. Local execution is pending because Podman 5.8.2/libkrun
+  repeatedly lost `gvproxy`, leaving both forwarding endpoints unavailable
+  before image build.
+- Documentation: process-isolation guide, policy, YAML, DSL, security, threat
+  model, limitations, architecture, container contract, terminology, and ADR
+  0020.
+- Final disposition: implementation and deterministic evidence complete;
+  actual container execution remains environment-blocked and therefore this
+  entry is not yet marked verified.
 
 ### BUD-001: Enforceable resource and cost budgets
 

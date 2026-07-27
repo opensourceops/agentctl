@@ -41,7 +41,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
@@ -50,7 +49,8 @@ mod process;
 pub mod secret;
 
 use process::{
-    ProcessOutputLimits, ProcessRunError, run_bounded_process, run_bounded_process_with_input,
+    ProcessOutputLimits, ProcessRunError, container_invocation_name, isolated_process_command,
+    prepare_process_isolation, run_isolated_process,
 };
 
 pub trait Clock: Send + Sync {
@@ -2930,6 +2930,7 @@ impl Runtime {
                     providers: Vec::new(),
                     tools: Vec::new(),
                     effects: Vec::new(),
+                    processes: Vec::new(),
                 },
             }
         } else {
@@ -4948,6 +4949,11 @@ impl Runtime {
                     .map(|path| policy.resolve_read_path(path))
                     .transpose()?
                     .unwrap_or_else(|| self.base_path.clone());
+                let isolation = match prepare_process_isolation(action, cancellation).await {
+                    Ok(isolation) => isolation,
+                    Err(ProcessRunError::Cancelled) => return Err(RuntimeError::Cancelled),
+                    Err(error) => return Err(RuntimeError::InvalidState(error.to_string())),
+                };
                 let mut resolved_environment = BTreeMap::new();
                 let mut environment_digests = BTreeMap::new();
                 let secret_resolver = secret::SecretResolver::restricted(policy.clone());
@@ -4983,6 +4989,9 @@ impl Runtime {
                         "stdoutLimitBytes": action.stdout_limit_bytes(),
                         "stderrLimitBytes": action.stderr_limit_bytes(),
                         "combinedOutputLimitBytes": action.combined_output_limit_bytes(),
+                        "isolation": isolation.label(),
+                        "container": action.container,
+                        "containerBackend": isolation.backend_name(),
                     }),
                     "execute an allowlisted subprocess",
                     trace_id,
@@ -5003,15 +5012,16 @@ impl Runtime {
                     PreparedEffect::Execute => {
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
-                        let mut process = Command::new(command);
-                        process
-                            .args(&action.args)
-                            .current_dir(cwd)
-                            .env_clear()
-                            .kill_on_drop(true);
-                        for (name, value) in &resolved_environment {
-                            process.env(name, value.expose());
-                        }
+                        let container_name = container_invocation_name(&request.id, "shell");
+                        let process = isolated_process_command(
+                            action,
+                            &isolation,
+                            command,
+                            &action.args,
+                            &cwd,
+                            &resolved_environment,
+                            &container_name,
+                        );
                         let timeout = Duration::from_secs(
                             action
                                 .timeout_seconds
@@ -5022,8 +5032,16 @@ impl Runtime {
                             stderr_bytes: action.stderr_limit_bytes(),
                             combined_bytes: action.combined_output_limit_bytes(),
                         };
-                        let result =
-                            run_bounded_process(process, limits, timeout, cancellation).await;
+                        let result = run_isolated_process(
+                            &isolation,
+                            &container_name,
+                            process,
+                            None,
+                            limits,
+                            timeout,
+                            cancellation,
+                        )
+                        .await;
                         match result {
                             Ok(result) => {
                                 let secrets = resolved_environment
@@ -5121,6 +5139,22 @@ impl Runtime {
                                             "failed to write subprocess stdin: {message}"
                                         ),
                                     },
+                                    ProcessRunError::IsolationUnavailable(message) => {
+                                        RuntimeError::Task {
+                                            task: task.task_id.clone(),
+                                            message: format!(
+                                                "requested process isolation is unavailable: {message}"
+                                            ),
+                                        }
+                                    }
+                                    ProcessRunError::ContainerCleanup { original, cleanup } => {
+                                        RuntimeError::Task {
+                                            task: task.task_id.clone(),
+                                            message: format!(
+                                                "isolated container cleanup failed after {original}: {cleanup}"
+                                            ),
+                                        }
+                                    }
                                     ProcessRunError::OutputLimitExceeded { .. } => unreachable!(),
                                 };
                                 self.store.mark_effect_uncertain(
@@ -5639,6 +5673,11 @@ impl Runtime {
             .map(|path| policy.resolve_read_path(path))
             .transpose()?
             .unwrap_or_else(|| self.base_path.clone());
+        let isolation = match prepare_process_isolation(action, cancellation).await {
+            Ok(isolation) => isolation,
+            Err(ProcessRunError::Cancelled) => return Err(RuntimeError::Cancelled),
+            Err(error) => return Err(RuntimeError::InvalidState(error.to_string())),
+        };
         let mut resolved_environment = BTreeMap::new();
         let mut environment_digests = BTreeMap::new();
         let secret_resolver = secret::SecretResolver::restricted(policy.clone());
@@ -5679,6 +5718,9 @@ impl Runtime {
                 "stdoutLimitBytes": action.stdout_limit_bytes(),
                 "stderrLimitBytes": action.stderr_limit_bytes(),
                 "combinedOutputLimitBytes": action.combined_output_limit_bytes(),
+                "isolation": isolation.label(),
+                "container": action.container,
+                "containerBackend": isolation.backend_name(),
             }),
             "invoke a reviewed bounded process extension",
             trace_id,
@@ -5716,21 +5758,23 @@ impl Runtime {
                     stderr_bytes: action.stderr_limit_bytes(),
                     combined_bytes: action.combined_output_limit_bytes(),
                 };
-                let make_command = |mode: &str| {
-                    let mut process = Command::new(command);
-                    process
-                        .args(&action.args)
-                        .arg(mode)
-                        .current_dir(&cwd)
-                        .env_clear()
-                        .kill_on_drop(true);
-                    for (name, value) in &resolved_environment {
-                        process.env(name, value.expose());
-                    }
-                    process
-                };
-                let handshake_output = run_bounded_process(
-                    make_command("--agentctl-handshake"),
+                let handshake_name = container_invocation_name(&request.id, "handshake");
+                let mut handshake_args = action.args.clone();
+                handshake_args.push("--agentctl-handshake".to_owned());
+                let handshake_command = isolated_process_command(
+                    action,
+                    &isolation,
+                    command,
+                    &handshake_args,
+                    &cwd,
+                    &resolved_environment,
+                    &handshake_name,
+                );
+                let handshake_output = run_isolated_process(
+                    &isolation,
+                    &handshake_name,
+                    handshake_command,
+                    None,
                     limits,
                     timeout,
                     cancellation,
@@ -5800,9 +5844,23 @@ impl Runtime {
                     "effectId": request.id,
                     "input": input,
                 }))?;
-                let invocation_output = run_bounded_process_with_input(
-                    make_command("--agentctl-invoke"),
-                    invocation,
+                let invocation_name = container_invocation_name(&request.id, "invoke");
+                let mut invocation_args = action.args.clone();
+                invocation_args.push("--agentctl-invoke".to_owned());
+                let invocation_command = isolated_process_command(
+                    action,
+                    &isolation,
+                    command,
+                    &invocation_args,
+                    &cwd,
+                    &resolved_environment,
+                    &invocation_name,
+                );
+                let invocation_output = run_isolated_process(
+                    &isolation,
+                    &invocation_name,
+                    invocation_command,
+                    Some(invocation),
                     limits,
                     timeout,
                     cancellation,
@@ -6962,6 +7020,14 @@ fn process_extension_error(task: &TaskRecord, error: ProcessRunError) -> Runtime
             message: format!(
                 "extension {stream} exceeded the configured {limit_bytes}-byte output limit"
             ),
+        },
+        ProcessRunError::IsolationUnavailable(message) => RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!("requested process isolation is unavailable: {message}"),
+        },
+        ProcessRunError::ContainerCleanup { original, cleanup } => RuntimeError::Task {
+            task: task.task_id.clone(),
+            message: format!("isolated container cleanup failed after {original}: {cleanup}"),
         },
     }
 }
@@ -14164,6 +14230,63 @@ spec:
                 .await,
             Err(RuntimeError::UncertainEffect { .. })
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a repository-built OCI image and Docker or Podman"]
+    async fn container_isolation_live_executes_in_the_pinned_image() {
+        let directory = tempdir().expect("tempdir");
+        let image =
+            std::env::var("AGENTCTL_TEST_CONTAINER_IMAGE").expect("AGENTCTL_TEST_CONTAINER_IMAGE");
+        let container_runtime = std::env::var("AGENTCTL_TEST_CONTAINER_RUNTIME")
+            .expect("AGENTCTL_TEST_CONTAINER_RUNTIME");
+        let (workflow, plan) = compile_fixture(&format!(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: container-isolation-live }}
+spec:
+  outputs:
+    version: "${{{{ tasks.version.output }}}}"
+  policy:
+    workspaceRoot: .
+    processAllowlist: [agentctl]
+    approval: never
+  actions:
+    version:
+      kind: builtin.shell.exec
+      command: /usr/local/bin/agentctl
+      args: [version, --output, json, --color, never]
+      isolation: container
+      container:
+        image: {image}
+        runtime: {container_runtime}
+  tasks:
+    - id: version
+      uses: action:version
+"#
+        ));
+        let store = SqliteStore::open_memory().expect("store");
+        let outcome = runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("container-isolated run");
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert!(
+            outcome.output.as_ref().expect("output")["version"]["stdout"]
+                .as_str()
+                .is_some_and(|stdout| stdout.contains("\"Version\""))
+        );
+        let effect = &store.list_effects(&outcome.run_id).expect("effects")[0];
+        assert_eq!(effect.status, EffectStatus::Succeeded);
+        assert_eq!(effect.request.input["isolation"], "container");
+        assert_eq!(effect.request.input["containerBackend"], container_runtime);
     }
 
     #[cfg(unix)]

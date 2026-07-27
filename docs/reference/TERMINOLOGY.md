@@ -7,6 +7,9 @@ Use these terms consistently in workflows, documentation, issues, and reviews.
 | Workflow | One versioned declarative YAML document and its compiled graph. |
 | Task | One ordered graph node that invokes an action or agent. |
 | Action | A typed runtime operation selected directly by a task. |
+| Process mode | Bounded direct execution with the agentctl host identity. It is not a sandbox. |
+| Container mode | Explicit process-action isolation in a local digest-pinned Docker/Podman image with the fixed agentctl container contract. |
+| Isolation | An operating-system or container authority boundary. Policy and allowlists alone are not isolation. |
 | Agent | A bounded provider-backed executor for one task. |
 | Role | A named agent task with explicit provider, tool visibility, limits, and output contract. |
 | Handoff | A typed durable task output consumed by an explicitly dependent role task. |

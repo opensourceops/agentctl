@@ -592,6 +592,19 @@
           "format": "uint64",
           "minimum": 0
         },
+        "isolation": {
+          "$ref": "#/$defs/ProcessIsolation"
+        },
+        "container": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContainerIsolationDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "protocolVersion": {
           "type": [
             "string",
@@ -640,6 +653,55 @@
         "keyed",
         "at_most_once",
         "unknown"
+      ]
+    },
+    "ProcessIsolation": {
+      "type": "string",
+      "enum": [
+        "process",
+        "container"
+      ]
+    },
+    "ContainerIsolationDefinition": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "runtime": {
+          "$ref": "#/$defs/ContainerRuntime",
+          "default": "auto"
+        },
+        "memoryLimitBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 268435456
+        },
+        "cpuLimitMillis": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 1000
+        },
+        "pidsLimit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 64
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ]
+    },
+    "ContainerRuntime": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "docker",
+        "podman"
       ]
     },
     "ToolDefinition": {

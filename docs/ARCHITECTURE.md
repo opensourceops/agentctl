@@ -61,11 +61,16 @@ The workspace uses Rust edition 2024, pins Rust 1.88 as the MSRV, forbids
 unsafe code, and denies clippy warnings. HTTP uses rustls, ignores environment
 proxies by default, disables redirects and Unix sockets, checks every resolved
 address, and pins accepted direct DNS answers. Optional custom roots come only
-from protected certificate-only PEM references. Subprocesses use direct argv,
-a cleared environment, explicit allowlists, validated timeout/output limits,
-concurrent bounded pipe draining, cancellation, and kill/reap cleanup. SQLite
-is bundled for predictable installation and creates private files on Unix.
-SIGINT and SIGTERM converge on durable cancellation.
+from protected certificate-only PEM references. Host subprocesses use direct
+argv, a cleared environment, explicit allowlists, validated timeout/output
+limits, concurrent bounded pipe draining, cancellation, and kill/reap cleanup;
+this `process` mode is not a sandbox. Explicit `container` actions use a local
+digest-pinned Docker/Podman image with no pull/network, a read-only
+root/workspace, a non-root identity, dropped capabilities, resource limits,
+and fail-closed backend/image preflight. SQLite is bundled for predictable
+installation and creates private files on Unix. SIGINT and SIGTERM converge on
+durable cancellation. See [Process isolation](guides/PROCESS_ISOLATION.md) and
+ADR 0020.
 
 The OCI build is multi-stage: only the optimized Rust binary enters a maintained distroless runtime with CA roots and a non-root identity. `/config` is workflow configuration, `/workspace` is the read-only working tree, `/state` holds SQLite and the content-addressed artifact store, and `/artifacts` receives declared workflow outputs. State must be mounted again for inspect/resume/replay/repair and artifact export. The root filesystem may be read-only. See [Container contract](CONTAINER.md) and ADR 0007.
 

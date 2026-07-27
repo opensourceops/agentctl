@@ -22,7 +22,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 44;
+const ACCEPTANCE_SCENARIOS: usize = 45;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -2406,6 +2406,33 @@ spec:
     );
     ensure!(!network_denied_db.exists());
 
+    scenario(
+        45,
+        "requested container backend fails closed before process effect dispatch",
+    );
+    let isolation_workflow = workspace.join("container-isolation-unavailable.yaml");
+    write(
+        &isolation_workflow,
+        CONTAINER_ISOLATION_UNAVAILABLE_WORKFLOW,
+    )?;
+    let isolation_db = directory.path().join("container-isolation-unavailable.db");
+    let empty_path = directory.path().join("empty-path");
+    fs::create_dir(&empty_path)?;
+    let isolation_failure = json_with_path(
+        &binary,
+        &workspace,
+        &run_args(&isolation_workflow, &isolation_db, &workspace, &[]),
+        &empty_path,
+        4,
+    )?;
+    ensure!(
+        string_at(&isolation_failure, "/error/message")?
+            .contains("requested process isolation is unavailable")
+    );
+    let isolation_run_id = string_at(&isolation_failure, "/error/runId")?;
+    let isolation_inspect = inspect(&binary, root, &isolation_db, isolation_run_id)?;
+    ensure!(array_len(&isolation_inspect, "/data/effects")? == 0);
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -2414,6 +2441,7 @@ pub fn container(root: &Path) -> Result<()> {
     let engine = container_engine()?;
     ensure_engine_ready(&engine)?;
     build_image(root, &engine)?;
+    container_isolation_acceptance(root, &engine)?;
     let directory = tempfile::tempdir()?;
     let layout = container_layout(directory.path(), false)?;
     let run = run_container(&engine, &layout, false, None)?;
@@ -3890,6 +3918,19 @@ fn json_with_removed_env(
     parse_output(&output)
 }
 
+fn json_with_path(
+    binary: &Path,
+    cwd: &Path,
+    args: &[String],
+    path: &Path,
+    code: i32,
+) -> Result<Value> {
+    let mut command = command_for(binary, cwd, args);
+    command.env("PATH", path);
+    let output = output_with_code(command, code, "agentctl with isolated executable path")?;
+    parse_output(&output)
+}
+
 fn json_with_env(
     binary: &Path,
     cwd: &Path,
@@ -4290,6 +4331,55 @@ fn build_image(root: &Path, engine: &Path) -> Result<()> {
     } else {
         bail!("OCI image build failed:\n{}", output_diagnostics(&output))
     }
+}
+
+fn container_isolation_acceptance(root: &Path, engine: &Path) -> Result<()> {
+    let mut inspect = Command::new(engine);
+    inspect.args([
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        "agentctl-acceptance:local",
+    ]);
+    let output = bounded_output(inspect, "container isolation image inspection")?;
+    ensure!(
+        output.status.success(),
+        "container isolation image inspection failed:\n{}",
+        output_diagnostics(&output)
+    );
+    let image = String::from_utf8(output.stdout)?.trim().to_owned();
+    ensure!(
+        image.strip_prefix("sha256:").is_some_and(
+            |digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        ),
+        "container engine returned an invalid content-addressed image ID"
+    );
+    let runtime = engine
+        .file_name()
+        .and_then(OsStr::to_str)
+        .filter(|name| name.contains("podman"))
+        .map_or("docker", |_| "podman");
+    let mut test = Command::new("cargo");
+    test.current_dir(root)
+        .args([
+            "test",
+            "-p",
+            "agentctl-runtime",
+            "container_isolation_live_executes_in_the_pinned_image",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("AGENTCTL_TEST_CONTAINER_IMAGE", image)
+        .env("AGENTCTL_TEST_CONTAINER_RUNTIME", runtime);
+    let output = bounded_output(test, "container-isolated process acceptance")?;
+    ensure!(
+        output.status.success(),
+        "container-isolated process acceptance failed:\n{}",
+        output_diagnostics(&output)
+    );
+    Ok(())
 }
 
 fn container_base(engine: &Path, layout: &ContainerLayout) -> Result<Command> {
@@ -4851,6 +4941,26 @@ spec:
         server: fixture
         tool: unreachable
         arguments: {}
+"#;
+
+const CONTAINER_ISOLATION_UNAVAILABLE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: container-isolation-unavailable }
+spec:
+  policy:
+    processAllowlist: [fixture]
+    approval: never
+  actions:
+    isolated:
+      kind: builtin.shell.exec
+      command: fixture
+      isolation: container
+      container:
+        image: sha256:0000000000000000000000000000000000000000000000000000000000000000
+        runtime: docker
+  tasks:
+    - id: isolated
+      uses: action:isolated
 "#;
 
 const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

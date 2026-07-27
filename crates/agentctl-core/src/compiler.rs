@@ -7,8 +7,9 @@ use sha2::{Digest, Sha256};
 use crate::PLAN_FORMAT_VERSION;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::dsl::{
-    ActionKind, EffectClass, Idempotency, JsonMap, MAX_EXPANSION_ITEMS, MAX_LOOP_ITERATIONS,
-    ProviderKind, RetryDefinition, TaskDefinition, ToolKind, Workflow,
+    ActionKind, ContainerIsolationDefinition, EffectClass, Idempotency, JsonMap,
+    MAX_EXPANSION_ITEMS, MAX_LOOP_ITERATIONS, ProcessIsolation, ProviderKind, RetryDefinition,
+    TaskDefinition, ToolKind, Workflow,
 };
 use crate::memory::{MAX_EMBEDDING_DIMENSIONS, MIN_EMBEDDING_DIMENSIONS};
 use crate::template::{TemplateError, referenced_tasks, validate_expression};
@@ -138,6 +139,8 @@ pub struct PlanRequirements {
     pub providers: Vec<ProviderRequirement>,
     pub tools: Vec<ToolRequirement>,
     pub effects: Vec<EffectRequirement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<ProcessRequirement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,6 +170,16 @@ pub struct EffectRequirement {
     pub effect_class: EffectClass,
     pub approval_possible: bool,
     pub predictability: PlanPredictability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessRequirement {
+    pub action: String,
+    pub tasks: Vec<String>,
+    pub isolation: ProcessIsolation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerIsolationDefinition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1916,10 +1929,56 @@ fn plan_requirements(
             effects
         })
         .collect();
+    let mut process_tasks = BTreeMap::<String, BTreeSet<String>>::new();
+    for task in tasks.values() {
+        if let TaskUse::Action(name) = &task.uses
+            && workflow.spec.actions.get(name).is_some_and(|action| {
+                matches!(
+                    action.kind,
+                    ActionKind::ShellExec | ActionKind::ProcessExtension
+                )
+            })
+        {
+            process_tasks
+                .entry(name.clone())
+                .or_default()
+                .insert(task.id.clone());
+        }
+        if let Some(compensate) = &task.compensate {
+            let name = compensate.uses.trim_start_matches("action:");
+            if workflow.spec.actions.get(name).is_some_and(|action| {
+                matches!(
+                    action.kind,
+                    ActionKind::ShellExec | ActionKind::ProcessExtension
+                )
+            }) {
+                process_tasks
+                    .entry(name.to_owned())
+                    .or_default()
+                    .insert(task.id.clone());
+            }
+        }
+    }
+    let processes = process_tasks
+        .into_iter()
+        .filter_map(|(name, tasks)| {
+            workflow
+                .spec
+                .actions
+                .get(&name)
+                .map(|action| ProcessRequirement {
+                    action: name,
+                    tasks: tasks.into_iter().collect(),
+                    isolation: action.isolation,
+                    container: action.container.clone(),
+                })
+        })
+        .collect();
     PlanRequirements {
         providers,
         tools,
         effects,
+        processes,
     }
 }
 
@@ -2746,6 +2805,51 @@ spec:
         );
         let plan = compile(&workflow, "fixture.yaml").expect("compiles");
         assert_eq!(plan.order, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn compiled_plan_exposes_process_isolation_requirements() {
+        let digest = "0".repeat(64);
+        let workflow = parse(&format!(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: {{ name: isolation-plan }}
+spec:
+  actions:
+    host:
+      kind: builtin.shell.exec
+      command: host-fixture
+    isolated:
+      kind: builtin.shell.exec
+      command: container-fixture
+      isolation: container
+      container:
+        image: example.invalid/fixture@sha256:{digest}
+        runtime: docker
+  tasks:
+    - {{ id: host, uses: "action:host" }}
+    - {{ id: isolated, uses: "action:isolated" }}
+"#,
+        ));
+        let plan = compile(&workflow, "fixture.yaml").expect("compiles");
+        assert_eq!(plan.requirements.processes.len(), 2);
+        assert_eq!(
+            plan.requirements.processes[0].isolation,
+            ProcessIsolation::Process
+        );
+        assert_eq!(
+            plan.requirements.processes[1].isolation,
+            ProcessIsolation::Container
+        );
+        assert_eq!(
+            plan.requirements.processes[1]
+                .container
+                .as_ref()
+                .expect("container")
+                .runtime,
+            crate::dsl::ContainerRuntime::Docker
+        );
     }
 
     #[test]

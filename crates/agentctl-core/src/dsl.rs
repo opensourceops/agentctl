@@ -255,6 +255,10 @@ pub struct ActionDefinition {
     pub stderr_limit_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combined_output_limit_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "ProcessIsolation::is_process")]
+    pub isolation: ProcessIsolation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerIsolationDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,12 +269,74 @@ pub struct ActionDefinition {
     pub capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessIsolation {
+    #[default]
+    Process,
+    Container,
+}
+
+impl ProcessIsolation {
+    #[must_use]
+    pub const fn is_process(&self) -> bool {
+        matches!(self, Self::Process)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Container => "container",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerRuntime {
+    #[default]
+    Auto,
+    Docker,
+    Podman,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContainerIsolationDefinition {
+    pub image: String,
+    #[serde(default)]
+    pub runtime: ContainerRuntime,
+    #[serde(default = "default_container_memory_limit_bytes")]
+    pub memory_limit_bytes: u64,
+    #[serde(default = "default_container_cpu_limit_millis")]
+    pub cpu_limit_millis: u32,
+    #[serde(default = "default_container_pids_limit")]
+    pub pids_limit: u32,
+}
+
 pub const PROCESS_EXTENSION_PROTOCOL_VERSION: &str = "agentctl.dev/process-extension/v1";
 pub const DEFAULT_PROCESS_STREAM_LIMIT_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_PROCESS_COMBINED_LIMIT_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PROCESS_OUTPUT_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PROCESS_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 pub const MAX_TASK_CONCURRENCY: usize = 64;
+pub const MIN_CONTAINER_MEMORY_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_CONTAINER_MEMORY_LIMIT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub const MAX_CONTAINER_CPU_LIMIT_MILLIS: u32 = 64_000;
+pub const MAX_CONTAINER_PIDS_LIMIT: u32 = 4096;
+
+const fn default_container_memory_limit_bytes() -> u64 {
+    256 * 1024 * 1024
+}
+
+const fn default_container_cpu_limit_millis() -> u32 {
+    1000
+}
+
+const fn default_container_pids_limit() -> u32 {
+    64
+}
 
 impl ActionDefinition {
     #[must_use]
@@ -299,6 +365,11 @@ impl ActionDefinition {
             self.kind,
             ActionKind::ShellExec | ActionKind::ProcessExtension
         );
+        if !process_action && (!self.isolation.is_process() || self.container.is_some()) {
+            return Err(
+                "process isolation is only valid for builtin.shell.exec or extension.process actions",
+            );
+        }
         if !process_action && has_output_limit {
             return Err(
                 "process output limits are only valid for builtin.shell.exec or extension.process actions",
@@ -314,6 +385,46 @@ impl ActionDefinition {
         }
         if !process_action {
             return Ok(());
+        }
+        match (self.isolation, &self.container) {
+            (ProcessIsolation::Process, Some(_)) => {
+                return Err("container configuration requires isolation: container");
+            }
+            (ProcessIsolation::Container, None) => {
+                return Err("isolation: container requires container configuration");
+            }
+            (ProcessIsolation::Container, Some(container)) => {
+                if !container_image_is_digest_pinned(&container.image) {
+                    return Err(
+                        "container image must be pinned as NAME@sha256:DIGEST or sha256:IMAGE_ID",
+                    );
+                }
+                if !(MIN_CONTAINER_MEMORY_LIMIT_BYTES..=MAX_CONTAINER_MEMORY_LIMIT_BYTES)
+                    .contains(&container.memory_limit_bytes)
+                {
+                    return Err(
+                        "container memoryLimitBytes must be between 16777216 and 17179869184",
+                    );
+                }
+                if container.cpu_limit_millis == 0
+                    || container.cpu_limit_millis > MAX_CONTAINER_CPU_LIMIT_MILLIS
+                {
+                    return Err("container cpuLimitMillis must be between 1 and 64000");
+                }
+                if container.pids_limit == 0 || container.pids_limit > MAX_CONTAINER_PIDS_LIMIT {
+                    return Err("container pidsLimit must be between 1 and 4096");
+                }
+                if self
+                    .env
+                    .keys()
+                    .any(|name| container_engine_environment(name))
+                {
+                    return Err(
+                        "container action environment must not override container-engine variables",
+                    );
+                }
+            }
+            (ProcessIsolation::Process, None) => {}
         }
         if self.timeout_seconds.is_some_and(|value| value == 0) {
             return Err("timeoutSeconds must be greater than zero");
@@ -385,6 +496,39 @@ impl ActionDefinition {
         }
         Ok(())
     }
+}
+
+fn container_image_is_digest_pinned(image: &str) -> bool {
+    let digest = image.strip_prefix("sha256:").or_else(|| {
+        image
+            .rsplit_once("@sha256:")
+            .filter(|(name, _)| !name.is_empty() && !name.chars().any(char::is_whitespace))
+            .map(|(_, digest)| digest)
+    });
+    digest.is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn container_engine_environment(name: &str) -> bool {
+    matches!(
+        name,
+        "CONTAINER_CONNECTION"
+            | "CONTAINER_HOST"
+            | "DOCKER_CERT_PATH"
+            | "DOCKER_CONFIG"
+            | "DOCKER_CONTEXT"
+            | "DOCKER_HOST"
+            | "DOCKER_TLS_VERIFY"
+            | "HOME"
+            | "PATH"
+            | "PODMAN_CONNECTIONS_CONF"
+            | "TEMP"
+            | "TMP"
+            | "TMPDIR"
+            | "XDG_CONFIG_HOME"
+            | "XDG_RUNTIME_DIR"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1883,6 +2027,57 @@ spec:
         );
         let diagnostics = parse_workflow(&source, "bad.yaml").expect_err("invalid bound");
         assert!(diagnostics[0].message.contains("between 1 and 16777216"));
+    }
+
+    #[test]
+    fn process_isolation_defaults_to_host_and_validates_container_contract() {
+        let host = MINIMAL.replace(
+            "      kind: builtin.assign",
+            "      kind: builtin.shell.exec\n      command: sh",
+        );
+        let workflow = parse_workflow(&host, "host.yaml")
+            .expect("host process")
+            .workflow;
+        assert_eq!(
+            workflow.spec.actions["greet"].isolation,
+            ProcessIsolation::Process
+        );
+
+        let digest = "0".repeat(64);
+        let container = MINIMAL.replace(
+            "      kind: builtin.assign",
+            &format!(
+                "      kind: builtin.shell.exec\n      command: /bin/fixture\n      isolation: container\n      container:\n        image: example.invalid/fixture@sha256:{digest}\n        runtime: podman\n        memoryLimitBytes: 33554432\n        cpuLimitMillis: 500\n        pidsLimit: 16"
+            ),
+        );
+        let workflow = parse_workflow(&container, "container.yaml")
+            .expect("container process")
+            .workflow;
+        assert_eq!(
+            workflow.spec.actions["greet"].isolation,
+            ProcessIsolation::Container
+        );
+        assert_eq!(
+            workflow.spec.actions["greet"]
+                .container
+                .as_ref()
+                .expect("container")
+                .runtime,
+            ContainerRuntime::Podman
+        );
+    }
+
+    #[test]
+    fn rejects_weak_or_misapplied_container_isolation() {
+        for replacement in [
+            "      kind: builtin.shell.exec\n      command: sh\n      isolation: container",
+            "      kind: builtin.shell.exec\n      command: sh\n      isolation: container\n      container:\n        image: example.invalid/fixture:latest",
+            "      kind: builtin.assign\n      isolation: container\n      container:\n        image: example.invalid/fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "      kind: builtin.shell.exec\n      command: sh\n      container:\n        image: example.invalid/fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            let source = MINIMAL.replace("      kind: builtin.assign", replacement);
+            parse_workflow(&source, "bad-isolation.yaml").expect_err("invalid isolation must fail");
+        }
     }
 
     #[test]

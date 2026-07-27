@@ -2,6 +2,15 @@
 
 The repository `Containerfile` builds the Rust CLI in a pinned Rust 1.88 builder and copies only the optimized binary into a maintained distroless Debian runtime. The runtime has CA roots, version/source/license OCI labels, runs as `nonroot`, has a deterministic `agentctl` entrypoint, and contains no Node.js runtime, TypeScript source, credentials, workflows, or fixtures.
 
+This whole-workflow OCI step is distinct from action-level process isolation.
+An action with `isolation: container` asks the host agentctl process to invoke
+a locally available digest-pinned image through Docker or Podman. That action
+receives a read-only working-directory mount, no network, a read-only root,
+non-root UID/GID 65532, dropped capabilities, `no-new-privileges`, a bounded
+temporary filesystem, and explicit memory/CPU/PID/output/time limits. The
+engine and exact image are preflighted and never fall back to host execution.
+See [Process isolation](guides/PROCESS_ISOLATION.md).
+
 ## Optional build-network CA
 
 The default build uses the builder's public CA roots. Networks that intercept TLS may supply a reviewed public CA certificate or bundle through a build secret:

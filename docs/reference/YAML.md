@@ -124,6 +124,23 @@ Supported action kinds:
 
 `builtin.shell.exec` uses a direct executable and argument list. Output defaults are 1 MiB per stream and 2 MiB combined, with a maximum configured value of 16 MiB. Its maximum timeout is 86,400 seconds.
 
+Both process action kinds accept `isolation`. `process` is the default and
+means bounded host execution, not sandboxing. `container` requires a
+`container` block:
+
+| Field | Default | Validation and behavior |
+| --- | --- | --- |
+| `image` | required | Local content address in `NAME@sha256:DIGEST` or `sha256:IMAGE_ID` form. Pulls are disabled. |
+| `runtime` | `auto` | `auto`, `docker`, or `podman`. Explicit selection never falls back. |
+| `memoryLimitBytes` | `268435456` | 16 MiB through 16 GiB. |
+| `cpuLimitMillis` | `1000` | 1 through 64,000; 1,000 is one CPU. |
+| `pidsLimit` | `64` | 1 through 4,096. |
+
+Container mode fixes a read-only root and workspace mount, non-root user,
+network none, dropped capabilities, `no-new-privileges`, bounded `/tmp`, and
+direct entrypoint/arguments. The compiled plan exposes process requirements.
+See [Process isolation](../guides/PROCESS_ISOLATION.md).
+
 `mcp.call` accepts an optional `idempotency` declaration. Only `pure`,
 `idempotent`, or `keyed` permits the bounded reconnect path, and a refreshed
 tool schema must match exactly. Omitted idempotency is `unknown`.

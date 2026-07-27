@@ -45,6 +45,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/openai-live.yaml` | Minimal OpenAI response | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | N/A | N/A | Live gate | live passed |
 | `examples/v1/parallel.yaml` | Deterministic parallel batch | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | Atomic ordered memory merge | Canonical | passed |
 | `examples/v1/policy-denial.yaml` | Denied mutation | deterministic | policy failure | 0 | 0 | Canonical expected failure | N/A | N/A | N/A | No mutation | JSON error | passed |
+| `examples/v1/process-isolation.yaml` | Explicit host process and digest-pinned container isolation contracts | process/container | external execution | 0 | 0 | Host mode covered by runtime tests | N/A | N/A | `cargo xtask acceptance-container` | N/A | Plan isolation requirements and bounded process output | passed |
 | `examples/v1/reusable-pack.yaml` | Locked transitive pack consumer | deterministic | success | 0 | 0 | Canonical plus acceptance scenario 42 | N/A | N/A | N/A | Lock, digests, graph, offline | Canonical | passed |
 | `examples/v1/router.yaml` | Typed deterministic route selection | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Decision and skipped branch | passed |
 | `examples/v1/secret-reference.yaml` | Environment reference contract | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | N/A | N/A | Secret-safe live gate | live passed |

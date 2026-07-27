@@ -17,13 +17,18 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 - Successful bounded file outputs are atomically ingested into a local immutable content-addressed store with durable references, verification/export commands, lease-safe reachability GC, interrupted-GC recovery, and local/OCI acceptance coverage.
 - Identified confidential JSON and text fields can be transactionally migrated to versioned AES-256-GCM envelopes, rotated through environment key references, inventoried without content disclosure, and fail closed on missing/wrong keys, tampering, plaintext writes, or stale-key writes.
 - Shell execution and acceptance/container helpers use bounded concurrent capture. Output overflow terminates/reaps the child with a structured secret-safe error; timeouts and cancellation retain durable uncertain-effect semantics.
+- Process actions expose plan-visible `process` or `container` isolation.
+  Host mode is explicitly not a sandbox. Container mode requires a local
+  digest-pinned Docker/Podman image and runs networkless, read-only, non-root,
+  capability-dropped, and memory/CPU/PID/output/time bounded without host
+  fallback.
 - Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
 ## Remaining framework-completeness work
 
 These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
 
-- enforceable process-isolation, usage, resource, and cost budgets;
+- enforceable run-wide usage, resource, and cost budgets;
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
 - reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
 
@@ -31,7 +36,10 @@ These core workstreams are tracked in the framework limitation burn-down and are
 
 - Event triggers and calendars: external schedulers trigger `agentctl`.
 - MongoDB migration, distributed scheduling, multi-host execution, and distributed storage: the correctness boundary is one local process and SQLite database.
-- An in-process OS sandbox or stronger network isolation: allowlists are defense in depth, while containers/VMs, identities, egress policy, and platform sandboxes own isolation.
+- Native Linux namespace/bubblewrap, macOS sandbox-profile, and Windows
+  restricted-token/job-object isolation backends. Explicit action container
+  mode and externally managed containers/VMs provide the supported isolation
+  boundaries.
 - Free-form multi-agent conversation control flow: the compiled workflow remains authoritative.
 
 ## Current operational limits
@@ -80,8 +88,8 @@ These core workstreams are tracked in the framework limitation burn-down and are
   public-good trust material changes.
 - `extension.process` is a reviewed process contract, not a native ABI or OS
   sandbox. Handshake is a non-mutating protocol promise; invocation failures
-  after dispatch remain uncertain. Use containers or stronger platform
-  isolation for hostile executables.
+  after dispatch remain uncertain. Set `isolation: container` or use a stronger
+  externally managed platform boundary for hostile executables.
 - SQLite memory search scans at most 10,000 active entries and returns at most
   100 results. Its `local_hash` vectors are deterministic lexical features, not
   neural embeddings. Use the optional OpenAI embedding adapter or implement the
@@ -96,7 +104,11 @@ These core workstreams are tracked in the framework limitation burn-down and are
   default; redirects and Unix sockets are disabled. Explicit `allowProxy`
   delegates routing and destination resolution to that trusted proxy, so use
   external egress isolation for hostile workflows.
-- Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.
+- Filesystem/process/network allowlists and `isolation: process` are not an OS
+  sandbox. Individual `isolation: container` actions are networkless and mount
+  only the authorized working directory read-only, but still trust the engine,
+  image, and explicitly passed secrets. Run untrusted whole workflows in a
+  dedicated container/VM identity with external resource and egress controls.
 - At-most-once model/remote calls can become uncertain in the dispatch/acknowledgement window. Inspect and reconcile externally; use `fork` only when fresh effects are knowingly acceptable.
 - Successful tasks from databases created before schema 5 require explicit `runs analyze`/`runs upgrade`. Only provable metadata is imported; unprovable boundaries are returned as conservative safe repair roots.
 - Automatic artifact ingestion covers regular files up to 16 MiB reported by successful built-in workspace-mutation results. Larger outputs and artifacts produced only by opaque external effects require an explicit bounded import/export integration. The local CAS must be backed up with SQLite; missing or corrupt blob bytes block repair before run creation and report the expected artifact identity.

@@ -66,6 +66,14 @@ fragments are bounded, redacted, persisted under task-attempt sequence numbers,
 and kept separate from final task output validation. See [Durable provider
 streaming](guides/DURABLE_STREAMING.md).
 
+`builtin.shell.exec` and `extension.process` expose `isolation: process` by
+default. This is bounded host execution, not a sandbox. `isolation: container`
+requires a local digest-pinned image plus Docker or Podman and runs with a
+read-only root/workspace, no network, a non-root identity, dropped
+capabilities, and explicit memory/CPU/PID limits. The requested engine and
+image fail closed without host fallback. See [Process
+isolation](guides/PROCESS_ISOLATION.md).
+
 `builtin.shell.exec` captures stdout and stderr concurrently. Its optional `stdoutLimitBytes`, `stderrLimitBytes`, and `combinedOutputLimitBytes` fields default to 1 MiB, 1 MiB, and 2 MiB respectively. Each configured value must be between 1 byte and 16 MiB. `timeoutSeconds` must be between 1 and 86,400. Exceeding an output bound terminates and reaps the process and records a structured failed effect; timeout or cancellation remains an uncertain effect because external changes may already have occurred. These fields are validated identically for workflow and pack actions.
 
 The parser translates a limited unversioned `playbook:` document and emits a migration warning. Use `agentctl migrate old.yaml --write new.yaml`. Legacy pack-backed, MCP, A2A, provider-specific, and broad module configurations need manual migration; see [Migrating from TypeScript](MIGRATING_FROM_TYPESCRIPT.md).

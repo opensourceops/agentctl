@@ -14,7 +14,16 @@
   subprocess output, and traces redact every known configured secret value
   before persistence or output.
 - Canonical read/write roots reject `..` and symlink escape. Writes use temporary files and rename.
-- Processes require an allowed executable basename, direct argv, cleared environment, selected variables, validated output/timeout bounds, concurrent stdout/stderr draining, and cancellation. Output-limit, timeout, and cancellation paths terminate and reap the child; diagnostics are bounded and omit captured output when secret environment values are present.
+- Processes require an allowed executable basename and explicit isolation
+  mode. Default `process` mode uses direct host arguments, a cleared
+  environment, selected variables, validated output/timeout bounds, concurrent
+  stdout/stderr draining, cancellation, and process-tree termination, but is
+  not a sandbox. `container` mode requires a local digest-pinned image and
+  available Docker or Podman engine. It disables pulls/networking, fixes a
+  read-only root/workspace, runs non-root, drops capabilities, enables
+  `no-new-privileges`, and bounds memory/CPU/PIDs/output/time. Engine/image
+  preflight fails without host fallback; abnormal exits trigger forced named
+  container cleanup.
 - Required provider and protocol destinations are authorized before run
   persistence. Scheme, effective port, and host must be granted. Every resolved
   address is checked against private/reserved policy and the complete accepted
@@ -50,6 +59,10 @@
 
 Path and executable allowlists are not a sandbox. A permitted program, including
 a secret helper, can access anything the operating-system identity can access.
+Container-isolated actions can read their mounted working directory and
+receive explicitly authorized secrets; the selected image and container engine
+remain trusted dependencies. No native Linux namespace, macOS sandbox-profile,
+or Windows restricted-token backend is claimed.
 Redaction cannot prevent an authorized recipient from transforming a secret
 before exfiltration. Enabling `allowProxy` explicitly delegates routing and
 name resolution to the configured environment proxy, so treat that proxy as a

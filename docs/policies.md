@@ -22,13 +22,21 @@ TLS uses rustls and the platform roots; an optional protected `customCa`
 reference may add a certificate-only PEM bundle. DNS/connect time and response
 bytes are bounded. See [Network policy](guides/NETWORK_POLICY.md).
 
-Process allowlisting checks the executable
-basename and then launches direct argv with a cleared environment. Secret
+Process allowlisting checks the executable basename. Process actions then use
+an explicit isolation mode. The default `process` mode launches direct host
+arguments with a cleared environment and is not a sandbox. `container`
+requires a local digest-pinned image and available Docker or Podman backend;
+it never falls back to the host, pulls an image, or enables network access.
+The compiled plan exposes the selected mode and resource limits. Secret
 helpers use their separate `secretProcessAllowlist` and stricter 60-second,
-64-KiB maximums. See [Secret references](guides/SECRET_REFERENCES.md).
+64-KiB maximums as host processes. See [Process
+isolation](guides/PROCESS_ISOLATION.md) and [Secret
+references](guides/SECRET_REFERENCES.md).
 
 Tool visibility, tool/capability authorization, resource checks, effect risk, and approval are distinct decisions. `never`, `mutations`, `high_risk`, and `always` are available approval modes. A tool may say `never`, `policy`, or `always`. The default non-interactive behavior is a durable pause and exit code `3`; explicit `deny_approval` and `fail` modes fail closed. Non-interactive execution never prompts or auto-approves.
 
 An approval stores the run/trace/task/agent, tool, capability, risk, redacted input, expected effect, reason, and resolution actor/reason. The associated task waits durably. Use `approvals list`, `approve`, or `reject`, then `resume`. Resolution and effect status are auditable.
 
-Provider, MCP, A2A, filesystem, process, and environment allowlists are necessary controls, not a containment boundary. Run untrusted executors inside an external OS/container sandbox.
+Provider, MCP, A2A, filesystem, process, and environment allowlists are
+necessary controls, not a containment boundary. Use `isolation: container` or
+an externally managed container/VM boundary for untrusted executors.

@@ -741,7 +741,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 &plan,
                 diagnostics,
                 format!(
-                    "plan {}\norder: {}\nmax concurrency: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}",
+                    "plan {}\norder: {}\nmax concurrency: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}\nprocess isolation: {}",
                     plan.plan_digest,
                     plan.order.join(" -> "),
                     plan.max_concurrency,
@@ -759,6 +759,14 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                         .collect::<Vec<_>>()
                         .join(", "),
                     plan.requirements.effects.len(),
+                    plan.requirements
+                        .processes
+                        .iter()
+                        .map(|process| {
+                            format!("{}:{}", process.action, process.isolation.as_str())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 ),
             )?;
             Ok(EXIT_OK)

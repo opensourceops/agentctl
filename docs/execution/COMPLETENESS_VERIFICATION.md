@@ -46,6 +46,24 @@ All deterministic commands ran with `OPENAI_API_KEY` removed. The optional
 OpenAI embedding adapter used only WireMock contract tests, so this checkpoint
 made zero OpenAI API requests.
 
+## Process-isolation checkpoint
+
+Date: 2026-07-27, Asia/Kolkata.
+
+| Gate | Result |
+| --- | --- |
+| `cargo check --workspace --all-targets` | passed without warnings |
+| `cargo test -p agentctl-core --lib` | passed all 61 tests |
+| `cargo test -p agentctl-runtime process::tests::` | passed all 8 process lifecycle, cleanup, and container-contract tests |
+| `cargo xtask acceptance` | passed all 45 credential-free packaged CLI scenarios |
+| `env -u OPENAI_API_KEY cargo xtask acceptance-container` | blocked before image build because Podman 5.8.2/libkrun `gvproxy` exited and both the configured TCP endpoint and forwarded Unix socket refused connections |
+
+The existing Podman VM was started and then cleanly stopped/restarted once.
+The VM booted, but its forwarding process exited immediately on both attempts.
+No image or container was started by this checkpoint. The OCI gate now includes
+a real digest-pinned action-level container test and must be rerun when the
+local engine is healthy.
+
 ## Evidence rules
 
 - Deterministic gates run without provider credentials.
@@ -99,11 +117,12 @@ cargo xtask acceptance-container
 | Compensation | compiler declarations plus runtime reverse order, approval, partial failure, source and inverse uncertainty, cancellation, retry, reconciliation, automatic trigger, repair/retry invalidation, and replay tests passed | packaged CLI scenario 38 and the full local release gate passed | verified |
 | Structured handoffs | compiler rejects hidden teams; typed role and handoff contracts use ordinary task recovery | packaged CLI scenario 39 covers tool separation, inspection, retry, repair, and replay | deterministic verified; live pending |
 | Streaming | provider SSE fragmentation plus runtime bounds, redaction, final validation, and replay tests passed | packaged CLI scenario 40 covers human, JSONL, final JSON, inspection, and replay | deterministic verified; live pending |
-| MCP/A2A resilience | 15 protocol tests, 80 runtime tests, schema 13 migration/encryption/replay tests, and `cargo xtask protocol-resilience` passed | packaged CLI scenario 41 reconnects MCP once and continues one known A2A task through CAS, retry, and replay without resubmission | verified |
+| MCP/A2A resilience | 15 protocol tests, 82 runtime tests plus one ignored environment-gated container test, schema 13 migration/encryption/replay tests, and `cargo xtask protocol-resilience` passed | packaged CLI scenario 41 reconnects MCP once and continues one known A2A task through CAS, retry, and replay without resubmission | verified |
 | Packs/trust/extensions | 6 resolver/trust tests and 3 focused runtime protocol tests cover graph, sources, locks, Sigstore, trust gating, bounds, cancellation, redaction, and replay | packaged CLI scenario 42 verifies a two-pack lock plus one explicitly authorized process extension invocation and effect-free replay | verified |
 | Semantic memory | typed contracts; stable text/vector/hybrid ranking; filters, namespace, expiry, corrupt-dimension, encryption, external-adapter, OpenAI WireMock, credential-preflight, repair, and replay tests passed | packaged CLI scenario 43 covers hybrid retrieval, explicit promotion, CLI put/search/reindex, changed-memory repair, and effect-free replay | verified |
 | Network enforcement | scheme/host/port, IPv4/IPv6 classification, every-answer validation, DNS pinning, proxy default deny, redirect refusal, CA success/failure, response bounds, and deterministic credential preflight passed | packaged CLI scenario 44 denies private egress before persistence or I/O | verified |
-| Process isolation and budgets | pending | pending | open |
+| Process isolation | DSL validation, plan requirements, command construction, environment, working directory, output/time/cancellation, process-tree cleanup, resource flags, and missing-backend tests passed | packaged CLI scenario 45 fails a requested unavailable engine before effect dispatch; real container action is wired into the OCI gate but locally blocked by Podman forwarding failure | deterministic verified; OCI pending |
+| Resource and cost budgets | pending | pending | open |
 | Container/cross-platform | baseline defect recorded | pending | in progress |
 | OpenAI live matrix | retained selective-repair evidence only | pending | open |
 | Canonical and Pages docs | limitation register created | pending | in progress |

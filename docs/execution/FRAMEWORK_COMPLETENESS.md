@@ -106,6 +106,20 @@ authority delegates routing and resolution to that trusted proxy. These
 controls are defense in depth; they do not replace container, VM, identity, or
 platform egress isolation for hostile workflows.
 
+## Process isolation contract
+
+Process actions declare `process` or `container` isolation. Existing actions
+default to `process`, which means bounded direct execution with the agentctl
+host identity and is not a sandbox. The compiled plan lists every process
+action, selected mode, consuming tasks, and container resources.
+
+`container` requires a locally available content-addressed image and Docker or
+Podman. It never pulls or silently falls back. The fixed invocation is
+networkless, read-only, non-root, capability-dropped, `no-new-privileges`, and
+memory/CPU/PID/output/time bounded. The authorized working directory is mounted
+read-only. No Linux namespace/bubblewrap, macOS sandbox-profile, or Windows
+restricted-token/job-object backend is claimed.
+
 ## Explicit non-goals
 
 - hosted SaaS, public control plane, or public pack registry;
