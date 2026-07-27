@@ -1068,6 +1068,10 @@ pub struct RuntimeDefinition {
     pub max_concurrency: usize,
     #[serde(default = "default_timeout_seconds")]
     pub default_timeout_seconds: u64,
+    #[serde(default)]
+    pub budgets: ResourceBudgetDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<PricingDefinition>,
 }
 
 impl Default for RuntimeDefinition {
@@ -1075,8 +1079,80 @@ impl Default for RuntimeDefinition {
         Self {
             max_concurrency: 1,
             default_timeout_seconds: default_timeout_seconds(),
+            budgets: ResourceBudgetDefinition::default(),
+            pricing: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceBudgetDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_provider_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_time_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_process_output_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_artifact_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tasks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_expansion_items: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_loop_iterations: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_microusd: Option<u64>,
+}
+
+impl ResourceBudgetDefinition {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.max_provider_requests.is_none()
+            && self.max_turns.is_none()
+            && self.max_tool_calls.is_none()
+            && self.max_input_tokens.is_none()
+            && self.max_output_tokens.is_none()
+            && self.max_total_tokens.is_none()
+            && self.max_wall_time_seconds.is_none()
+            && self.max_process_output_bytes.is_none()
+            && self.max_artifact_bytes.is_none()
+            && self.max_tasks.is_none()
+            && self.max_expansion_items.is_none()
+            && self.max_loop_iterations.is_none()
+            && self.max_cost_microusd.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PricingDefinition {
+    pub version: String,
+    pub models: BTreeMap<String, ModelPricingDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPricingDefinition {
+    pub input_microusd_per_million_tokens: u64,
+    pub output_microusd_per_million_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_microusd_per_million_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_microusd_per_million_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_microusd_per_million_tokens: Option<u64>,
 }
 
 const fn one_usize() -> usize {
@@ -1356,6 +1432,123 @@ fn validate_document(workflow: &Workflow, file: &str) -> Vec<Diagnostic> {
                 format!("runtime.maxConcurrency must be between 1 and {MAX_TASK_CONCURRENCY}"),
             )
             .with_path("spec.runtime.maxConcurrency"),
+        );
+    }
+    for (name, value) in [
+        (
+            "maxProviderRequests",
+            workflow.spec.runtime.budgets.max_provider_requests,
+        ),
+        ("maxTurns", workflow.spec.runtime.budgets.max_turns),
+        ("maxToolCalls", workflow.spec.runtime.budgets.max_tool_calls),
+        (
+            "maxInputTokens",
+            workflow.spec.runtime.budgets.max_input_tokens,
+        ),
+        (
+            "maxOutputTokens",
+            workflow.spec.runtime.budgets.max_output_tokens,
+        ),
+        (
+            "maxTotalTokens",
+            workflow.spec.runtime.budgets.max_total_tokens,
+        ),
+        (
+            "maxWallTimeSeconds",
+            workflow.spec.runtime.budgets.max_wall_time_seconds,
+        ),
+        (
+            "maxProcessOutputBytes",
+            workflow.spec.runtime.budgets.max_process_output_bytes,
+        ),
+        (
+            "maxArtifactBytes",
+            workflow.spec.runtime.budgets.max_artifact_bytes,
+        ),
+        ("maxTasks", workflow.spec.runtime.budgets.max_tasks),
+        (
+            "maxExpansionItems",
+            workflow.spec.runtime.budgets.max_expansion_items,
+        ),
+        (
+            "maxLoopIterations",
+            workflow.spec.runtime.budgets.max_loop_iterations,
+        ),
+        (
+            "maxCostMicrousd",
+            workflow.spec.runtime.budgets.max_cost_microusd,
+        ),
+    ] {
+        if value == Some(0) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!("runtime.budgets.{name} must be greater than zero"),
+                )
+                .with_path(format!("spec.runtime.budgets.{name}")),
+            );
+        }
+    }
+    if let Some(pricing) = &workflow.spec.runtime.pricing {
+        if pricing.version.trim().is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    "runtime.pricing.version must not be empty",
+                )
+                .with_path("spec.runtime.pricing.version"),
+            );
+        }
+        if pricing.models.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    "runtime.pricing.models must contain at least one provider/model entry",
+                )
+                .with_path("spec.runtime.pricing.models"),
+            );
+        }
+        for (model, rates) in &pricing.models {
+            if !model.contains('/') || model.starts_with('/') || model.ends_with('/') {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "runtime.pricing.models key `{model}` must use provider/model syntax"
+                        ),
+                    )
+                    .with_path(format!("spec.runtime.pricing.models.{model}")),
+                );
+            }
+            if rates.input_microusd_per_million_tokens == 0
+                || rates.output_microusd_per_million_tokens == 0
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!("runtime.pricing.models.{model} token rates must be non-zero"),
+                    )
+                    .with_path(format!("spec.runtime.pricing.models.{model}")),
+                );
+            }
+        }
+    }
+    if workflow.spec.runtime.budgets.max_cost_microusd.is_some()
+        && workflow.spec.runtime.pricing.is_none()
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "runtime.budgets.maxCostMicrousd requires explicit versioned runtime.pricing",
+            )
+            .with_path("spec.runtime.budgets.maxCostMicrousd")
+            .with_help("configure pricing.models entries using provider/model keys"),
         );
     }
     if workflow.spec.policy.network.allowed_schemes.is_empty()

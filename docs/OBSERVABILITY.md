@@ -25,7 +25,7 @@ agentctl inspect RUN_ID --db .agentctl/runtime.db --output json --color never
 agentctl db stats --db .agentctl/runtime.db --output json --color never
 ```
 
-Inspection includes task attempts, disposition, repair source/roots, per-task reuse provenance and compatibility evidence, fingerprints/digests, checkpoints, effect state, approvals, bounded provider stream events, provider and protocol records, ordered audit events, and trace correlation. A reused task emits a durable `task.reused` trace event and `repair.task_reused` audit event but no fresh effect, provider-session, or tool-call row. Use `agentctl approvals list RUN_ID` when the run exited pending approval. Preserve the database and its WAL files together when the history is operational evidence.
+Inspection includes task attempts, disposition, repair source/roots, per-task reuse provenance and compatibility evidence, fingerprints/digests, checkpoints, effect state, approvals, the run budget snapshot, bounded provider stream events, provider and protocol records, ordered audit events, and trace correlation. A reused task emits a durable `task.reused` trace event and `repair.task_reused` audit event but no fresh effect, provider-session, tool-call, or budget usage. Use `agentctl approvals list RUN_ID` when the run exited pending approval. Preserve the database and its WAL files together when the history is operational evidence.
 
 ## Runtime events
 
@@ -37,7 +37,11 @@ OpenTelemetry export is an embedding concern in this release; the standalone CLI
 
 ## Metrics and interpretation
 
-Usage maps input, output, reasoning, cache-read, and cache-write tokens where providers expose them. Duration, attempts, provider errors, retries, approval waits, tool counts, and action change status are available from trace and audit events. Price calculation is not fabricated when no reliable price metadata exists.
+Usage maps provider requests, turns, tool calls, input, output, reasoning,
+cache-read, cache-write, process output, artifact bytes, wall time, and
+monetary cost where the necessary data exists. Price calculation is not
+fabricated when neither reliable provider metadata nor explicit versioned
+custom pricing exists.
 
 When diagnosing a failure, correlate the final envelope's run and trace IDs with the persisted task, attempt, effect, and provider records. A model response is not proof that an external effect completed; use the effect record and its confirmation state.
 

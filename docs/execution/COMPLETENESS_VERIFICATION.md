@@ -53,9 +53,12 @@ Date: 2026-07-27, Asia/Kolkata.
 | Gate | Result |
 | --- | --- |
 | `cargo check --workspace --all-targets` | passed without warnings |
-| `cargo test -p agentctl-core --lib` | passed all 61 tests |
+| `cargo test -p agentctl-core --lib` | passed all 63 tests |
+| `cargo test -p agentctl-store --lib` | passed all 35 tests |
+| `cargo test -p agentctl-runtime --lib` | passed 90 tests; one live container test ignored by default |
 | `cargo test -p agentctl-runtime process::tests::` | passed all 8 process lifecycle, cleanup, and container-contract tests |
-| `cargo xtask acceptance` | passed all 45 credential-free packaged CLI scenarios |
+| `cargo xtask acceptance` | passed all 46 credential-free packaged CLI scenarios |
+| `cargo xtask resource-budget-live-openai` | passed with one GPT-5.6 request, 18 input tokens, and 5 output tokens; second request denied |
 | `env -u OPENAI_API_KEY cargo xtask acceptance-container` | blocked before image build because Podman 5.8.2/libkrun `gvproxy` exited and both the configured TCP endpoint and forwarded Unix socket refused connections |
 
 The existing Podman VM was started and then cleanly stopped/restarted once.
@@ -96,6 +99,7 @@ cargo xtask completeness
 
 ```console
 cargo xtask examples-verify-live-openai
+cargo xtask resource-budget-live-openai
 cargo xtask acceptance-container
 ```
 

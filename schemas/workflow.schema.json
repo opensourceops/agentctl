@@ -182,7 +182,8 @@
           "$ref": "#/$defs/RuntimeDefinition",
           "default": {
             "maxConcurrency": 1,
-            "defaultTimeoutSeconds": 120
+            "defaultTimeoutSeconds": 120,
+            "budgets": {}
           }
         },
         "output": {
@@ -1621,9 +1622,196 @@
           "format": "uint64",
           "minimum": 0,
           "default": 120
+        },
+        "budgets": {
+          "$ref": "#/$defs/ResourceBudgetDefinition",
+          "default": {}
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PricingDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
+    },
+    "ResourceBudgetDefinition": {
+      "type": "object",
+      "properties": {
+        "maxProviderRequests": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxTurns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxToolCalls": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxInputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxOutputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxTotalTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxWallTimeSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxProcessOutputBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxArtifactBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxTasks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxExpansionItems": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxLoopIterations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxCostMicrousd": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "PricingDefinition": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelPricingDefinition"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "models"
+      ]
+    },
+    "ModelPricingDefinition": {
+      "type": "object",
+      "properties": {
+        "inputMicrousdPerMillionTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputMicrousdPerMillionTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoningMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cacheReadMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cacheWriteMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputMicrousdPerMillionTokens",
+        "outputMicrousdPerMillionTokens"
+      ]
     },
     "OutputDefinition": {
       "type": "object",

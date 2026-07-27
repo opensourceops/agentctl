@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use agentctl_core::dsl::ResourceBudgetDefinition;
 use agentctl_core::effect::{EffectRecord, EffectRequest, EffectStatus};
 use agentctl_core::memory::{
     MAX_EMBEDDING_DIMENSIONS, MEMORY_ENTRY_FORMAT_VERSION, MIN_EMBEDDING_DIMENSIONS, MemoryEntry,
@@ -29,7 +30,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 14;
+pub const DATABASE_SCHEMA_VERSION: u32 = 15;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -400,6 +401,59 @@ ALTER TABLE long_term_memory ADD COLUMN created_at TEXT;
 UPDATE long_term_memory SET created_at = updated_at WHERE created_at IS NULL;
 CREATE INDEX idx_long_term_memory_search
   ON long_term_memory(namespace, expires_at, memory_key);
+"#;
+
+const MIGRATION_15: &str = r#"
+CREATE TABLE run_budgets (
+  run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+  format_version INTEGER NOT NULL,
+  limits_json TEXT NOT NULL,
+  pricing_version TEXT,
+  usage_json TEXT NOT NULL,
+  reserved_json TEXT NOT NULL,
+  exceeded_json TEXT,
+  planned_tasks INTEGER NOT NULL,
+  planned_expansion_items INTEGER NOT NULL,
+  planned_loop_iterations INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE budget_reservations (
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  reservation_id TEXT NOT NULL,
+  task_id TEXT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reserved_json TEXT NOT NULL,
+  actual_json TEXT,
+  source TEXT,
+  created_at TEXT NOT NULL,
+  reconciled_at TEXT,
+  PRIMARY KEY (run_id, reservation_id)
+);
+CREATE INDEX idx_budget_reservations_run
+  ON budget_reservations(run_id, status, created_at);
+INSERT INTO run_budgets (
+  run_id,
+  format_version,
+  limits_json,
+  usage_json,
+  reserved_json,
+  planned_tasks,
+  planned_expansion_items,
+  planned_loop_iterations,
+  updated_at
+)
+SELECT
+  runs.run_id,
+  1,
+  '{}',
+  '{"providerRequests":0,"turns":0,"toolCalls":0,"inputTokens":0,"outputTokens":0,"reasoningTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"processOutputBytes":0,"artifactBytes":0,"costMicrousd":0,"unpricedProviderRequests":0}',
+  '{"providerRequests":0,"turns":0,"toolCalls":0,"inputTokens":0,"outputTokens":0,"reasoningTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"processOutputBytes":0,"artifactBytes":0,"costMicrousd":0,"unpricedProviderRequests":0}',
+  (SELECT COUNT(*) FROM task_states WHERE task_states.run_id = runs.run_id),
+  0,
+  0,
+  runs.updated_at
+FROM runs;
 "#;
 
 #[derive(Clone)]
@@ -826,6 +880,121 @@ pub struct MemorySearchResult {
     pub vector_score_millionths: u32,
 }
 
+pub const BUDGET_FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BudgetCounters {
+    pub provider_requests: u64,
+    pub turns: u64,
+    pub tool_calls: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub wall_time_seconds: u64,
+    pub process_output_bytes: u64,
+    pub artifact_bytes: u64,
+    pub cost_microusd: u64,
+    pub unpriced_provider_requests: u64,
+}
+
+impl BudgetCounters {
+    #[must_use]
+    pub const fn total_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    fn saturating_add_assign(&mut self, other: &Self) {
+        self.provider_requests = self
+            .provider_requests
+            .saturating_add(other.provider_requests);
+        self.turns = self.turns.saturating_add(other.turns);
+        self.tool_calls = self.tool_calls.saturating_add(other.tool_calls);
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
+        self.wall_time_seconds = self
+            .wall_time_seconds
+            .saturating_add(other.wall_time_seconds);
+        self.process_output_bytes = self
+            .process_output_bytes
+            .saturating_add(other.process_output_bytes);
+        self.artifact_bytes = self.artifact_bytes.saturating_add(other.artifact_bytes);
+        self.cost_microusd = self.cost_microusd.saturating_add(other.cost_microusd);
+        self.unpriced_provider_requests = self
+            .unpriced_provider_requests
+            .saturating_add(other.unpriced_provider_requests);
+    }
+
+    fn saturating_sub_assign(&mut self, other: &Self) {
+        self.provider_requests = self
+            .provider_requests
+            .saturating_sub(other.provider_requests);
+        self.turns = self.turns.saturating_sub(other.turns);
+        self.tool_calls = self.tool_calls.saturating_sub(other.tool_calls);
+        self.input_tokens = self.input_tokens.saturating_sub(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_sub(other.output_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_sub(other.reasoning_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_sub(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_sub(other.cache_write_tokens);
+        self.wall_time_seconds = self
+            .wall_time_seconds
+            .saturating_sub(other.wall_time_seconds);
+        self.process_output_bytes = self
+            .process_output_bytes
+            .saturating_sub(other.process_output_bytes);
+        self.artifact_bytes = self.artifact_bytes.saturating_sub(other.artifact_bytes);
+        self.cost_microusd = self.cost_microusd.saturating_sub(other.cost_microusd);
+        self.unpriced_provider_requests = self
+            .unpriced_provider_requests
+            .saturating_sub(other.unpriced_provider_requests);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetExceeded {
+    pub dimension: String,
+    pub limit: u64,
+    pub attempted: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetSnapshot {
+    pub format_version: u32,
+    pub limits: ResourceBudgetDefinition,
+    pub pricing_version: Option<String>,
+    pub usage: BudgetCounters,
+    pub reserved: BudgetCounters,
+    pub exceeded: Option<BudgetExceeded>,
+    pub planned_tasks: u64,
+    pub planned_expansion_items: u64,
+    pub planned_loop_iterations: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetReservationDecision {
+    Allowed(BudgetSnapshot),
+    Denied {
+        exceeded: BudgetExceeded,
+        snapshot: BudgetSnapshot,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseStats {
@@ -848,6 +1017,8 @@ pub struct DatabaseStats {
     pub artifact_ingests: i64,
     pub run_upgrades: i64,
     pub effect_reconciliations: i64,
+    pub run_budgets: i64,
+    pub budget_reservations: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1097,6 +1268,271 @@ impl SqliteStore {
             .collect()
     }
 
+    pub fn budget_snapshot(&self, run_id: &str) -> Result<BudgetSnapshot, StoreError> {
+        let connection = self.connection.lock();
+        load_budget_snapshot(&connection, run_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_budget(
+        &self,
+        run_id: &str,
+        reservation_id: &str,
+        task_id: Option<&str>,
+        kind: &str,
+        requested: &BudgetCounters,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<BudgetReservationDecision, StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT status FROM budget_reservations
+                 WHERE run_id = ?1 AND reservation_id = ?2",
+                params![run_id, reservation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if existing.is_some() {
+            let snapshot = load_budget_snapshot(&transaction, run_id)?;
+            transaction.commit()?;
+            return Ok(BudgetReservationDecision::Allowed(snapshot));
+        }
+
+        let mut snapshot = load_budget_snapshot(&transaction, run_id)?;
+        if let Some(exceeded) = budget_exceeded(
+            &snapshot.limits,
+            &snapshot.usage,
+            &snapshot.reserved,
+            requested,
+        ) {
+            snapshot.exceeded = Some(exceeded.clone());
+            snapshot.updated_at = now;
+            transaction.execute(
+                "UPDATE run_budgets
+                 SET exceeded_json = ?1, updated_at = ?2
+                 WHERE run_id = ?3",
+                params![encode(&exceeded)?, now.to_rfc3339(), run_id],
+            )?;
+            append_audit_tx(
+                &transaction,
+                run_id,
+                "budget.exceeded",
+                task_id,
+                trace_id,
+                &serde_json::json!({
+                    "reservationId": reservation_id,
+                    "kind": kind,
+                    "requested": requested,
+                    "exceeded": exceeded,
+                    "usage": snapshot.usage,
+                    "reserved": snapshot.reserved,
+                }),
+                now,
+                &self.protection,
+            )?;
+            checkpoint_tx(&transaction, run_id, now, &self.protection)?;
+            transaction.commit()?;
+            return Ok(BudgetReservationDecision::Denied { exceeded, snapshot });
+        }
+
+        snapshot.reserved.saturating_add_assign(requested);
+        snapshot.updated_at = now;
+        transaction.execute(
+            "INSERT INTO budget_reservations
+             (run_id, reservation_id, task_id, kind, status, reserved_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6)",
+            params![
+                run_id,
+                reservation_id,
+                task_id,
+                kind,
+                encode(requested)?,
+                now.to_rfc3339(),
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE run_budgets
+             SET reserved_json = ?1, updated_at = ?2
+             WHERE run_id = ?3",
+            params![encode(&snapshot.reserved)?, now.to_rfc3339(), run_id],
+        )?;
+        append_audit_tx(
+            &transaction,
+            run_id,
+            "budget.reserved",
+            task_id,
+            trace_id,
+            &serde_json::json!({
+                "reservationId": reservation_id,
+                "kind": kind,
+                "requested": requested,
+                "reserved": snapshot.reserved,
+            }),
+            now,
+            &self.protection,
+        )?;
+        transaction.commit()?;
+        Ok(BudgetReservationDecision::Allowed(snapshot))
+    }
+
+    pub fn reconcile_budget(
+        &self,
+        run_id: &str,
+        reservation_id: &str,
+        actual: &BudgetCounters,
+        source: &str,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<BudgetSnapshot, StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let reservation = transaction
+            .query_row(
+                "SELECT task_id, status, reserved_json
+                 FROM budget_reservations
+                 WHERE run_id = ?1 AND reservation_id = ?2",
+                params![run_id, reservation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                StoreError::Incompatible(format!(
+                    "budget reservation `{reservation_id}` was not found in run `{run_id}`"
+                ))
+            })?;
+        if reservation.1 == "reconciled" {
+            let snapshot = load_budget_snapshot(&transaction, run_id)?;
+            transaction.commit()?;
+            return Ok(snapshot);
+        }
+        if reservation.1 != "active" {
+            return Err(StoreError::Corrupt(format!(
+                "budget reservation `{reservation_id}` has invalid status `{}`",
+                reservation.1
+            )));
+        }
+        let reserved: BudgetCounters = decode(&reservation.2, "budget_reservations.reserved_json")?;
+        let mut snapshot = load_budget_snapshot(&transaction, run_id)?;
+        snapshot.reserved.saturating_sub_assign(&reserved);
+        snapshot.usage.saturating_add_assign(actual);
+        snapshot.exceeded = budget_exceeded(
+            &snapshot.limits,
+            &snapshot.usage,
+            &BudgetCounters::default(),
+            &BudgetCounters::default(),
+        )
+        .or(snapshot.exceeded);
+        snapshot.updated_at = now;
+        transaction.execute(
+            "UPDATE budget_reservations
+             SET status = 'reconciled', actual_json = ?1, source = ?2, reconciled_at = ?3
+             WHERE run_id = ?4 AND reservation_id = ?5",
+            params![
+                encode(actual)?,
+                source,
+                now.to_rfc3339(),
+                run_id,
+                reservation_id
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE run_budgets
+             SET usage_json = ?1, reserved_json = ?2, exceeded_json = ?3, updated_at = ?4
+             WHERE run_id = ?5",
+            params![
+                encode(&snapshot.usage)?,
+                encode(&snapshot.reserved)?,
+                snapshot.exceeded.as_ref().map(encode).transpose()?,
+                now.to_rfc3339(),
+                run_id
+            ],
+        )?;
+        append_audit_tx(
+            &transaction,
+            run_id,
+            if snapshot.exceeded.is_some() {
+                "budget.reconciled_exceeded"
+            } else {
+                "budget.reconciled"
+            },
+            reservation.0.as_deref(),
+            trace_id,
+            &serde_json::json!({
+                "reservationId": reservation_id,
+                "source": source,
+                "reserved": reserved,
+                "actual": actual,
+                "usage": snapshot.usage,
+                "exceeded": snapshot.exceeded,
+            }),
+            now,
+            &self.protection,
+        )?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
+        transaction.commit()?;
+        Ok(snapshot)
+    }
+
+    pub fn record_wall_time(
+        &self,
+        run_id: &str,
+        elapsed_seconds: u64,
+        now: DateTime<Utc>,
+        trace_id: &str,
+    ) -> Result<BudgetSnapshot, StoreError> {
+        let mut connection = self.connection.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut snapshot = load_budget_snapshot(&transaction, run_id)?;
+        snapshot.usage.wall_time_seconds = snapshot.usage.wall_time_seconds.max(elapsed_seconds);
+        snapshot.exceeded = budget_exceeded(
+            &snapshot.limits,
+            &snapshot.usage,
+            &snapshot.reserved,
+            &BudgetCounters::default(),
+        )
+        .or(snapshot.exceeded);
+        snapshot.updated_at = now;
+        transaction.execute(
+            "UPDATE run_budgets
+             SET usage_json = ?1, exceeded_json = ?2, updated_at = ?3
+             WHERE run_id = ?4",
+            params![
+                encode(&snapshot.usage)?,
+                snapshot.exceeded.as_ref().map(encode).transpose()?,
+                now.to_rfc3339(),
+                run_id
+            ],
+        )?;
+        append_audit_tx(
+            &transaction,
+            run_id,
+            if snapshot.exceeded.is_some() {
+                "budget.wall_time_exceeded"
+            } else {
+                "budget.wall_time_observed"
+            },
+            None,
+            trace_id,
+            &serde_json::json!({
+                "elapsedSeconds": elapsed_seconds,
+                "exceeded": snapshot.exceeded,
+            }),
+            now,
+            &self.protection,
+        )?;
+        checkpoint_tx(&transaction, run_id, now, &self.protection)?;
+        transaction.commit()?;
+        Ok(snapshot)
+    }
+
     #[must_use]
     pub fn schema_version(&self) -> u32 {
         self.connection
@@ -1292,6 +1728,7 @@ impl SqliteStore {
                 params![run_id, task_id, position, encode_enum(TaskState::Pending)?, now.to_rfc3339()],
             )?;
         }
+        initialize_budget_tx(&transaction, run_id, plan, now)?;
         append_audit_tx(
             &transaction,
             run_id,
@@ -1460,6 +1897,7 @@ impl SqliteStore {
             reused.keys().copied(),
             now,
         )?;
+        initialize_budget_tx(&transaction, run_id, plan, now)?;
         append_audit_tx(
             &transaction,
             run_id,
@@ -1634,6 +2072,7 @@ impl SqliteStore {
             reused.keys().copied(),
             now,
         )?;
+        initialize_budget_tx(&transaction, run_id, plan, now)?;
         append_audit_tx(
             &transaction,
             run_id,
@@ -5005,6 +5444,8 @@ impl SqliteStore {
                 "artifact_ingests",
                 "run_upgrades",
                 "effect_reconciliations",
+                "run_budgets",
+                "budget_reservations",
             ];
             if !allowed.contains(&table) {
                 return Err(StoreError::Incompatible(
@@ -5039,6 +5480,8 @@ impl SqliteStore {
             artifact_ingests: count("artifact_ingests")?,
             run_upgrades: count("run_upgrades")?,
             effect_reconciliations: count("effect_reconciliations")?,
+            run_budgets: count("run_budgets")?,
+            budget_reservations: count("budget_reservations")?,
         })
     }
 
@@ -5208,6 +5651,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (12_u32, MIGRATION_12),
         (13_u32, MIGRATION_13),
         (14_u32, MIGRATION_14),
+        (15_u32, MIGRATION_15),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -5261,6 +5705,199 @@ fn install_encryption_triggers(connection: &Connection) -> Result<(), StoreError
     Ok(())
 }
 
+fn initialize_budget_tx(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    plan: &CompiledPlan,
+    now: DateTime<Utc>,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO run_budgets
+         (run_id, format_version, limits_json, pricing_version, usage_json, reserved_json,
+          planned_tasks, planned_expansion_items, planned_loop_iterations, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            run_id,
+            BUDGET_FORMAT_VERSION,
+            encode(&plan.budget.limits)?,
+            plan.budget
+                .pricing
+                .as_ref()
+                .map(|pricing| pricing.version.as_str()),
+            encode(&BudgetCounters::default())?,
+            sqlite_i64(plan.budget.planned_tasks, "budget.planned_tasks")?,
+            sqlite_i64(
+                plan.budget.planned_expansion_items,
+                "budget.planned_expansion_items"
+            )?,
+            sqlite_i64(
+                plan.budget.planned_loop_iterations,
+                "budget.planned_loop_iterations"
+            )?,
+            now.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_budget_snapshot(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<BudgetSnapshot, StoreError> {
+    connection
+        .query_row(
+            "SELECT format_version, limits_json, pricing_version, usage_json, reserved_json,
+                    exceeded_json, planned_tasks, planned_expansion_items,
+                    planned_loop_iterations, updated_at
+             FROM run_budgets WHERE run_id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::RunNotFound(run_id.to_owned()))
+        .and_then(|row| {
+            if row.0 != BUDGET_FORMAT_VERSION {
+                return Err(StoreError::Incompatible(format!(
+                    "budget format version {} is not supported",
+                    row.0
+                )));
+            }
+            Ok(BudgetSnapshot {
+                format_version: row.0,
+                limits: decode(&row.1, "run_budgets.limits_json")?,
+                pricing_version: row.2,
+                usage: decode(&row.3, "run_budgets.usage_json")?,
+                reserved: decode(&row.4, "run_budgets.reserved_json")?,
+                exceeded: row
+                    .5
+                    .map(|value| decode(&value, "run_budgets.exceeded_json"))
+                    .transpose()?,
+                planned_tasks: sqlite_u64(row.6, "run_budgets.planned_tasks")?,
+                planned_expansion_items: sqlite_u64(row.7, "run_budgets.planned_expansion_items")?,
+                planned_loop_iterations: sqlite_u64(row.8, "run_budgets.planned_loop_iterations")?,
+                updated_at: parse_time(&row.9, "run_budgets.updated_at")?,
+            })
+        })
+}
+
+fn budget_exceeded(
+    limits: &ResourceBudgetDefinition,
+    usage: &BudgetCounters,
+    reserved: &BudgetCounters,
+    requested: &BudgetCounters,
+) -> Option<BudgetExceeded> {
+    let candidate =
+        |used: u64, held: u64, next: u64| used.saturating_add(held).saturating_add(next);
+    let checks = [
+        (
+            "providerRequests",
+            limits.max_provider_requests,
+            candidate(
+                usage.provider_requests,
+                reserved.provider_requests,
+                requested.provider_requests,
+            ),
+        ),
+        (
+            "turns",
+            limits.max_turns,
+            candidate(usage.turns, reserved.turns, requested.turns),
+        ),
+        (
+            "toolCalls",
+            limits.max_tool_calls,
+            candidate(usage.tool_calls, reserved.tool_calls, requested.tool_calls),
+        ),
+        (
+            "inputTokens",
+            limits.max_input_tokens,
+            candidate(
+                usage.input_tokens,
+                reserved.input_tokens,
+                requested.input_tokens,
+            ),
+        ),
+        (
+            "outputTokens",
+            limits.max_output_tokens,
+            candidate(
+                usage.output_tokens,
+                reserved.output_tokens,
+                requested.output_tokens,
+            ),
+        ),
+        (
+            "totalTokens",
+            limits.max_total_tokens,
+            candidate(
+                usage.total_tokens(),
+                reserved.total_tokens(),
+                requested.total_tokens(),
+            ),
+        ),
+        (
+            "wallTimeSeconds",
+            limits.max_wall_time_seconds,
+            candidate(
+                usage.wall_time_seconds,
+                reserved.wall_time_seconds,
+                requested.wall_time_seconds,
+            ),
+        ),
+        (
+            "processOutputBytes",
+            limits.max_process_output_bytes,
+            candidate(
+                usage.process_output_bytes,
+                reserved.process_output_bytes,
+                requested.process_output_bytes,
+            ),
+        ),
+        (
+            "artifactBytes",
+            limits.max_artifact_bytes,
+            candidate(
+                usage.artifact_bytes,
+                reserved.artifact_bytes,
+                requested.artifact_bytes,
+            ),
+        ),
+        (
+            "costMicrousd",
+            limits.max_cost_microusd,
+            candidate(
+                usage.cost_microusd,
+                reserved.cost_microusd,
+                requested.cost_microusd,
+            ),
+        ),
+    ];
+    checks
+        .into_iter()
+        .find_map(|(dimension, limit, attempted)| {
+            limit
+                .filter(|limit| attempted > *limit)
+                .map(|limit| BudgetExceeded {
+                    dimension: dimension.to_owned(),
+                    limit,
+                    attempted,
+                })
+        })
+}
+
 fn checkpoint_tx(
     transaction: &Transaction<'_>,
     run_id: &str,
@@ -5306,6 +5943,7 @@ fn checkpoint_tx(
             }))
         })
         .collect::<Result<Vec<_>, StoreError>>()?;
+    let budget = load_budget_snapshot(transaction, run_id)?;
     let state = serde_json::json!({
         "runId": run_id,
         "state": run_state.0,
@@ -5319,6 +5957,7 @@ fn checkpoint_tx(
             .transpose()?,
         "cancellationRequested": run_state.3,
         "tasks": tasks,
+        "budget": budget,
     });
     let state_json = encode_protected(protection, &state, "checkpoints.state_json")?;
     let checksum = hex::encode(Sha256::digest(state_json.as_bytes()));
@@ -5798,6 +6437,11 @@ fn sqlite_u64(value: i64, field: &str) -> Result<u64, StoreError> {
         .map_err(|_| StoreError::Corrupt(format!("{field} cannot be negative: {value}")))
 }
 
+fn sqlite_i64(value: u64, field: &str) -> Result<i64, StoreError> {
+    i64::try_from(value)
+        .map_err(|_| StoreError::Incompatible(format!("{field} exceeds the SQLite integer range")))
+}
+
 fn encode<T: Serialize + ?Sized>(value: &T) -> Result<String, StoreError> {
     serde_json::to_string(value).map_err(StoreError::from)
 }
@@ -5963,6 +6607,382 @@ spec:
             .expect("running");
     }
 
+    #[test]
+    fn budget_reservations_are_atomic_idempotent_and_reconcile_actual_usage() {
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: budget-store }
+spec:
+  runtime:
+    maxConcurrency: 2
+    budgets:
+      maxProviderRequests: 1
+      maxOutputTokens: 5
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - { id: one, uses: "action:assign", with: { value: 1 } }
+"#;
+        let workflow = parse_workflow(source, "budget-store.yaml")
+            .expect("parse")
+            .workflow;
+        let plan = compile(&workflow, "budget-store.yaml").expect("compile");
+        let temporary = tempdir().expect("tempdir");
+        let store = SqliteStore::open(&temporary.path().join("state.db")).expect("store");
+        store
+            .create_run(
+                "budget-run",
+                API_VERSION,
+                &serde_json::to_value(&workflow).expect("workflow json"),
+                &plan,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                RunMode::Execute,
+                None,
+                None,
+                Path::new("."),
+                Utc::now(),
+                "trace",
+            )
+            .expect("create run");
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let handles = ["reservation-a", "reservation-b"].map(|reservation_id| {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                (
+                    reservation_id,
+                    store
+                        .reserve_budget(
+                            "budget-run",
+                            reservation_id,
+                            Some("one"),
+                            "provider",
+                            &BudgetCounters {
+                                provider_requests: 1,
+                                output_tokens: 5,
+                                ..BudgetCounters::default()
+                            },
+                            Utc::now(),
+                            "trace",
+                        )
+                        .expect("reservation"),
+                )
+            })
+        });
+        barrier.wait();
+        let decisions = handles.map(|handle| handle.join().expect("reservation thread"));
+        let allowed = decisions
+            .iter()
+            .find_map(|(reservation_id, decision)| {
+                matches!(decision, BudgetReservationDecision::Allowed(_)).then_some(*reservation_id)
+            })
+            .expect("one allowed reservation");
+        assert_eq!(
+            decisions
+                .iter()
+                .filter(|(_, decision)| {
+                    matches!(decision, BudgetReservationDecision::Denied { .. })
+                })
+                .count(),
+            1
+        );
+        assert!(matches!(
+            store
+                .reserve_budget(
+                    "budget-run",
+                    allowed,
+                    Some("one"),
+                    "provider",
+                    &BudgetCounters {
+                        provider_requests: 1,
+                        output_tokens: 5,
+                        ..BudgetCounters::default()
+                    },
+                    Utc::now(),
+                    "trace",
+                )
+                .expect("idempotent reserve"),
+            BudgetReservationDecision::Allowed(_)
+        ));
+        let snapshot = store
+            .reconcile_budget(
+                "budget-run",
+                allowed,
+                &BudgetCounters {
+                    provider_requests: 1,
+                    output_tokens: 5,
+                    ..BudgetCounters::default()
+                },
+                "test",
+                Utc::now(),
+                "trace",
+            )
+            .expect("reconcile");
+        assert_eq!(snapshot.usage.provider_requests, 1);
+        assert_eq!(snapshot.usage.output_tokens, 5);
+        assert_eq!(snapshot.reserved, BudgetCounters::default());
+        assert_eq!(
+            snapshot.exceeded,
+            Some(BudgetExceeded {
+                dimension: "providerRequests".to_owned(),
+                limit: 1,
+                attempted: 2,
+            }),
+            "a concurrent reconciliation must not clear the persisted denial"
+        );
+        let snapshot = store
+            .record_wall_time("budget-run", 1, Utc::now(), "trace")
+            .expect("record wall time");
+        assert_eq!(
+            snapshot
+                .exceeded
+                .as_ref()
+                .map(|exceeded| exceeded.dimension.as_str()),
+            Some("providerRequests"),
+            "later observations must not clear the terminal budget cause"
+        );
+        assert_eq!(
+            store
+                .reconcile_budget(
+                    "budget-run",
+                    allowed,
+                    &BudgetCounters {
+                        provider_requests: 99,
+                        output_tokens: 99,
+                        ..BudgetCounters::default()
+                    },
+                    "duplicate",
+                    Utc::now(),
+                    "trace",
+                )
+                .expect("idempotent reconcile"),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn budget_reconciliation_records_actual_overrun() {
+        let temporary = tempdir().expect("tempdir");
+        let store = SqliteStore::open(&temporary.path().join("state.db")).expect("store");
+        create(&store, "budget-overrun");
+        store
+            .connection()
+            .execute(
+                "UPDATE run_budgets SET limits_json = ?1 WHERE run_id = ?2",
+                params![
+                    encode(&ResourceBudgetDefinition {
+                        max_output_tokens: Some(5),
+                        ..ResourceBudgetDefinition::default()
+                    })
+                    .expect("limits"),
+                    "budget-overrun"
+                ],
+            )
+            .expect("set limit");
+        assert!(matches!(
+            store
+                .reserve_budget(
+                    "budget-overrun",
+                    "provider",
+                    Some("one"),
+                    "provider",
+                    &BudgetCounters {
+                        output_tokens: 4,
+                        ..BudgetCounters::default()
+                    },
+                    Utc::now(),
+                    "trace",
+                )
+                .expect("reserve"),
+            BudgetReservationDecision::Allowed(_)
+        ));
+        let snapshot = store
+            .reconcile_budget(
+                "budget-overrun",
+                "provider",
+                &BudgetCounters {
+                    output_tokens: 6,
+                    ..BudgetCounters::default()
+                },
+                "provider",
+                Utc::now(),
+                "trace",
+            )
+            .expect("reconcile");
+        assert_eq!(
+            snapshot.exceeded,
+            Some(BudgetExceeded {
+                dimension: "outputTokens".to_owned(),
+                limit: 5,
+                attempted: 6,
+            })
+        );
+        assert_eq!(
+            store
+                .checkpoints("budget-overrun")
+                .expect("checkpoints")
+                .last()
+                .expect("checkpoint")
+                .state["budget"]["usage"]["outputTokens"],
+            6
+        );
+    }
+
+    #[test]
+    fn every_dynamic_budget_dimension_is_inclusive_and_bounded() {
+        let base = BudgetCounters {
+            provider_requests: 1,
+            turns: 1,
+            tool_calls: 1,
+            input_tokens: 1,
+            output_tokens: 1,
+            wall_time_seconds: 1,
+            process_output_bytes: 1,
+            artifact_bytes: 1,
+            cost_microusd: 1,
+            ..BudgetCounters::default()
+        };
+        let limits = ResourceBudgetDefinition {
+            max_provider_requests: Some(1),
+            max_turns: Some(1),
+            max_tool_calls: Some(1),
+            max_input_tokens: Some(1),
+            max_output_tokens: Some(1),
+            max_total_tokens: Some(2),
+            max_wall_time_seconds: Some(1),
+            max_process_output_bytes: Some(1),
+            max_artifact_bytes: Some(1),
+            max_cost_microusd: Some(1),
+            ..ResourceBudgetDefinition::default()
+        };
+        assert_eq!(
+            budget_exceeded(
+                &limits,
+                &base,
+                &BudgetCounters::default(),
+                &BudgetCounters::default()
+            ),
+            None,
+            "exact equality is allowed"
+        );
+        let dimensions = [
+            (
+                "providerRequests",
+                BudgetCounters {
+                    provider_requests: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "turns",
+                BudgetCounters {
+                    turns: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "toolCalls",
+                BudgetCounters {
+                    tool_calls: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "inputTokens",
+                BudgetCounters {
+                    input_tokens: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "outputTokens",
+                BudgetCounters {
+                    output_tokens: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "wallTimeSeconds",
+                BudgetCounters {
+                    wall_time_seconds: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "processOutputBytes",
+                BudgetCounters {
+                    process_output_bytes: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "artifactBytes",
+                BudgetCounters {
+                    artifact_bytes: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+            (
+                "costMicrousd",
+                BudgetCounters {
+                    cost_microusd: 1,
+                    ..BudgetCounters::default()
+                },
+            ),
+        ];
+        for (expected, requested) in dimensions {
+            assert_eq!(
+                budget_exceeded(&limits, &base, &BudgetCounters::default(), &requested)
+                    .expect("exceeded")
+                    .dimension,
+                expected
+            );
+        }
+        assert_eq!(
+            budget_exceeded(
+                &limits,
+                &BudgetCounters {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    ..BudgetCounters::default()
+                },
+                &BudgetCounters::default(),
+                &BudgetCounters {
+                    input_tokens: 1,
+                    ..BudgetCounters::default()
+                }
+            )
+            .expect("total token budget")
+            .dimension,
+            "inputTokens"
+        );
+        let total_only = ResourceBudgetDefinition {
+            max_total_tokens: Some(2),
+            ..ResourceBudgetDefinition::default()
+        };
+        assert_eq!(
+            budget_exceeded(
+                &total_only,
+                &BudgetCounters {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    ..BudgetCounters::default()
+                },
+                &BudgetCounters::default(),
+                &BudgetCounters {
+                    input_tokens: 1,
+                    ..BudgetCounters::default()
+                }
+            )
+            .expect("total token budget")
+            .dimension,
+            "totalTokens"
+        );
+    }
+
     fn complete_with_artifact(store: &SqliteStore, run_id: &str, artifact: ArtifactRecord) {
         store
             .complete_task(
@@ -6004,6 +7024,7 @@ spec:
             MIGRATION_11,
             MIGRATION_12,
             MIGRATION_13,
+            MIGRATION_14,
         ]
         .into_iter()
         .enumerate()
@@ -6937,6 +7958,42 @@ spec:
             .expect("record");
         assert_eq!(record.entry.value(), serde_json::json!("hello"));
         assert_eq!(record.entry.searchable_text(), Some("hello"));
+        assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_fifteen_initializes_unlimited_ledgers_for_retained_runs() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("runtime-v14.db");
+        create_version_database(&path, 14);
+        let now = Utc::now().to_rfc3339();
+        let connection = Connection::open(&path).expect("legacy connection");
+        connection
+            .execute(
+                "INSERT INTO runs
+                 (run_id, runtime_state_version, workflow_digest, workflow_schema_version,
+                  plan_digest, plan_format_version, workflow_json, plan_json, inputs_json,
+                  working_memory_json, state, mode, cancellation_requested, created_at, updated_at)
+                 VALUES ('retained', 1, 'workflow', 'agentctl.dev/v1alpha1', 'plan', 1,
+                         '{}', '{}', '{}', '{}', 'running', 'execute', 0, ?1, ?1)",
+                [&now],
+            )
+            .expect("legacy run");
+        connection
+            .execute(
+                "INSERT INTO task_states
+                 (run_id, task_id, position, state, updated_at)
+                 VALUES ('retained', 'one', 0, 'pending', ?1)",
+                [&now],
+            )
+            .expect("legacy task");
+        drop(connection);
+
+        let store = SqliteStore::open(&path).expect("migrate");
+        let budget = store.budget_snapshot("retained").expect("budget");
+        assert!(budget.limits.is_empty());
+        assert_eq!(budget.planned_tasks, 1);
+        assert_eq!(budget.usage, BudgetCounters::default());
         assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
     }
 

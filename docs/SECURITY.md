@@ -35,6 +35,11 @@
   bounded.
 - Tool input and output JSON Schemas are enforced. Models, MCP annotations, A2A cards, remote schemas, and results cannot grant capabilities.
 - Requests are ledgered before effects. Global denial or approval cannot be weakened by a tool contract. Approval is durable; non-interactive mode pauses with exit `3` or uses an explicitly stricter deny/fail mode, never a prompt or implicit approval.
+- Optional run-wide budgets use atomic SQLite reservations before provider,
+  tool, process, and artifact dispatch. Actual usage is reconciled afterward,
+  and the durable creation timestamp bounds wall time across resume. Monetary
+  enforcement requires authoritative cost or explicit versioned custom
+  pricing.
 - SQLite uses foreign keys, WAL/busy timeout, version checks, checksummed checkpoints, and mode `0600` on Unix.
 - Optional application-level state encryption uses versioned AES-256-GCM envelopes with per-value random nonces, field-bound authenticated data, key IDs, environment references, transactional migration/rotation, and database triggers that reject plaintext or stale-key writes after enablement. Missing, wrong, unsupported, or tampered keys/envelopes fail closed.
 - Repair never mutates a terminal source. Reuse requires versioned definition/input/contract/output/state metadata and verified content-addressed artifact sizes and SHA-256 digests. Artifact ingestion uses atomic no-clobber writes, immutable blobs, bounded leases, and a cross-process GC lock. Repair creation and reused-task/reference materialization are one SQLite transaction.

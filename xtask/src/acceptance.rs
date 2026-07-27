@@ -22,7 +22,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 45;
+const ACCEPTANCE_SCENARIOS: usize = 46;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -2433,6 +2433,33 @@ spec:
     let isolation_inspect = inspect(&binary, root, &isolation_db, isolation_run_id)?;
     ensure!(array_len(&isolation_inspect, "/data/effects")? == 0);
 
+    scenario(
+        46,
+        "provider request budget terminates durably before the next dispatch",
+    );
+    let budget_workflow = workspace.join("resource-budget.yaml");
+    write(&budget_workflow, RESOURCE_BUDGET_WORKFLOW)?;
+    let budget_db = directory.path().join("resource-budget.db");
+    let budget_failure = json_with_code(
+        &binary,
+        &workspace,
+        &run_args(&budget_workflow, &budget_db, &workspace, &[]),
+        4,
+    )?;
+    ensure!(string_at(&budget_failure, "/error/message")?.contains("providerRequests"));
+    let budget_run_id = string_at(&budget_failure, "/error/runId")?;
+    let budget_inspect = inspect(&binary, root, &budget_db, budget_run_id)?;
+    ensure_eq(&budget_inspect, "/data/budget/usage/providerRequests", 1)?;
+    ensure_eq(
+        &budget_inspect,
+        "/data/budget/exceeded/dimension",
+        "providerRequests",
+    )?;
+    ensure_eq(&budget_inspect, "/data/budget/exceeded/limit", 1)?;
+    ensure_eq(&budget_inspect, "/data/budget/exceeded/attempted", 2)?;
+    ensure!(array_len(&budget_inspect, "/data/effects")? == 2);
+    ensure_eq(&budget_inspect, "/data/effects/1/status", "requested")?;
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -2659,6 +2686,65 @@ pub fn live_openai(root: &Path) -> Result<()> {
     let usage = usage_totals(&live_evidence).plus(usage_totals(&container_inspect));
     println!(
         "live OpenAI acceptance passed: model=gpt-5.6 localRequests={local_requests} containerRequests={container_requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls=verified continuations=verified keylessReplays=2",
+        usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write,
+    );
+    Ok(())
+}
+
+pub fn live_openai_budget(root: &Path) -> Result<()> {
+    ensure!(
+        env::var_os("OPENAI_API_KEY").is_some(),
+        "OPENAI_API_KEY is required for the explicit live resource-budget command"
+    );
+    super::package(root)?;
+    let binary = packaged_binary(root)?;
+    let directory = tempfile::tempdir()?;
+    let workspace = directory.path().join("live-resource-budget");
+    fs::create_dir_all(&workspace)?;
+    let workflow = workspace.join("workflow.yaml");
+    let db = workspace.join("runtime.db");
+    write(&workflow, OPENAI_RESOURCE_BUDGET_WORKFLOW)?;
+    successful_json(
+        &binary,
+        &workspace,
+        &strings(["auth", "check", path(&workflow)?, "--output", "json"]),
+    )?;
+    successful_json(
+        &binary,
+        &workspace,
+        &strings(["plan", path(&workflow)?, "--output", "json"]),
+    )?;
+    let failure = json_with_code(
+        &binary,
+        &workspace,
+        &run_args(&workflow, &db, &workspace, &[]),
+        4,
+    )?;
+    ensure!(string_at(&failure, "/error/message")?.contains("providerRequests"));
+    let run_id = string_at(&failure, "/error/runId")?;
+    let evidence = inspect(&binary, &workspace, &db, run_id)?;
+    assert_secret_absent(&evidence)?;
+    ensure_eq(&evidence, "/data/run/state", "failed")?;
+    ensure_eq(&evidence, "/data/tasks/0/state", "succeeded")?;
+    ensure_eq(&evidence, "/data/tasks/1/state", "failed")?;
+    ensure_eq(&evidence, "/data/budget/usage/providerRequests", 1)?;
+    ensure_eq(&evidence, "/data/budget/usage/turns", 1)?;
+    ensure_eq(&evidence, "/data/budget/usage/unpricedProviderRequests", 1)?;
+    ensure_eq(
+        &evidence,
+        "/data/budget/exceeded/dimension",
+        "providerRequests",
+    )?;
+    ensure_eq(&evidence, "/data/budget/exceeded/limit", 1)?;
+    ensure_eq(&evidence, "/data/budget/exceeded/attempted", 2)?;
+    ensure!(array_len(&evidence, "/data/effects")? == 2);
+    ensure_eq(&evidence, "/data/effects/0/status", "succeeded")?;
+    ensure_eq(&evidence, "/data/effects/1/status", "requested")?;
+    ensure!(array_len(&evidence, "/data/providerSessions")? == 1);
+    let usage = usage_totals(&evidence);
+    guard_live_budget(1, &usage)?;
+    println!(
+        "live OpenAI resource-budget verification passed: model=gpt-5.6 requests=1 inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} runId={run_id} termination=providerRequests replay=not-applicable-failed-source",
         usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write,
     );
     Ok(())
@@ -4681,6 +4767,34 @@ spec:
       with: { prompt: hello }
 "#;
 
+const OPENAI_RESOURCE_BUDGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: live-resource-budget }
+spec:
+  runtime:
+    budgets: { maxProviderRequests: 1 }
+  providers:
+    openai:
+      kind: openai
+      credential: { env: OPENAI_API_KEY }
+  policy:
+    networkAllowlist: [api.openai.com]
+    approval: never
+  agents:
+    worker:
+      provider: openai
+      model: gpt-5.6
+      instructions: Reply with exactly OK.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 30
+      reasoning: { effort: low }
+  tasks:
+    - { id: first, uses: "agent:worker", with: { prompt: Reply now. } }
+    - { id: second, uses: "agent:worker", needs: [first], with: { prompt: Reply now. } }
+"#;
+
 const OPENAI_STATELESS_TOOL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
 metadata: { name: stateless-tools }
@@ -4961,6 +5075,27 @@ spec:
   tasks:
     - id: isolated
       uses: action:isolated
+"#;
+
+const RESOURCE_BUDGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: resource-budget }
+spec:
+  runtime:
+    budgets: { maxProviderRequests: 1 }
+  policy: { approval: never }
+  providers:
+    fake: { kind: fake }
+  agents:
+    worker:
+      provider: fake
+      model: scripted
+      instructions: return the prompt
+      maxTurns: 1
+      maxOutputTokens: 32
+  tasks:
+    - { id: first, uses: "agent:worker", with: { prompt: first } }
+    - { id: second, uses: "agent:worker", needs: [first], with: { prompt: second } }
 "#;
 
 const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1

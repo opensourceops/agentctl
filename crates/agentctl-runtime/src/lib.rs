@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,11 +29,11 @@ use agentctl_core::template::{EvalContext, TemplateError, evaluate_when, render}
 use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
 use agentctl_observability::{NoopTraceSink, SpanKind, TraceEvent, TracePhase, TraceSink};
 use agentctl_store::{
-    ApprovalRequest, ArtifactRecord, CheckpointRecord, EffectReconciliationRecord,
-    EffectReconciliationRequest, LegacyTaskUpgrade, MemoryRecord, MemorySearchResult,
-    ReconciliationStatus, ReusedTaskMaterialization, RunMode, SqliteStore, StoreError,
-    StreamEventRecord, TaskBatchOutcome, TaskBatchResult, TaskCompletionMetadata, TaskDisposition,
-    TaskExecutionMetadata, TaskRecord,
+    ApprovalRequest, ArtifactRecord, BudgetCounters, BudgetReservationDecision, BudgetSnapshot,
+    CheckpointRecord, EffectReconciliationRecord, EffectReconciliationRequest, LegacyTaskUpgrade,
+    MemoryRecord, MemorySearchResult, ReconciliationStatus, ReusedTaskMaterialization, RunMode,
+    SqliteStore, StoreError, StreamEventRecord, TaskBatchOutcome, TaskBatchResult,
+    TaskCompletionMetadata, TaskDisposition, TaskExecutionMetadata, TaskRecord,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -49,8 +50,8 @@ mod process;
 pub mod secret;
 
 use process::{
-    ProcessOutputLimits, ProcessRunError, container_invocation_name, isolated_process_command,
-    prepare_process_isolation, run_isolated_process,
+    BoundedProcessOutput, ProcessOutputLimits, ProcessRunError, container_invocation_name,
+    isolated_process_command, prepare_process_isolation, run_isolated_process,
 };
 
 pub trait Clock: Send + Sync {
@@ -624,6 +625,16 @@ pub enum RuntimeError {
     ExternalEffectUncertain(String),
     #[error("execution was cancelled")]
     Cancelled,
+    #[error(
+        "run `{run_id}` task `{task}` exceeded `{dimension}` budget: attempted {attempted}, limit {limit}"
+    )]
+    BudgetExceeded {
+        run_id: String,
+        task: String,
+        dimension: String,
+        limit: u64,
+        attempted: u64,
+    },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -750,6 +761,8 @@ impl Runtime {
                 run.state
             )));
         }
+        let workflow: Workflow = serde_json::from_value(run.workflow.clone())?;
+        self.enforce_elapsed_wall_budget(run_id, &trace_id, run.created_at, &workflow)?;
         self.prepare_reconciled_resume(run_id, &trace_id)?;
         let tasks = self.store.list_tasks(run_id)?;
         for task in tasks
@@ -2932,6 +2945,7 @@ impl Runtime {
                     effects: Vec::new(),
                     processes: Vec::new(),
                 },
+                budget: agentctl_core::compiler::BudgetPlan::default(),
             }
         } else {
             compile(&workflow, "<generated-compensation>").map_err(|diagnostics| {
@@ -3310,13 +3324,106 @@ impl Runtime {
     ) -> Result<RunOutcome, RuntimeError> {
         let run = self.store.load_run(run_id)?;
         let workflow: Workflow = serde_json::from_value(run.workflow)?;
-        if workflow.spec.runtime.max_concurrency == 1 {
-            self.drive_sequential(run_id, trace_id, options, cancellation)
-                .await
-        } else {
-            self.drive_parallel(run_id, trace_id, options, cancellation)
-                .await
+        let Some(max_wall_time_seconds) = workflow.spec.runtime.budgets.max_wall_time_seconds
+        else {
+            return if workflow.spec.runtime.max_concurrency == 1 {
+                self.drive_sequential(run_id, trace_id, options, cancellation, None)
+                    .await
+            } else {
+                self.drive_parallel(run_id, trace_id, options, cancellation, None)
+                    .await
+            };
+        };
+        let elapsed_before = elapsed_wall_seconds(run.created_at, self.clock.now());
+        if elapsed_before > max_wall_time_seconds {
+            let snapshot =
+                self.store
+                    .record_wall_time(run_id, elapsed_before, self.clock.now(), trace_id)?;
+            let exceeded = snapshot.exceeded.unwrap_or(agentctl_store::BudgetExceeded {
+                dimension: "wallTimeSeconds".to_owned(),
+                limit: max_wall_time_seconds,
+                attempted: elapsed_before,
+            });
+            self.fail_non_terminal_for_budget(run_id, trace_id, &exceeded)?;
+            return Err(RuntimeError::BudgetExceeded {
+                run_id: run_id.to_owned(),
+                task: "run".to_owned(),
+                dimension: exceeded.dimension,
+                limit: exceeded.limit,
+                attempted: exceeded.attempted,
+            });
         }
+
+        let budget_cancellation = cancellation.child_token();
+        let budget_expired = Arc::new(AtomicBool::new(false));
+        let elapsed_milliseconds = self
+            .clock
+            .now()
+            .signed_duration_since(run.created_at)
+            .num_milliseconds()
+            .max(0);
+        let elapsed_milliseconds = u64::try_from(elapsed_milliseconds).unwrap_or(u64::MAX);
+        let remaining_milliseconds = max_wall_time_seconds
+            .saturating_mul(1_000)
+            .saturating_sub(elapsed_milliseconds);
+        let timer_cancellation = budget_cancellation.clone();
+        let timer_expired = Arc::clone(&budget_expired);
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(remaining_milliseconds)).await;
+            timer_expired.store(true, Ordering::SeqCst);
+            timer_cancellation.cancel();
+        });
+        let result = if workflow.spec.runtime.max_concurrency == 1 {
+            self.drive_sequential(
+                run_id,
+                trace_id,
+                options,
+                &budget_cancellation,
+                Some(budget_expired.as_ref()),
+            )
+            .await
+        } else {
+            self.drive_parallel(
+                run_id,
+                trace_id,
+                options,
+                &budget_cancellation,
+                Some(budget_expired.as_ref()),
+            )
+            .await
+        };
+        timer.abort();
+        let expired = budget_expired.load(Ordering::SeqCst);
+        let budget_interrupted = expired && matches!(&result, Err(RuntimeError::Cancelled));
+        let elapsed_after = if budget_interrupted {
+            max_wall_time_seconds.saturating_add(1)
+        } else {
+            elapsed_wall_seconds(run.created_at, self.clock.now())
+        };
+        let snapshot =
+            self.store
+                .record_wall_time(run_id, elapsed_after, self.clock.now(), trace_id)?;
+        let wall_exceeded = budget_interrupted
+            || snapshot
+                .exceeded
+                .as_ref()
+                .is_some_and(|exceeded| exceeded.dimension == "wallTimeSeconds");
+        if wall_exceeded && !self.store.load_run(run_id)?.state.is_terminal() {
+            let exceeded = snapshot.exceeded.unwrap_or(agentctl_store::BudgetExceeded {
+                dimension: "wallTimeSeconds".to_owned(),
+                limit: max_wall_time_seconds,
+                attempted: elapsed_after,
+            });
+            self.fail_non_terminal_for_budget(run_id, trace_id, &exceeded)?;
+            return Err(RuntimeError::BudgetExceeded {
+                run_id: run_id.to_owned(),
+                task: "run".to_owned(),
+                dimension: exceeded.dimension,
+                limit: exceeded.limit,
+                attempted: exceeded.attempted,
+            });
+        }
+        result
     }
 
     async fn drive_parallel(
@@ -3325,9 +3432,13 @@ impl Runtime {
         trace_id: &str,
         options: RunOptions,
         cancellation: &CancellationToken,
+        budget_expired: Option<&AtomicBool>,
     ) -> Result<RunOutcome, RuntimeError> {
         loop {
             let run = self.store.load_run(run_id)?;
+            if cancellation.is_cancelled() && budget_has_expired(budget_expired) {
+                return Err(RuntimeError::Cancelled);
+            }
             if run.cancellation_requested || cancellation.is_cancelled() {
                 self.cancel_non_terminal(run_id, trace_id)?;
                 return Ok(RunOutcome {
@@ -3527,6 +3638,9 @@ impl Runtime {
                     tokio::select! {
                         () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
                         () = cancellation.cancelled() => {
+                            if budget_has_expired(budget_expired) {
+                                return Err(RuntimeError::Cancelled);
+                            }
                             self.cancel_non_terminal(run_id, trace_id)?;
                             return Ok(RunOutcome {
                                 run_id: run_id.to_owned(),
@@ -3708,6 +3822,9 @@ impl Runtime {
                     .iter()
                     .any(|result| matches!(result, Err(RuntimeError::Cancelled)))
             {
+                if budget_has_expired(budget_expired) {
+                    return Err(RuntimeError::Cancelled);
+                }
                 self.cancel_non_terminal(run_id, trace_id)?;
                 return Ok(RunOutcome {
                     run_id: run_id.to_owned(),
@@ -3729,39 +3846,59 @@ impl Runtime {
                     Ok(TaskExecution::Complete { output, memory }) => {
                         let delta = state_delta(&prepared.run.working_memory, memory.as_ref())?;
                         validate_memory_delta(prepared.task, &delta)?;
-                        if memory.is_some() {
-                            apply_state_delta(&mut committed_memory, &delta)?;
-                            has_memory_update = true;
+                        match collect_artifacts(
+                            self,
+                            &policy,
+                            &all_effects,
+                            run_id,
+                            &prepared.task.id,
+                            trace_id,
+                            self.clock.now(),
+                        ) {
+                            Ok(artifact_manifest) => {
+                                if memory.is_some() {
+                                    apply_state_delta(&mut committed_memory, &delta)?;
+                                    has_memory_update = true;
+                                }
+                                let completion = TaskCompletionMetadata {
+                                    execution: TaskExecutionMetadata {
+                                        definition_fingerprint: task_definition_fingerprint(
+                                            &workflow,
+                                            prepared.task,
+                                            &policy,
+                                            Some(&all_effects),
+                                        )?,
+                                        ..prepared.execution_metadata.clone()
+                                    },
+                                    output_digest: versioned_json_digest(&output)?,
+                                    state_delta_digest: versioned_json_digest(&delta)?,
+                                    artifact_manifest,
+                                    state_delta: delta,
+                                };
+                                results.push(TaskBatchResult {
+                                    task_id: prepared.task.id.clone(),
+                                    outcome: TaskBatchOutcome::Succeeded {
+                                        output,
+                                        metadata: Box::new(completion),
+                                    },
+                                });
+                            }
+                            Err(error) => {
+                                let message = error.to_string();
+                                results.push(TaskBatchResult {
+                                    task_id: prepared.task.id.clone(),
+                                    outcome: TaskBatchOutcome::Failed {
+                                        error: message.clone(),
+                                    },
+                                });
+                                if (prepared.task.failure == FailureBehavior::Stop
+                                    || matches!(error, RuntimeError::BudgetExceeded { .. }))
+                                    && stop_failure.is_none()
+                                {
+                                    stop_failure = Some((prepared.task.id.clone(), message));
+                                }
+                            }
                         }
-                        let completion = TaskCompletionMetadata {
-                            execution: TaskExecutionMetadata {
-                                definition_fingerprint: task_definition_fingerprint(
-                                    &workflow,
-                                    prepared.task,
-                                    &policy,
-                                    Some(&all_effects),
-                                )?,
-                                ..prepared.execution_metadata.clone()
-                            },
-                            output_digest: versioned_json_digest(&output)?,
-                            state_delta_digest: versioned_json_digest(&delta)?,
-                            artifact_manifest: collect_artifacts(
-                                &self.store,
-                                &policy,
-                                &all_effects,
-                                run_id,
-                                &prepared.task.id,
-                                self.clock.now(),
-                            )?,
-                            state_delta: delta,
-                        };
-                        results.push(TaskBatchResult {
-                            task_id: prepared.task.id.clone(),
-                            outcome: TaskBatchOutcome::Succeeded {
-                                output,
-                                metadata: Box::new(completion),
-                            },
-                        });
                     }
                     Ok(TaskExecution::Paused) => paused = true,
                     Err(error) => {
@@ -3784,7 +3921,8 @@ impl Runtime {
                                     error: message.clone(),
                                 },
                             });
-                            if prepared.task.failure == FailureBehavior::Stop
+                            if (prepared.task.failure == FailureBehavior::Stop
+                                || matches!(error, RuntimeError::BudgetExceeded { .. }))
                                 && stop_failure.is_none()
                             {
                                 stop_failure = Some((prepared.task.id.clone(), message));
@@ -3882,6 +4020,9 @@ impl Runtime {
                 tokio::select! {
                     () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
                     () = cancellation.cancelled() => {
+                        if budget_has_expired(budget_expired) {
+                            return Err(RuntimeError::Cancelled);
+                        }
                         self.cancel_non_terminal(run_id, trace_id)?;
                         return Ok(RunOutcome {
                             run_id: run_id.to_owned(),
@@ -3913,9 +4054,13 @@ impl Runtime {
         trace_id: &str,
         options: RunOptions,
         cancellation: &CancellationToken,
+        budget_expired: Option<&AtomicBool>,
     ) -> Result<RunOutcome, RuntimeError> {
         loop {
             let run = self.store.load_run(run_id)?;
+            if cancellation.is_cancelled() && budget_has_expired(budget_expired) {
+                return Err(RuntimeError::Cancelled);
+            }
             if run.cancellation_requested || cancellation.is_cancelled() {
                 self.cancel_non_terminal(run_id, trace_id)?;
                 return Ok(RunOutcome {
@@ -4153,6 +4298,60 @@ impl Runtime {
                 Ok(TaskExecution::Complete { output, memory }) => {
                     let effects = self.store.list_effects(run_id)?;
                     let delta = state_delta(&run.working_memory, memory.as_ref())?;
+                    let artifact_manifest = match collect_artifacts(
+                        self,
+                        &policy,
+                        &effects,
+                        run_id,
+                        &task.id,
+                        trace_id,
+                        self.clock.now(),
+                    ) {
+                        Ok(artifacts) => artifacts,
+                        Err(error) => {
+                            let message = error.to_string();
+                            self.store.transition_task(
+                                run_id,
+                                &task.id,
+                                TaskState::Failed,
+                                None,
+                                Some(&message),
+                                None,
+                                self.clock.now(),
+                                trace_id,
+                            )?;
+                            self.trace(
+                                TraceEvent::new(
+                                    SpanKind::Task,
+                                    TracePhase::Failed,
+                                    "task.execute",
+                                    trace_id,
+                                    run_id,
+                                    self.clock.now(),
+                                )
+                                .task(&task.id)
+                                .attributes(serde_json::json!({"error": &message}), &[]),
+                            )?;
+                            if task.failure == FailureBehavior::Stop
+                                || matches!(error, RuntimeError::BudgetExceeded { .. })
+                            {
+                                self.store.update_run_state(
+                                    run_id,
+                                    RunState::Failed,
+                                    None,
+                                    self.clock.now(),
+                                    trace_id,
+                                )?;
+                                return Err(RuntimeError::RunFailed {
+                                    run_id: run_id.to_owned(),
+                                    trace_id: trace_id.to_owned(),
+                                    task: task.id.clone(),
+                                    message,
+                                });
+                            }
+                            continue;
+                        }
+                    };
                     let completion = TaskCompletionMetadata {
                         execution: TaskExecutionMetadata {
                             definition_fingerprint: task_definition_fingerprint(
@@ -4165,14 +4364,7 @@ impl Runtime {
                         },
                         output_digest: versioned_json_digest(&output)?,
                         state_delta_digest: versioned_json_digest(&delta)?,
-                        artifact_manifest: collect_artifacts(
-                            &self.store,
-                            &policy,
-                            &effects,
-                            run_id,
-                            &task.id,
-                            self.clock.now(),
-                        )?,
+                        artifact_manifest,
                         state_delta: delta,
                     };
                     self.store.complete_task(
@@ -4224,6 +4416,9 @@ impl Runtime {
                 }
                 Err(error) => {
                     if matches!(error, RuntimeError::Cancelled) {
+                        if budget_has_expired(budget_expired) {
+                            return Err(RuntimeError::Cancelled);
+                        }
                         self.cancel_non_terminal(run_id, trace_id)?;
                         return Ok(RunOutcome {
                             run_id: run_id.to_owned(),
@@ -4257,6 +4452,9 @@ impl Runtime {
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_millis(task.retry.backoff_ms)) => {}
                             () = cancellation.cancelled() => {
+                                if budget_has_expired(budget_expired) {
+                                    return Err(RuntimeError::Cancelled);
+                                }
                                 self.cancel_non_terminal(run_id, trace_id)?;
                                 return Ok(RunOutcome {
                                     run_id: run_id.to_owned(),
@@ -4299,7 +4497,9 @@ impl Runtime {
                             self.clock.now(),
                             trace_id,
                         )?;
-                        if task.failure == FailureBehavior::Stop {
+                        if task.failure == FailureBehavior::Stop
+                            || matches!(error, RuntimeError::BudgetExceeded { .. })
+                        {
                             self.store.update_run_state(
                                 run_id,
                                 RunState::Failed,
@@ -5005,11 +5205,49 @@ impl Runtime {
                     options.interactive,
                 )? {
                     PreparedEffect::Paused => Ok(TaskExecution::Paused),
-                    PreparedEffect::Recorded(value) => Ok(TaskExecution::Complete {
-                        output: value,
-                        memory: None,
-                    }),
+                    PreparedEffect::Recorded(value) => {
+                        let reserved = BudgetCounters {
+                            process_output_bytes: action.combined_output_limit_bytes(),
+                            ..BudgetCounters::default()
+                        };
+                        self.reserve_run_budget(
+                            &run.run_id,
+                            &task.task_id,
+                            &request.id,
+                            "process",
+                            &reserved,
+                            trace_id,
+                        )?;
+                        let actual = BudgetCounters {
+                            process_output_bytes: recorded_process_output_bytes(&value),
+                            ..BudgetCounters::default()
+                        };
+                        self.reconcile_run_budget(
+                            &run.run_id,
+                            &task.task_id,
+                            &request.id,
+                            &actual,
+                            "process_recorded",
+                            trace_id,
+                        )?;
+                        Ok(TaskExecution::Complete {
+                            output: value,
+                            memory: None,
+                        })
+                    }
                     PreparedEffect::Execute => {
+                        let reserved = BudgetCounters {
+                            process_output_bytes: action.combined_output_limit_bytes(),
+                            ..BudgetCounters::default()
+                        };
+                        self.reserve_run_budget(
+                            &run.run_id,
+                            &task.task_id,
+                            &request.id,
+                            "process",
+                            &reserved,
+                            trace_id,
+                        )?;
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
                         let container_name = container_invocation_name(&request.id, "shell");
@@ -5042,7 +5280,11 @@ impl Runtime {
                             cancellation,
                         )
                         .await;
-                        match result {
+                        let actual = BudgetCounters {
+                            process_output_bytes: captured_process_output_bytes(&result),
+                            ..BudgetCounters::default()
+                        };
+                        let execution = match result {
                             Ok(result) => {
                                 let secrets = resolved_environment
                                     .values()
@@ -5164,7 +5406,16 @@ impl Runtime {
                                 )?;
                                 Err(error)
                             }
-                        }
+                        };
+                        self.reconcile_run_budget(
+                            &run.run_id,
+                            &task.task_id,
+                            &request.id,
+                            &actual,
+                            "process_output",
+                            trace_id,
+                        )?;
+                        execution
                     }
                 }
             }
@@ -5735,19 +5986,53 @@ impl Runtime {
         )? {
             PreparedEffect::Paused => Ok(TaskExecution::Paused),
             PreparedEffect::Recorded(output) => {
+                let reserved = BudgetCounters {
+                    process_output_bytes: action.combined_output_limit_bytes().saturating_mul(2),
+                    ..BudgetCounters::default()
+                };
+                self.reserve_run_budget(
+                    &run.run_id,
+                    &task.task_id,
+                    &request.id,
+                    "process_extension",
+                    &reserved,
+                    trace_id,
+                )?;
                 validate_output_contract(output_schema, &output).map_err(|message| {
                     RuntimeError::InvalidState(format!(
                         "recorded extension output contract failed: {message}"
                     ))
                 })?;
+                self.reconcile_run_budget(
+                    &run.run_id,
+                    &task.task_id,
+                    &request.id,
+                    &BudgetCounters::default(),
+                    "process_extension_recorded",
+                    trace_id,
+                )?;
                 Ok(TaskExecution::Complete {
                     output,
                     memory: None,
                 })
             }
             PreparedEffect::Execute => {
+                let reserved = BudgetCounters {
+                    process_output_bytes: action.combined_output_limit_bytes().saturating_mul(2),
+                    ..BudgetCounters::default()
+                };
+                self.reserve_run_budget(
+                    &run.run_id,
+                    &task.task_id,
+                    &request.id,
+                    "process_extension",
+                    &reserved,
+                    trace_id,
+                )?;
                 self.store
                     .mark_effect_started(&request.id, self.clock.now())?;
+                let mut captured_output_bytes = 0_u64;
+                let execution: Result<TaskExecution, RuntimeError> = async {
                 let timeout = Duration::from_secs(
                     action
                         .timeout_seconds
@@ -5780,6 +6065,8 @@ impl Runtime {
                     cancellation,
                 )
                 .await;
+                captured_output_bytes = captured_output_bytes
+                    .saturating_add(captured_process_output_bytes(&handshake_output));
                 let handshake_output = match handshake_output {
                     Ok(output) if output.status.success() => output,
                     Ok(output) => {
@@ -5866,6 +6153,8 @@ impl Runtime {
                     cancellation,
                 )
                 .await;
+                captured_output_bytes = captured_output_bytes
+                    .saturating_add(captured_process_output_bytes(&invocation_output));
                 let invocation_output = match invocation_output {
                     Ok(output) if output.status.success() => output,
                     Ok(output) => {
@@ -5938,6 +6227,21 @@ impl Runtime {
                     output: response.output,
                     memory: None,
                 })
+                }
+                .await;
+                let actual = BudgetCounters {
+                    process_output_bytes: captured_output_bytes,
+                    ..BudgetCounters::default()
+                };
+                self.reconcile_run_budget(
+                    &run.run_id,
+                    &task.task_id,
+                    &request.id,
+                    &actual,
+                    "process_extension_output",
+                    trace_id,
+                )?;
+                execution
             }
         }
     }
@@ -6091,7 +6395,20 @@ impl Runtime {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut continuation = None;
-        let mut usage = Usage::default();
+        let mut usage = Usage {
+            cost_microusd: workflow
+                .spec
+                .runtime
+                .pricing
+                .as_ref()
+                .and_then(|pricing| {
+                    pricing
+                        .models
+                        .get(&format!("{}/{}", agent.provider, agent.model))
+                })
+                .map(|_| 0),
+            ..Usage::default()
+        };
         let mut tool_call_count = 0_u16;
         let stream_budget = Arc::new(Mutex::new(StreamBudget::default()));
         for _turn in 0..agent.max_turns {
@@ -6122,6 +6439,8 @@ impl Runtime {
                 "invoke a bounded model provider",
                 trace_id,
             );
+            let budget_reservation =
+                provider_budget_reservation(workflow, agent, &provider_request)?;
             let response: ProviderResponse = match self.prepare_effect(
                 &effect,
                 policy,
@@ -6131,8 +6450,41 @@ impl Runtime {
                 interactive,
             )? {
                 PreparedEffect::Paused => return Ok(TaskExecution::Paused),
-                PreparedEffect::Recorded(value) => serde_json::from_value(value)?,
+                PreparedEffect::Recorded(value) => {
+                    self.reserve_run_budget(
+                        &run.run_id,
+                        &task.task_id,
+                        &effect.id,
+                        "provider",
+                        &budget_reservation,
+                        trace_id,
+                    )?;
+                    let mut response: ProviderResponse = serde_json::from_value(value)?;
+                    let actual = provider_budget_actual(workflow, agent, &response.usage);
+                    self.reconcile_run_budget(
+                        &run.run_id,
+                        &task.task_id,
+                        &effect.id,
+                        &actual,
+                        "provider_recorded",
+                        trace_id,
+                    )?;
+                    if response.usage.cost_microusd.is_none()
+                        && actual.unpriced_provider_requests == 0
+                    {
+                        response.usage.cost_microusd = Some(actual.cost_microusd);
+                    }
+                    response
+                }
                 PreparedEffect::Execute => {
+                    self.reserve_run_budget(
+                        &run.run_id,
+                        &task.task_id,
+                        &effect.id,
+                        "provider",
+                        &budget_reservation,
+                        trace_id,
+                    )?;
                     self.store
                         .mark_effect_started(&effect.id, self.clock.now())?;
                     let stream_sink = DurableProviderStreamSink {
@@ -6165,10 +6517,24 @@ impl Runtime {
                         () = cancellation.cancelled() => Err(ProviderError::Cancelled),
                     };
                     match result {
-                        Ok(response) => {
+                        Ok(mut response) => {
                             let value = serde_json::to_value(&response)?;
                             self.store
                                 .complete_effect(&effect.id, Ok(&value), self.clock.now())?;
+                            let actual = provider_budget_actual(workflow, agent, &response.usage);
+                            self.reconcile_run_budget(
+                                &run.run_id,
+                                &task.task_id,
+                                &effect.id,
+                                &actual,
+                                "provider_response",
+                                trace_id,
+                            )?;
+                            if response.usage.cost_microusd.is_none()
+                                && actual.unpriced_provider_requests == 0
+                            {
+                                response.usage.cost_microusd = Some(actual.cost_microusd);
+                            }
                             response
                         }
                         Err(ProviderError::Cancelled) => {
@@ -6176,6 +6542,15 @@ impl Runtime {
                                 &effect.id,
                                 "provider request was cancelled after dispatch",
                                 self.clock.now(),
+                            )?;
+                            let actual = provider_budget_actual(workflow, agent, &Usage::default());
+                            self.reconcile_run_budget(
+                                &run.run_id,
+                                &task.task_id,
+                                &effect.id,
+                                &actual,
+                                "provider_cancelled",
+                                trace_id,
                             )?;
                             return Err(RuntimeError::Cancelled);
                         }
@@ -6195,6 +6570,15 @@ impl Runtime {
                                     self.clock.now(),
                                 )?;
                             }
+                            let actual = provider_budget_actual(workflow, agent, &Usage::default());
+                            self.reconcile_run_budget(
+                                &run.run_id,
+                                &task.task_id,
+                                &effect.id,
+                                &actual,
+                                "provider_error",
+                                trace_id,
+                            )?;
                             return Err(RuntimeError::Provider(error));
                         }
                     }
@@ -6245,6 +6629,10 @@ impl Runtime {
                         &format!("execute tool {}", contract.id),
                         trace_id,
                     );
+                    let tool_budget = BudgetCounters {
+                        tool_calls: 1,
+                        ..BudgetCounters::default()
+                    };
                     let output = match self.prepare_effect_with_approval(
                         &tool_effect,
                         policy,
@@ -6255,8 +6643,34 @@ impl Runtime {
                         interactive,
                     )? {
                         PreparedEffect::Paused => return Ok(TaskExecution::Paused),
-                        PreparedEffect::Recorded(value) => value,
+                        PreparedEffect::Recorded(value) => {
+                            self.reserve_run_budget(
+                                &run.run_id,
+                                &task.task_id,
+                                &tool_effect.id,
+                                "tool",
+                                &tool_budget,
+                                trace_id,
+                            )?;
+                            self.reconcile_run_budget(
+                                &run.run_id,
+                                &task.task_id,
+                                &tool_effect.id,
+                                &tool_budget,
+                                "tool_recorded",
+                                trace_id,
+                            )?;
+                            value
+                        }
                         PreparedEffect::Execute => {
+                            self.reserve_run_budget(
+                                &run.run_id,
+                                &task.task_id,
+                                &tool_effect.id,
+                                "tool",
+                                &tool_budget,
+                                trace_id,
+                            )?;
                             self.store
                                 .mark_effect_started(&tool_effect.id, self.clock.now())?;
                             self.store.start_tool_call(
@@ -6286,6 +6700,14 @@ impl Runtime {
                                             None,
                                             self.clock.now(),
                                         )?;
+                                        self.reconcile_run_budget(
+                                            &run.run_id,
+                                            &task.task_id,
+                                            &tool_effect.id,
+                                            &tool_budget,
+                                            "tool_contract_error",
+                                            trace_id,
+                                        )?;
                                         return Err(RuntimeError::Tool(error));
                                     }
                                     self.store.complete_tool_effect(
@@ -6295,6 +6717,14 @@ impl Runtime {
                                         Ok(&result.output),
                                         Some(&digest(&serde_json::to_vec(&result.output)?)),
                                         self.clock.now(),
+                                    )?;
+                                    self.reconcile_run_budget(
+                                        &run.run_id,
+                                        &task.task_id,
+                                        &tool_effect.id,
+                                        &tool_budget,
+                                        "tool_response",
+                                        trace_id,
                                     )?;
                                     result.output
                                 }
@@ -6307,6 +6737,14 @@ impl Runtime {
                                         "tool execution was cancelled after dispatch",
                                         self.clock.now(),
                                     )?;
+                                    self.reconcile_run_budget(
+                                        &run.run_id,
+                                        &task.task_id,
+                                        &tool_effect.id,
+                                        &tool_budget,
+                                        "tool_cancelled",
+                                        trace_id,
+                                    )?;
                                     return Err(RuntimeError::Cancelled);
                                 }
                                 Err(error) => {
@@ -6316,6 +6754,14 @@ impl Runtime {
                                         &call_id,
                                         &error.to_string(),
                                         self.clock.now(),
+                                    )?;
+                                    self.reconcile_run_budget(
+                                        &run.run_id,
+                                        &task.task_id,
+                                        &tool_effect.id,
+                                        &tool_budget,
+                                        "tool_timeout",
+                                        trace_id,
                                     )?;
                                     return Err(RuntimeError::Tool(error));
                                 }
@@ -6327,6 +6773,14 @@ impl Runtime {
                                         Err(&error.to_string()),
                                         None,
                                         self.clock.now(),
+                                    )?;
+                                    self.reconcile_run_budget(
+                                        &run.run_id,
+                                        &task.task_id,
+                                        &tool_effect.id,
+                                        &tool_budget,
+                                        "tool_error",
+                                        trace_id,
                                     )?;
                                     return Err(RuntimeError::Tool(error));
                                 }
@@ -6600,6 +7054,140 @@ impl Runtime {
             trace_id,
         )?;
         Ok(())
+    }
+
+    fn fail_non_terminal_for_budget(
+        &self,
+        run_id: &str,
+        trace_id: &str,
+        exceeded: &agentctl_store::BudgetExceeded,
+    ) -> Result<(), RuntimeError> {
+        let message = format!(
+            "resource budget `{}` exceeded: attempted {}, limit {}",
+            exceeded.dimension, exceeded.attempted, exceeded.limit
+        );
+        for task in self.store.list_tasks(run_id)? {
+            let next = match task.state {
+                TaskState::Running
+                | TaskState::WaitingForApproval
+                | TaskState::WaitingForEffect => TaskState::Failed,
+                TaskState::Pending | TaskState::Ready | TaskState::RetryScheduled => {
+                    TaskState::Cancelled
+                }
+                TaskState::Succeeded
+                | TaskState::Failed
+                | TaskState::Skipped
+                | TaskState::Cancelled => continue,
+            };
+            self.store.transition_task(
+                run_id,
+                &task.task_id,
+                next,
+                None,
+                Some(&message),
+                None,
+                self.clock.now(),
+                trace_id,
+            )?;
+        }
+        self.store
+            .update_run_state(run_id, RunState::Failed, None, self.clock.now(), trace_id)?;
+        Ok(())
+    }
+
+    fn enforce_elapsed_wall_budget(
+        &self,
+        run_id: &str,
+        trace_id: &str,
+        created_at: DateTime<Utc>,
+        workflow: &Workflow,
+    ) -> Result<(), RuntimeError> {
+        let Some(limit) = workflow.spec.runtime.budgets.max_wall_time_seconds else {
+            return Ok(());
+        };
+        let elapsed = elapsed_wall_seconds(created_at, self.clock.now());
+        let snapshot = self
+            .store
+            .record_wall_time(run_id, elapsed, self.clock.now(), trace_id)?;
+        if elapsed <= limit {
+            return Ok(());
+        }
+        let exceeded = snapshot
+            .exceeded
+            .filter(|exceeded| exceeded.dimension == "wallTimeSeconds")
+            .unwrap_or(agentctl_store::BudgetExceeded {
+                dimension: "wallTimeSeconds".to_owned(),
+                limit,
+                attempted: elapsed,
+            });
+        self.fail_non_terminal_for_budget(run_id, trace_id, &exceeded)?;
+        Err(RuntimeError::BudgetExceeded {
+            run_id: run_id.to_owned(),
+            task: "run".to_owned(),
+            dimension: exceeded.dimension,
+            limit: exceeded.limit,
+            attempted: exceeded.attempted,
+        })
+    }
+
+    fn reserve_run_budget(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        reservation_id: &str,
+        kind: &str,
+        requested: &BudgetCounters,
+        trace_id: &str,
+    ) -> Result<(), RuntimeError> {
+        match self.store.reserve_budget(
+            run_id,
+            reservation_id,
+            Some(task_id),
+            kind,
+            requested,
+            self.clock.now(),
+            trace_id,
+        )? {
+            BudgetReservationDecision::Allowed(_) => Ok(()),
+            BudgetReservationDecision::Denied { exceeded, .. } => {
+                Err(RuntimeError::BudgetExceeded {
+                    run_id: run_id.to_owned(),
+                    task: task_id.to_owned(),
+                    dimension: exceeded.dimension,
+                    limit: exceeded.limit,
+                    attempted: exceeded.attempted,
+                })
+            }
+        }
+    }
+
+    fn reconcile_run_budget(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        reservation_id: &str,
+        actual: &BudgetCounters,
+        source: &str,
+        trace_id: &str,
+    ) -> Result<BudgetSnapshot, RuntimeError> {
+        let snapshot = self.store.reconcile_budget(
+            run_id,
+            reservation_id,
+            actual,
+            source,
+            self.clock.now(),
+            trace_id,
+        )?;
+        if let Some(exceeded) = &snapshot.exceeded {
+            return Err(RuntimeError::BudgetExceeded {
+                run_id: run_id.to_owned(),
+                task: task_id.to_owned(),
+                dimension: exceeded.dimension.clone(),
+                limit: exceeded.limit,
+                attempted: exceeded.attempted,
+            });
+        }
+        Ok(snapshot)
     }
 
     fn trace(&self, event: TraceEvent) -> Result<(), RuntimeError> {
@@ -7689,14 +8277,18 @@ fn read_bounded_text_sync(path: &Path) -> Result<String, RuntimeError> {
 }
 
 fn collect_artifacts(
-    store: &SqliteStore,
+    runtime: &Runtime,
     policy: &PolicyEngine,
     effects: &[EffectRecord],
     run_id: &str,
     task_id: &str,
+    trace_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<ArtifactRecord>, RuntimeError> {
-    let mut artifacts = store.pending_artifacts(run_id, task_id)?;
+    let mut artifacts = runtime.store.pending_artifacts(run_id, task_id)?;
+    for artifact in &artifacts {
+        account_artifact(runtime, run_id, task_id, artifact, trace_id)?;
+    }
     let mut paths = BTreeSet::new();
     for effect in effects.iter().filter(|effect| {
         effect.request.task_id == task_id
@@ -7713,17 +8305,68 @@ fn collect_artifacts(
             continue;
         }
         let resolved = policy.resolve_artifact_path(&path)?;
-        artifacts.push(store.ingest_artifact(
+        let size_bytes = std::fs::metadata(&resolved)?.len();
+        let reservation_id = artifact_budget_reservation_id(task_id, &path);
+        let requested = BudgetCounters {
+            artifact_bytes: size_bytes,
+            ..BudgetCounters::default()
+        };
+        runtime.reserve_run_budget(
+            run_id,
+            task_id,
+            &reservation_id,
+            "artifact",
+            &requested,
+            trace_id,
+        )?;
+        let artifact = runtime.store.ingest_artifact(
             run_id,
             task_id,
             &resolved,
             &path,
             16 * 1024 * 1024,
             now,
-        )?);
+        )?;
+        account_artifact(runtime, run_id, task_id, &artifact, trace_id)?;
+        artifacts.push(artifact);
     }
     artifacts.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(artifacts)
+}
+
+fn account_artifact(
+    runtime: &Runtime,
+    run_id: &str,
+    task_id: &str,
+    artifact: &ArtifactRecord,
+    trace_id: &str,
+) -> Result<(), RuntimeError> {
+    let reservation_id = artifact_budget_reservation_id(task_id, &artifact.path);
+    let actual = BudgetCounters {
+        artifact_bytes: artifact.size_bytes,
+        ..BudgetCounters::default()
+    };
+    runtime.reserve_run_budget(
+        run_id,
+        task_id,
+        &reservation_id,
+        "artifact",
+        &actual,
+        trace_id,
+    )?;
+    runtime.reconcile_run_budget(
+        run_id,
+        task_id,
+        &reservation_id,
+        &actual,
+        "artifact_ingest",
+        trace_id,
+    )?;
+    Ok(())
+}
+
+fn artifact_budget_reservation_id(task_id: &str, path: &str) -> String {
+    format!("artifact:{task_id}:{}", digest(path.as_bytes()))
 }
 
 fn collect_result_paths(value: &Value, paths: &mut BTreeSet<String>) {
@@ -8247,6 +8890,34 @@ fn redacted_process_diagnostic(value: &[u8], secrets: &[&str]) -> String {
     redact_text(&String::from_utf8_lossy(prefix), secrets)
 }
 
+fn captured_process_output_bytes(result: &Result<BoundedProcessOutput, ProcessRunError>) -> u64 {
+    let byte_count = |stdout: &[u8], stderr: &[u8]| {
+        u64::try_from(stdout.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::try_from(stderr.len()).unwrap_or(u64::MAX))
+    };
+    match result {
+        Ok(output) => byte_count(&output.stdout, &output.stderr),
+        Err(ProcessRunError::OutputLimitExceeded { stdout, stderr, .. }) => {
+            byte_count(stdout, stderr)
+        }
+        Err(_) => 0,
+    }
+}
+
+fn recorded_process_output_bytes(output: &Value) -> u64 {
+    output
+        .get("stdout")
+        .and_then(Value::as_str)
+        .map_or(0, |value| u64::try_from(value.len()).unwrap_or(u64::MAX))
+        .saturating_add(
+            output
+                .get("stderr")
+                .and_then(Value::as_str)
+                .map_or(0, |value| u64::try_from(value.len()).unwrap_or(u64::MAX)),
+        )
+}
+
 fn unified_diff(before: Option<&str>, after: &str) -> String {
     let before = before.unwrap_or("");
     if before == after {
@@ -8307,6 +8978,121 @@ fn add_usage(total: &mut Usage, current: &Usage) {
     };
 }
 
+fn provider_budget_reservation(
+    workflow: &Workflow,
+    agent: &agentctl_core::dsl::AgentDefinition,
+    request: &ProviderRequest,
+) -> Result<BudgetCounters, RuntimeError> {
+    let input_tokens = estimated_input_tokens(request)?;
+    let output_tokens = u64::from(request.max_output_tokens);
+    let cost_microusd = workflow
+        .spec
+        .runtime
+        .pricing
+        .as_ref()
+        .and_then(|pricing| {
+            pricing
+                .models
+                .get(&format!("{}/{}", agent.provider, agent.model))
+        })
+        .map(|pricing| {
+            let input_rate = pricing
+                .input_microusd_per_million_tokens
+                .max(pricing.cache_read_microusd_per_million_tokens.unwrap_or(0))
+                .max(pricing.cache_write_microusd_per_million_tokens.unwrap_or(0));
+            let output_rate = pricing
+                .output_microusd_per_million_tokens
+                .max(pricing.reasoning_microusd_per_million_tokens.unwrap_or(0));
+            token_cost(input_tokens, input_rate)
+                .saturating_add(token_cost(output_tokens, output_rate))
+        })
+        .unwrap_or_default();
+    Ok(BudgetCounters {
+        provider_requests: 1,
+        turns: 1,
+        input_tokens,
+        output_tokens,
+        cost_microusd,
+        ..BudgetCounters::default()
+    })
+}
+
+fn provider_budget_actual(
+    workflow: &Workflow,
+    agent: &agentctl_core::dsl::AgentDefinition,
+    usage: &Usage,
+) -> BudgetCounters {
+    let configured_cost = workflow
+        .spec
+        .runtime
+        .pricing
+        .as_ref()
+        .and_then(|pricing| {
+            pricing
+                .models
+                .get(&format!("{}/{}", agent.provider, agent.model))
+        })
+        .map(|pricing| {
+            let cache_read = usage.cache_read_tokens.min(usage.input_tokens);
+            let cache_write = usage
+                .cache_write_tokens
+                .min(usage.input_tokens.saturating_sub(cache_read));
+            let normal_input = usage
+                .input_tokens
+                .saturating_sub(cache_read)
+                .saturating_sub(cache_write);
+            let reasoning = usage.reasoning_tokens.min(usage.output_tokens);
+            let normal_output = usage.output_tokens.saturating_sub(reasoning);
+            token_cost(normal_input, pricing.input_microusd_per_million_tokens)
+                .saturating_add(token_cost(
+                    cache_read,
+                    pricing
+                        .cache_read_microusd_per_million_tokens
+                        .unwrap_or(pricing.input_microusd_per_million_tokens),
+                ))
+                .saturating_add(token_cost(
+                    cache_write,
+                    pricing
+                        .cache_write_microusd_per_million_tokens
+                        .unwrap_or(pricing.input_microusd_per_million_tokens),
+                ))
+                .saturating_add(token_cost(
+                    normal_output,
+                    pricing.output_microusd_per_million_tokens,
+                ))
+                .saturating_add(token_cost(
+                    reasoning,
+                    pricing
+                        .reasoning_microusd_per_million_tokens
+                        .unwrap_or(pricing.output_microusd_per_million_tokens),
+                ))
+        });
+    BudgetCounters {
+        provider_requests: 1,
+        turns: 1,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        cost_microusd: usage.cost_microusd.or(configured_cost).unwrap_or_default(),
+        unpriced_provider_requests: u64::from(
+            usage.cost_microusd.is_none() && configured_cost.is_none(),
+        ),
+        ..BudgetCounters::default()
+    }
+}
+
+fn estimated_input_tokens(request: &ProviderRequest) -> Result<u64, RuntimeError> {
+    let bytes = u64::try_from(serde_json::to_vec(request)?.len()).unwrap_or(u64::MAX);
+    Ok(bytes.saturating_add(3) / 4)
+}
+
+fn token_cost(tokens: u64, rate_microusd_per_million_tokens: u64) -> u64 {
+    let product = u128::from(tokens) * u128::from(rate_microusd_per_million_tokens);
+    u64::try_from(product.saturating_add(999_999) / 1_000_000).unwrap_or(u64::MAX)
+}
+
 const fn provider_effect_is_uncertain(error: &ProviderError) -> bool {
     matches!(
         error,
@@ -8328,6 +9114,7 @@ const fn retryable_error(error: &RuntimeError) -> bool {
         | RuntimeError::RunFailed { .. }
         | RuntimeError::UncertainEffect { .. }
         | RuntimeError::ExternalEffectUncertain(_)
+        | RuntimeError::BudgetExceeded { .. }
         | RuntimeError::Cancelled
         | RuntimeError::Json(_)
         | RuntimeError::RepairBlocked { .. }
@@ -8372,6 +9159,21 @@ fn task_timeout(workflow: &Workflow, task_id: &str) -> u64 {
         .find(|task| task.id == task_id)
         .and_then(|task| task.timeout_seconds)
         .unwrap_or(workflow.spec.runtime.default_timeout_seconds)
+}
+
+fn elapsed_wall_seconds(started_at: DateTime<Utc>, now: DateTime<Utc>) -> u64 {
+    let milliseconds = now
+        .signed_duration_since(started_at)
+        .num_milliseconds()
+        .max(0);
+    u64::try_from(milliseconds)
+        .unwrap_or(u64::MAX)
+        .saturating_add(999)
+        / 1_000
+}
+
+fn budget_has_expired(expired: Option<&AtomicBool>) -> bool {
+    expired.is_some_and(|expired| expired.load(Ordering::SeqCst))
 }
 
 #[cfg(test)]
@@ -8530,6 +9332,37 @@ mod tests {
                 continuation: None,
                 usage: Usage {
                     input_tokens: 2,
+                    output_tokens: 1,
+                    ..Usage::default()
+                },
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    struct HighUsageProvider;
+
+    #[async_trait]
+    impl ModelProvider for HighUsageProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            Ok(ProviderResponse {
+                response_id: Some("high-usage".to_owned()),
+                text: "done".to_owned(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text {
+                    text: "done".to_owned(),
+                }],
+                continuation: None,
+                usage: Usage {
+                    input_tokens: 600,
                     output_tokens: 1,
                     ..Usage::default()
                 },
@@ -9154,6 +9987,61 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct DoubleToolCallingProvider(AtomicU64);
+
+    #[async_trait]
+    impl ModelProvider for DoubleToolCallingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                let calls = ["call-1", "call-2"]
+                    .map(|id| ToolCall {
+                        id: id.to_owned(),
+                        name: "echo".to_owned(),
+                        input: serde_json::json!({"text": id}),
+                    })
+                    .to_vec();
+                Ok(ProviderResponse {
+                    response_id: Some("two-tools".to_owned()),
+                    text: String::new(),
+                    assistant_content: calls
+                        .iter()
+                        .map(|call| ContentBlock::ToolCall {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            input: call.input.clone(),
+                            provider_metadata: None,
+                        })
+                        .collect(),
+                    tool_calls: calls,
+                    continuation: None,
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::ToolCalls,
+                })
+            } else {
+                Ok(ProviderResponse {
+                    response_id: Some("final-turn".to_owned()),
+                    text: "done".to_owned(),
+                    tool_calls: Vec::new(),
+                    assistant_content: vec![ContentBlock::Text {
+                        text: "done".to_owned(),
+                    }],
+                    continuation: None,
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::Complete,
+                })
+            }
+        }
+    }
+
+    #[derive(Default)]
     struct RepairToolCallingProvider(AtomicU64);
 
     #[async_trait]
@@ -9371,6 +10259,522 @@ mod tests {
             .workflow;
         let plan = compile(&workflow, "fixture.yaml").expect("compile fixture");
         (workflow, plan)
+    }
+
+    #[tokio::test]
+    async fn provider_request_budget_stops_before_second_dispatch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(CountingProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: request-budget }
+spec:
+  runtime:
+    budgets: { maxProviderRequests: 1 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: bounded
+      maxTurns: 1
+      maxOutputTokens: 32
+  tasks:
+    - { id: first, uses: "agent:worker", with: { prompt: first } }
+    - { id: second, uses: "agent:worker", needs: [first], with: { prompt: second } }
+"#,
+        );
+        let error = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("second dispatch must be denied");
+        let run_id = match error {
+            RuntimeError::RunFailed {
+                run_id, message, ..
+            } => {
+                assert!(message.contains("providerRequests"));
+                run_id
+            }
+            other => panic!("unexpected error: {other}"),
+        };
+        assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        let budget = store.budget_snapshot(&run_id).expect("budget");
+        assert_eq!(budget.usage.provider_requests, 1);
+        assert_eq!(
+            budget.exceeded.expect("exceeded").dimension,
+            "providerRequests"
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_token_usage_is_reconciled_and_terminates_the_run() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default().with_provider("fake", Arc::new(HighUsageProvider)),
+        );
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: token-budget }
+spec:
+  runtime:
+    budgets: { maxInputTokens: 500 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: bounded
+      maxTurns: 1
+      maxOutputTokens: 8
+  tasks:
+    - { id: work, uses: "agent:worker", with: { prompt: small } }
+"#,
+        );
+        let error = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("actual usage must exceed the budget");
+        let run_id = match error {
+            RuntimeError::RunFailed {
+                run_id, message, ..
+            } => {
+                assert!(message.contains("inputTokens"));
+                run_id
+            }
+            other => panic!("unexpected error: {other}"),
+        };
+        let budget = store.budget_snapshot(&run_id).expect("budget");
+        assert_eq!(budget.usage.input_tokens, 600);
+        assert_eq!(budget.usage.provider_requests, 1);
+        assert_eq!(budget.exceeded.expect("exceeded").attempted, 600);
+    }
+
+    #[test]
+    fn custom_pricing_reconciles_token_classes_and_prefers_provider_cost() {
+        let (workflow, _) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: custom-pricing }
+spec:
+  runtime:
+    pricing:
+      version: fixture-v1
+      models:
+        fake/fake:
+          inputMicrousdPerMillionTokens: 1000000
+          outputMicrousdPerMillionTokens: 4000000
+          reasoningMicrousdPerMillionTokens: 5000000
+          cacheReadMicrousdPerMillionTokens: 2000000
+          cacheWriteMicrousdPerMillionTokens: 3000000
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: bounded
+      maxTurns: 1
+      maxOutputTokens: 8
+  tasks: [{ id: work, uses: "agent:worker" }]
+"#,
+        );
+        let agent = &workflow.spec.agents["worker"];
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 8,
+            reasoning_tokens: 3,
+            cache_read_tokens: 2,
+            cache_write_tokens: 3,
+            ..Usage::default()
+        };
+        let priced = provider_budget_actual(&workflow, agent, &usage);
+        assert_eq!(priced.cost_microusd, 53);
+        assert_eq!(priced.unpriced_provider_requests, 0);
+        assert_eq!(priced.input_tokens + priced.output_tokens, 18);
+
+        let authoritative = provider_budget_actual(
+            &workflow,
+            agent,
+            &Usage {
+                cost_microusd: Some(7),
+                ..usage
+            },
+        );
+        assert_eq!(authoritative.cost_microusd, 7);
+
+        let (unpriced_workflow, _) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: unpriced }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: bounded
+      maxTurns: 1
+      maxOutputTokens: 8
+  tasks: [{ id: work, uses: "agent:worker" }]
+"#,
+        );
+        let unpriced = provider_budget_actual(
+            &unpriced_workflow,
+            &unpriced_workflow.spec.agents["worker"],
+            &usage,
+        );
+        assert_eq!(unpriced.cost_microusd, 0);
+        assert_eq!(unpriced.unpriced_provider_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn tool_call_budget_stops_before_second_tool_dispatch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(DoubleToolCallingProvider::default());
+        let tool = Arc::new(SingleUseRepairTool::new());
+        let runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default()
+                .with_provider("fake", provider.clone())
+                .with_tool("echo", tool.clone()),
+        );
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: tool-budget }
+spec:
+  runtime:
+    budgets: { maxToolCalls: 1 }
+  providers: { fake: { kind: fake } }
+  tools:
+    echo:
+      kind: builtin.echo
+      description: echo
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: call twice
+      tools: [echo]
+      maxTurns: 2
+      maxToolCalls: 2
+  tasks: [{ id: work, uses: "agent:worker" }]
+"#,
+        );
+        let error = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("second tool dispatch must be denied");
+        let run_id = match error {
+            RuntimeError::RunFailed {
+                run_id, message, ..
+            } => {
+                assert!(message.contains("toolCalls"));
+                run_id
+            }
+            other => panic!("unexpected error: {other}"),
+        };
+        assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.tool_calls(&run_id).expect("tool calls").len(), 1);
+        let budget = store.budget_snapshot(&run_id).expect("budget");
+        assert_eq!(budget.usage.tool_calls, 1);
+        assert_eq!(budget.exceeded.expect("exceeded").dimension, "toolCalls");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_output_budget_denies_before_process_dispatch() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: process-budget }
+spec:
+  runtime:
+    budgets: { maxProcessOutputBytes: 31 }
+  policy:
+    workspaceRoot: .
+    processAllowlist: [sh]
+    approval: never
+  actions:
+    blocked:
+      kind: builtin.shell.exec
+      command: /bin/sh
+      args: [-c, "printf ran > process-ran.txt"]
+      stdoutLimitBytes: 16
+      stderrLimitBytes: 16
+      combinedOutputLimitBytes: 32
+  tasks: [{ id: blocked, uses: "action:blocked" }]
+"#,
+        );
+        let error = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("process reservation must be denied");
+        let run_id = match error {
+            RuntimeError::RunFailed { run_id, .. } => run_id,
+            other => panic!("unexpected error: {other}"),
+        };
+        assert!(!directory.path().join("process-ran.txt").exists());
+        assert_eq!(
+            store.list_effects(&run_id).expect("effects")[0].status,
+            EffectStatus::Requested
+        );
+        let budget = store.budget_snapshot(&run_id).expect("budget");
+        assert_eq!(budget.usage.process_output_bytes, 0);
+        assert_eq!(
+            budget.exceeded.expect("exceeded"),
+            agentctl_store::BudgetExceeded {
+                dimension: "processOutputBytes".to_owned(),
+                limit: 31,
+                attempted: 32,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_budget_denies_before_cas_ingestion() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let runtime = runtime(store.clone(), directory.path());
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: artifact-budget }
+spec:
+  runtime:
+    budgets: { maxArtifactBytes: 3 }
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: never
+  actions:
+    write: { kind: builtin.write }
+  tasks:
+    - id: write
+      uses: action:write
+      with: { path: artifacts/report.txt, content: too-large }
+"#,
+        );
+        let error = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("artifact reservation must be denied");
+        let run_id = match error {
+            RuntimeError::RunFailed { run_id, .. } => run_id,
+            other => panic!("unexpected error: {other}"),
+        };
+        assert!(directory.path().join("artifacts/report.txt").exists());
+        assert!(
+            store
+                .artifact_references(Some(&run_id), None)
+                .expect("artifact references")
+                .is_empty()
+        );
+        let budget = store.budget_snapshot(&run_id).expect("budget");
+        assert_eq!(budget.usage.artifact_bytes, 0);
+        assert_eq!(
+            budget.exceeded.expect("exceeded"),
+            agentctl_store::BudgetExceeded {
+                dimension: "artifactBytes".to_owned(),
+                limit: 3,
+                attempted: 9,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn wall_time_budget_cancels_in_flight_provider_and_fails_the_run() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(CancellationProvider::default());
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: wall-budget }
+spec:
+  runtime:
+    budgets: { maxWallTimeSeconds: 1 }
+  policy: { approval: never }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: wait
+      maxTurns: 1
+      maxOutputTokens: 8
+      timeoutSeconds: 10
+  tasks:
+    - { id: work, uses: "agent:worker" }
+"#,
+        );
+        let error = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("wall budget must cancel");
+        let run_id = match error {
+            RuntimeError::BudgetExceeded {
+                run_id,
+                dimension,
+                limit,
+                ..
+            } => {
+                assert_eq!(dimension, "wallTimeSeconds");
+                assert_eq!(limit, 1);
+                run_id
+            }
+            other => panic!("unexpected error: {other}"),
+        };
+        assert_eq!(provider.started.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.load_run(&run_id).expect("run").state,
+            RunState::Failed
+        );
+        assert_eq!(
+            store
+                .budget_snapshot(&run_id)
+                .expect("budget")
+                .usage
+                .wall_time_seconds,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn wall_time_budget_uses_original_creation_time_after_resume() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let clock = Arc::new(MutableClock::new());
+        let runtime = Runtime::new(store.clone(), directory.path())
+            .with_clock(clock.clone())
+            .with_ids(Arc::new(SequenceIds::default()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: resumed-wall-budget }
+spec:
+  runtime:
+    budgets: { maxWallTimeSeconds: 1 }
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: always
+  actions:
+    write: { kind: builtin.write }
+  tasks:
+    - id: write
+      uses: action:write
+      with: { path: artifacts/resume-budget.txt, content: denied }
+"#,
+        );
+        let paused = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions {
+                    interactive: true,
+                    ..RunOptions::default()
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("pause");
+        assert_eq!(paused.state, RunState::Paused);
+        clock.advance(2);
+        let error = runtime
+            .resume(
+                &paused.run_id,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("resume must retain original wall deadline");
+        assert!(matches!(
+            error,
+            RuntimeError::BudgetExceeded {
+                dimension,
+                attempted: 2,
+                ..
+            } if dimension == "wallTimeSeconds"
+        ));
+        assert_eq!(
+            store.load_run(&paused.run_id).expect("run").state,
+            RunState::Failed
+        );
+        assert!(
+            !directory
+                .path()
+                .join("artifacts/resume-budget.txt")
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -10818,6 +12222,13 @@ spec:
         assert_eq!(repair.state, RunState::Succeeded);
         assert_eq!(provider.0.load(Ordering::SeqCst), 2);
         assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .budget_snapshot(&repair.run_id)
+                .expect("repair budget")
+                .usage,
+            BudgetCounters::default()
+        );
         assert!(
             store
                 .list_effects(&repair.run_id)
@@ -11729,6 +13140,22 @@ spec:
         assert_eq!(retry.retry_roots, ["second"]);
         assert!(retry.retry_failed_only);
         assert_eq!(
+            store
+                .budget_snapshot(&source_run_id)
+                .expect("source budget")
+                .usage
+                .provider_requests,
+            1
+        );
+        assert_eq!(
+            store
+                .budget_snapshot(&outcome.run_id)
+                .expect("retry budget")
+                .usage
+                .provider_requests,
+            1
+        );
+        assert_eq!(
             store.load_run(&source_run_id).expect("source unchanged"),
             source_before
         );
@@ -11747,6 +13174,13 @@ spec:
                 .list_effects(&replay.run_id)
                 .expect("effects")
                 .is_empty()
+        );
+        assert_eq!(
+            store
+                .budget_snapshot(&replay.run_id)
+                .expect("replay budget")
+                .usage,
+            BudgetCounters::default()
         );
         assert_eq!(replay.output, outcome.output);
     }
@@ -13772,6 +15206,13 @@ spec:
                 .is_empty()
         );
         assert!(store.tool_calls(&replay.run_id).expect("calls").is_empty());
+        assert_eq!(
+            store
+                .budget_snapshot(&replay.run_id)
+                .expect("replay budget")
+                .usage,
+            BudgetCounters::default()
+        );
         let source_effect_ids = store
             .list_effects(&first.run_id)
             .expect("source effects")

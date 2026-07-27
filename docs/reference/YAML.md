@@ -104,6 +104,22 @@ An agent requires `provider` and `model`. Defaults are `maxTurns: 8`, `maxToolCa
 
 Capability negotiation happens during compilation. A provider must explicitly support every requested feature.
 
+## Runtime budgets
+
+`runtime.maxConcurrency` defaults to `1`, and
+`runtime.defaultTimeoutSeconds` defaults to `120`. Optional
+`runtime.budgets` fields are `maxProviderRequests`, `maxTurns`,
+`maxToolCalls`, `maxInputTokens`, `maxOutputTokens`, `maxTotalTokens`,
+`maxWallTimeSeconds`, `maxProcessOutputBytes`, `maxArtifactBytes`,
+`maxTasks`, `maxExpansionItems`, `maxLoopIterations`, and
+`maxCostMicrousd`. Values must be greater than zero.
+
+`maxCostMicrousd` requires `runtime.pricing.version` and a
+`runtime.pricing.models` entry for every cost-limited `provider/model`.
+Input and output rates are integer micro-US-dollars per million tokens.
+Optional reasoning and cache rates fall back to output and input rates. See
+[Resource and cost budgets](../guides/RESOURCE_BUDGETS.md).
+
 ## Actions
 
 Supported action kinds:

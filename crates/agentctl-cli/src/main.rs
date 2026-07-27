@@ -884,8 +884,11 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let artifacts = store
                 .artifact_references(Some(&args.run_id), None)
                 .map_err(CliError::persistence)?;
+            let budget = store
+                .budget_snapshot(&args.run_id)
+                .map_err(CliError::persistence)?;
             let summary = format!(
-                "{} {:?}; {} tasks; {} effects; {} protocol calls; {} stream events; {} artifacts; {} checkpoints; {} audit events; {} traces",
+                "{} {:?}; {} tasks; {} effects; {} protocol calls; {} stream events; {} artifacts; {} checkpoints; {} audit events; {} traces; {} provider requests; {} total tokens; {} tool calls",
                 args.run_id,
                 run.state,
                 tasks.len(),
@@ -896,6 +899,9 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 checkpoints.len(),
                 audit.len(),
                 traces.len(),
+                budget.usage.provider_requests,
+                budget.usage.total_tokens(),
+                budget.usage.tool_calls,
             );
             let human = if matches!(
                 run.mode,
@@ -933,6 +939,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 "protocolCalls": protocol_calls,
                 "toolCalls": tool_calls,
                 "artifacts": artifacts,
+                "budget": budget,
                 "audit": audit,
                 "traces": traces,
             });

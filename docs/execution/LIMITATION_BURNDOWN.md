@@ -42,7 +42,7 @@ complete, every entry must have exactly one final disposition:
 | SEC-001 | Secret providers | verified | implemented |
 | NET-001 | Network policy | verified | implemented |
 | ISO-001 | Process isolation | in progress | implemented |
-| BUD-001 | Resource and cost budgets | open | implemented |
+| BUD-001 | Resource and cost budgets | verified | implemented |
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
 | DYN-001 | Foreach and matrix | in progress | implemented |
 | COND-001 | Conditions and routers | in progress | implemented |
@@ -741,25 +741,27 @@ complete, every entry must have exactly one final disposition:
 
 ### BUD-001: Enforceable resource and cost budgets
 
-- Current behavior: per-agent turns/tokens and per-process output/time have
-  partial limits.
-- User impact: no run-wide provider, tool, token, artifact, task, wall-time, or
-  cost ceiling.
-- Security or durability impact: a bounded individual task can still compose
-  into an expensive run.
-- Product decision: compile task/run budgets, reserve known units before
-  dispatch, reconcile actual usage after each effect, and fail safely when the
-  next known operation would exceed a hard bound.
-- Required implementation: requests, turns, tool calls, token classes, wall
-  time, process output, artifact bytes, task/expansion/loop counts, and optional
-  versioned/custom pricing.
-- Migration impact: DSL, plan, checkpoint, audit, and usage records.
-- Tests: each bound, parallel reservation, unknown pricing, custom pricing,
-  retries, repair/replay, and off-by-one behavior.
-- Examples: budget termination and usage inspection.
-- Live evidence: one low request/token ceiling OpenAI scenario.
-- Documentation: enforceable versus estimated limits.
-- Final disposition: pending implementation evidence.
+- Current behavior: the compiled plan carries optional run-wide request, turn,
+  tool, token, wall-time, process-output, artifact, task, expansion, loop, and
+  monetary limits.
+- Security and durability: SQLite atomically reserves known units before fresh
+  provider, tool, process, or artifact dispatch. Actual usage is reconciled
+  afterward. The wall deadline uses the durable run creation timestamp.
+- Cost decision: token-only limits require no price. Monetary limits require
+  authoritative provider cost or explicit versioned integer custom pricing
+  keyed by `provider/model`; unknown cost is exposed and never fabricated.
+- Migration: schema 15 adds run budget and idempotent reservation records.
+  Budget snapshots are present in checkpoints, audit, and CLI inspection.
+- Evidence: compiler graph-count/custom-pricing tests, every dynamic dimension
+  and exact-bound test, parallel reservation race test, actual-overrun runtime
+  test, provider/tool/process/artifact pre-dispatch termination tests, wall
+  cancellation and paused-resume tests, pricing-class reconciliation,
+  retry/repair/replay accounting, public example, acceptance scenario 46, and
+  the complete 12-stage deterministic gate.
+- Live evidence: `cargo xtask resource-budget-live-openai` passed through the
+  packaged CLI with one `gpt-5.6` dispatch, 18 input tokens, 5 output tokens,
+  no tool calls, and a durable denial before attempted request 2.
+- Final disposition: implemented and verified.
 
 ### OCI-001: Complete container execution
 

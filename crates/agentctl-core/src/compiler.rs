@@ -8,8 +8,8 @@ use crate::PLAN_FORMAT_VERSION;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::dsl::{
     ActionKind, ContainerIsolationDefinition, EffectClass, Idempotency, JsonMap,
-    MAX_EXPANSION_ITEMS, MAX_LOOP_ITERATIONS, ProcessIsolation, ProviderKind, RetryDefinition,
-    TaskDefinition, ToolKind, Workflow,
+    MAX_EXPANSION_ITEMS, MAX_LOOP_ITERATIONS, PricingDefinition, ProcessIsolation, ProviderKind,
+    ResourceBudgetDefinition, RetryDefinition, TaskDefinition, ToolKind, Workflow,
 };
 use crate::memory::{MAX_EMBEDDING_DIMENSIONS, MIN_EMBEDDING_DIMENSIONS};
 use crate::template::{TemplateError, referenced_tasks, validate_expression};
@@ -131,6 +131,19 @@ pub struct CompiledPlan {
     pub tasks: BTreeMap<String, CompiledTask>,
     pub predictability: PlanPredictability,
     pub requirements: PlanRequirements,
+    #[serde(default)]
+    pub budget: BudgetPlan,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetPlan {
+    pub limits: ResourceBudgetDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<PricingDefinition>,
+    pub planned_tasks: u64,
+    pub planned_expansion_items: u64,
+    pub planned_loop_iterations: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1334,6 +1347,10 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
     })?;
     let workflow_digest = sha256(&workflow_json);
     let requirements = plan_requirements(&workflow, &tasks);
+    let budget = compile_budget_plan(&workflow, &tasks, file, &mut diagnostics);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
     let plan_seed = serde_json::to_vec(&(
         &workflow.metadata.name,
         &workflow_digest,
@@ -1341,6 +1358,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         workflow.spec.runtime.max_concurrency,
         &tasks,
         &requirements,
+        &budget,
     ))
     .map_err(|error| {
         vec![Diagnostic::error(
@@ -1361,11 +1379,89 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
         tasks,
         predictability,
         requirements,
+        budget,
     })
 }
 
 const fn default_max_concurrency() -> usize {
     1
+}
+
+fn compile_budget_plan(
+    workflow: &Workflow,
+    tasks: &BTreeMap<String, CompiledTask>,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> BudgetPlan {
+    let planned_tasks = u64::try_from(tasks.len()).unwrap_or(u64::MAX);
+    let loop_parents = tasks
+        .values()
+        .filter_map(|task| match &task.uses {
+            TaskUse::LoopAggregate(loop_aggregate) => {
+                Some(u64::try_from(loop_aggregate.children.len()).unwrap_or(u64::MAX))
+            }
+            _ => None,
+        })
+        .sum::<u64>();
+    let loop_children = tasks
+        .values()
+        .filter(|task| {
+            task.expansion.as_ref().is_some_and(|expansion| {
+                tasks
+                    .get(&expansion.parent)
+                    .is_some_and(|parent| matches!(parent.uses, TaskUse::LoopAggregate(_)))
+            })
+        })
+        .count();
+    let planned_loop_iterations = loop_parents;
+    let planned_expansion_items = u64::try_from(
+        tasks
+            .values()
+            .filter(|task| task.expansion.is_some())
+            .count()
+            .saturating_sub(loop_children),
+    )
+    .unwrap_or(u64::MAX);
+
+    for (name, actual, limit) in [
+        (
+            "maxTasks",
+            planned_tasks,
+            workflow.spec.runtime.budgets.max_tasks,
+        ),
+        (
+            "maxExpansionItems",
+            planned_expansion_items,
+            workflow.spec.runtime.budgets.max_expansion_items,
+        ),
+        (
+            "maxLoopIterations",
+            planned_loop_iterations,
+            workflow.spec.runtime.budgets.max_loop_iterations,
+        ),
+    ] {
+        if limit.is_some_and(|limit| actual > limit) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SchemaViolation,
+                    file,
+                    format!(
+                        "compiled workflow requires {actual} items but runtime.budgets.{name} permits {}",
+                        limit.unwrap_or_default()
+                    ),
+                )
+                .with_path(format!("spec.runtime.budgets.{name}")),
+            );
+        }
+    }
+
+    BudgetPlan {
+        limits: workflow.spec.runtime.budgets.clone(),
+        pricing: workflow.spec.runtime.pricing.clone(),
+        planned_tasks,
+        planned_expansion_items,
+        planned_loop_iterations,
+    }
 }
 
 fn validate_memory_configuration(
@@ -2332,11 +2428,34 @@ fn validate_agents(workflow: &Workflow, file: &str, diagnostics: &mut Vec<Diagno
                 required.insert(ProviderCapability::ReasoningMode);
             }
         }
-        if agent
+        let agent_cost_limit = agent
             .usage_limit
             .as_ref()
-            .is_some_and(|limit| limit.max_cost_usd.is_some())
+            .is_some_and(|limit| limit.max_cost_usd.is_some());
+        let run_cost_limit = workflow.spec.runtime.budgets.max_cost_microusd.is_some();
+        let pricing_key = format!("{}/{}", agent.provider, agent.model);
+        let configured_pricing = workflow
+            .spec
+            .runtime
+            .pricing
+            .as_ref()
+            .is_some_and(|pricing| pricing.models.contains_key(&pricing_key));
+        if (agent_cost_limit || run_cost_limit)
+            && !configured_pricing
+            && workflow.spec.runtime.pricing.is_some()
         {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::MissingReference,
+                    file,
+                    format!(
+                        "cost-limited agent `{name}` has no runtime.pricing.models entry `{pricing_key}`"
+                    ),
+                )
+                .with_path(format!("spec.agents.{name}.model")),
+            );
+        }
+        if agent_cost_limit && workflow.spec.runtime.pricing.is_none() {
             required.insert(ProviderCapability::CostMetadata);
         }
         if agent.provider_options.contains_key("reasoningContext") {
@@ -2805,6 +2924,80 @@ spec:
         );
         let plan = compile(&workflow, "fixture.yaml").expect("compiles");
         assert_eq!(plan.order, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn resource_budget_plan_counts_expansion_and_loop_bounds() {
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: budget-plan }
+spec:
+  runtime:
+    budgets:
+      maxTasks: 7
+      maxExpansionItems: 2
+      maxLoopIterations: 3
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: expanded
+      uses: action:assign
+      foreach: { items: [left, right] }
+    - id: repeated
+      uses: action:assign
+      loop:
+        while: "${{ vars.loopIndex < 0 }}"
+        maxIterations: 3
+"#;
+        let plan = compile(&parse(source), "fixture.yaml").expect("budgeted plan");
+        assert_eq!(plan.budget.planned_tasks, 7);
+        assert_eq!(plan.budget.planned_expansion_items, 2);
+        assert_eq!(plan.budget.planned_loop_iterations, 3);
+        let diagnostics = compile(
+            &parse(&source.replace("maxExpansionItems: 2", "maxExpansionItems: 1")),
+            "fixture.yaml",
+        )
+        .expect_err("expansion budget must fail");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref() == Some("spec.runtime.budgets.maxExpansionItems")
+                && diagnostic.message.contains("requires 2 items")
+        }));
+    }
+
+    #[test]
+    fn versioned_custom_pricing_enables_cost_limits() {
+        let workflow = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: priced }
+spec:
+  runtime:
+    budgets: { maxCostMicrousd: 100 }
+    pricing:
+      version: test-2026-07
+      models:
+        fake/tiny:
+          inputMicrousdPerMillionTokens: 1000000
+          outputMicrousdPerMillionTokens: 2000000
+  providers:
+    fake: { kind: fake }
+  agents:
+    worker:
+      provider: fake
+      model: tiny
+      instructions: bounded
+      usageLimit: { maxCostUsd: 0.0001 }
+  tasks:
+    - { id: work, uses: "agent:worker" }
+"#,
+        );
+        let plan = compile(&workflow, "fixture.yaml").expect("custom pricing compiles");
+        assert_eq!(
+            plan.budget.pricing.as_ref().expect("pricing").version,
+            "test-2026-07"
+        );
     }
 
     #[test]

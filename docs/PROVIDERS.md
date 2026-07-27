@@ -40,9 +40,20 @@ cancellation. See [Secret references](guides/SECRET_REFERENCES.md).
 
 `cargo xtask examples-verify-live-openai` is the broader opt-in gate. It runs every public OpenAI workflow plus the canonical two-agent repair. The repaired task starts a new Responses session and uses `previous_response_id` only between its own new turns. The failed source task's response ID, pending tool call, and reasoning state are not copied. Validated task output is the cross-run dataflow boundary.
 
+`cargo xtask resource-budget-live-openai` is the narrow resource-control gate. It
+allows one real `gpt-5.6` dispatch, durably denies the second requested model
+effect, and verifies the provider-request ledger through public inspection.
+
 OpenAI provider options are an allowlisted map (`store`, `reasoningContext`, `promptCacheMode`, `promptCacheTtl`, `parallelToolCalls`, and `safetyIdentifier`). Unknown options or invalid values fail compilation. Tool-using OpenAI and Azure OpenAI agents may not set `store: false`: stateless continuation would require replaying returned response/reasoning/function items, which this release does not implement. One-turn agents without tools may disable storage. `stream: true` selects typed Responses SSE for fake, OpenAI, and Azure OpenAI agents. Anthropic and Google streaming fail capability negotiation. Programmatic tool calling remains unsupported and fails rather than being ignored. Parallel function calls are parsed and correlated, but one agent task executes them serially in response order. Independent workflow tasks can use bounded parallel scheduling.
 
-Cost is not inferred when a provider returns no reliable cost metadata. A workflow requesting `maxCostUsd` therefore fails capability negotiation; input/output token limits are enforced from native usage. Retry is limited to explicit task bounds and definitive retryable HTTP responses. Timeout, cancellation, or a transport loss after dispatch is considered ambiguous and is not automatically reissued.
+Cost is not inferred when a provider returns no reliable cost metadata.
+Agent `maxCostUsd` and run `maxCostMicrousd` can use explicit versioned custom
+pricing keyed by `provider/model`; otherwise a requested monetary limit fails
+capability negotiation. Token-only run budgets remain enforceable from native
+usage without pricing. Retry is limited to explicit task bounds and definitive
+retryable HTTP responses. Timeout, cancellation, or a transport loss after
+dispatch is considered ambiguous and is not automatically reissued. See
+[Resource and cost budgets](guides/RESOURCE_BUDGETS.md).
 
 Streaming persists each accepted fragment before reading more transport data.
 Records are bounded and redacted, while the terminal response still follows

@@ -74,6 +74,9 @@ For deterministic dependency locking and publisher policy, use
 [bounded process extension protocol](docs/EXTENSIONS.md).
 For typed cross-run text, vector, and hybrid retrieval with explicit promotion,
 use [State and memory](docs/memory.md).
+For durable run-wide request, token, tool, wall-time, process-output, artifact,
+graph-size, and optional monetary limits, use [Resource and cost
+budgets](docs/guides/RESOURCE_BUDGETS.md).
 
 ## Safety boundary
 
@@ -83,6 +86,8 @@ use [State and memory](docs/memory.md).
   and explicit unsigned-process policy run before pack actions are loaded.
 - Every non-pure operation is recorded before execution. A crash after an at-most-once effect starts is reported as uncertain and is never silently repeated.
 - Model turns, output tokens, tool calls, retries, and time are bounded.
+  Workflows can also set durable run-wide request, token, tool, wall-time,
+  process-output, artifact, graph-size, and monetary ceilings.
 - Shell stdout/stderr capture is bounded, concurrently drained, and terminated/reaped on output, timeout, or cancellation limits.
 - Check mode predicts deterministic actions; it does not claim to predict models or remote systems.
 - The process policy is an allowlist, not an operating-system sandbox.

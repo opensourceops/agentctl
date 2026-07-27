@@ -22,15 +22,19 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
   digest-pinned Docker/Podman image and runs networkless, read-only, non-root,
   capability-dropped, and memory/CPU/PID/output/time bounded without host
   fallback.
+- Optional run-wide budgets enforce provider requests, turns, tool calls,
+  input/output/total tokens, durable wall time, captured process output,
+  ingested artifact bytes, compiled task/expansion/loop counts, and cost when
+  explicit versioned pricing is configured.
 - Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
 ## Remaining framework-completeness work
 
 These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
 
-- enforceable run-wide usage, resource, and cost budgets;
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
-- reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
+- provider-maintained pricing discovery. Monetary limits require authoritative
+  response cost or operator-supplied versioned custom pricing.
 
 ## Explicit non-goals
 
@@ -46,6 +50,10 @@ These core workstreams are tracked in the framework limitation burn-down and are
 
 - The document API is `v1alpha1`; pin the binary/image version and validate before upgrading.
 - Parallel scheduling is local to one run and process, bounded at 64 tasks, and defaults to sequential execution. Working-memory conflicts fail compilation, but tasks that target the same external resource still require explicit `needs` ordering or that system's concurrency controls. Separate runs also require external overlap controls when effects must not overlap.
+- Run budgets are optional. Provider input tokens and future token classes are
+  estimated conservatively before dispatch; actual provider usage is
+  reconciled after the response. Custom pricing is operator-maintained and is
+  not automatically refreshed from public price pages.
 - Foreach and matrix expansion accepts only static workflow values, requires
   `maxItems`, and is capped at 256 children. Runtime or model-controlled graph
   growth is not supported.

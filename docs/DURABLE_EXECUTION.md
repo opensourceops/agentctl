@@ -2,6 +2,14 @@
 
 SQLite is the local history and correctness boundary. Run, task, effect, approval, checkpoint, audit, provider-session, tool-call, and long-term-memory records are schema-versioned. Future database, runtime, plan, effect, or checkpoint versions fail explicitly instead of being ignored.
 
+Each run also owns a durable resource ledger. Known provider, tool, process,
+and artifact units are atomically reserved before fresh dispatch, then replaced
+with actual usage. Parallel tasks share the same SQLite coordinator. The
+wall-time deadline is derived from run creation, so pause and resume cannot
+reset it. Recorded replay and reused retry or repair boundaries dispatch
+nothing and consume no fresh effect units. See [Resource and cost
+budgets](guides/RESOURCE_BUDGETS.md).
+
 ## Operations
 
 - Resume continues the same run from durable task state. Confirmed effects are reused. A requested-but-not-started effect may execute; a started-but-unconfirmed effect fails as uncertain.
