@@ -1,4 +1,6 @@
 /schemas/workflow.schema.json text eol=lf
 /docs/generated/CLI.md text eol=lf
 *.pack.yaml text eol=lf
+*.pack text eol=lf
+*.pack.lock text eol=lf
 /crates/agentctl-cli/tests/fixtures/sigstore/cosign-v3-blob.txt text eol=lf
