@@ -6118,6 +6118,7 @@ spec:
       with: { prompt: hello }
 "#;
 
+#[cfg(not(windows))]
 const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
 metadata: { name: terminal-retry }
@@ -6131,6 +6132,34 @@ spec:
       kind: builtin.shell.exec
       command: /bin/sh
       args: [-c, "if [ -f .terminal-retry-ready ]; then printf recovered; else touch .terminal-retry-ready; exit 1; fi"]
+      timeoutSeconds: 5
+  tasks:
+    - id: first
+      uses: action:assign
+      with: { value: durable }
+    - id: work
+      uses: action:recover
+      needs: [first]
+    - id: third
+      uses: action:assign
+      needs: [work]
+      with: { value: recovered }
+"#;
+
+#[cfg(windows)]
+const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: terminal-retry }
+spec:
+  policy:
+    processAllowlist: [cmd.exe]
+    approval: never
+  actions:
+    assign: { kind: builtin.assign }
+    recover:
+      kind: builtin.shell.exec
+      command: cmd.exe
+      args: ["/D", "/C", "if exist .terminal-retry-ready (echo recovered) else (type nul > .terminal-retry-ready & exit /b 1)"]
       timeoutSeconds: 5
   tasks:
     - id: first
