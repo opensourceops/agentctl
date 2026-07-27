@@ -2381,23 +2381,6 @@ fn validate_agents(workflow: &Workflow, file: &str, diagnostics: &mut Vec<Diagno
             file,
             diagnostics,
         );
-        if matches!(
-            provider.kind,
-            ProviderKind::Openai | ProviderKind::AzureOpenai
-        ) && !agent.tools.is_empty()
-            && agent.provider_options.get("store") == Some(&Value::Bool(false))
-        {
-            diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::UnsupportedCapability,
-                    file,
-                    format!(
-                        "provider option `store: false` is unsupported for tool-using agent `{name}` because stateless continuation replay is not implemented"
-                    ),
-                )
-                .with_path(format!("spec.agents.{name}.providerOptions.store")),
-            );
-        }
         let mut required = BTreeSet::from([
             ProviderCapability::Text,
             ProviderCapability::Usage,
@@ -3821,7 +3804,7 @@ spec:
     }
 
     #[test]
-    fn rejects_stateless_openai_continuation_for_tool_using_agents() {
+    fn accepts_stateless_openai_continuation_for_tool_using_agents() {
         let workflow = parse(
             r#"
 apiVersion: agentctl.dev/v1alpha1
@@ -3833,8 +3816,16 @@ spec:
     echo:
       kind: builtin.echo
       description: echo
-      inputSchema: { type: object }
-      outputSchema: { type: object }
+      inputSchema:
+        type: object
+        properties: {}
+        required: []
+        additionalProperties: false
+      outputSchema:
+        type: object
+        properties: {}
+        required: []
+        additionalProperties: false
       capability: internal
       risk: low
       effectClass: pure
@@ -3852,11 +3843,9 @@ spec:
   tasks: [{ id: work, uses: "agent:worker" }]
 "#,
         );
-        let diagnostics = compile(&workflow, "fixture.yaml").expect_err("must reject");
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::UnsupportedCapability
-                && diagnostic.message.contains("stateless continuation replay")
-        }));
+        let plan = compile(&workflow, "fixture.yaml").expect("stateless tool workflow compiles");
+        assert_eq!(plan.workflow_name, "stateless-tools");
+        assert_eq!(plan.requirements.providers.len(), 1);
     }
 
     #[test]

@@ -32,7 +32,10 @@ Retry and repair planning are effect-free. A source task is reusable only when i
 
 Cancellation is both an injected token and a durable run flag. CLI SIGINT and SIGTERM cancel in-flight async calls and return exit `130`; `agentctl cancel` records a request for another process to observe. An overall CLI deadline can be set with `--timeout-seconds`, in addition to task/tool/provider/protocol bounds. A provider, tool, process, MCP, or A2A timeout/cancellation/transport loss after dispatch marks the effect `uncertain`; resume refuses to guess and requires reconciliation. An applied reconciliation supplies a validated recorded result. A not-applied or compensated reconciliation resumes with a fresh task and effect attempt.
 
-A repaired agent task starts a fresh provider session. Source `previous_response_id`, incomplete turns, pending tool calls, and reasoning state are not copied. Validated task output and reconstructed memory are the only cross-task/cross-run dataflow.
+A repaired agent task starts a fresh provider session. Source
+`previous_response_id`, stateless continuation items, incomplete turns, pending
+tool calls, and reasoning state are not copied. Validated task output and
+reconstructed memory are the only cross-task/cross-run dataflow.
 
 Clock and ID generation are injected; test providers/tools/protocol handlers
 are injected. Ready tasks execute in bounded stable batches. Each reads a

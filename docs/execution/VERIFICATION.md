@@ -32,9 +32,39 @@ programmatic tool calling remains rejected.
 
 The canonical `verify`, credential-free acceptance, container acceptance, and packaging gates use no provider credentials. The final live gate was separately bounded and authorized.
 
+## Stateless OpenAI follow-up
+
+On 2026-07-27, the packaged macOS arm64 CLI ran the canonical GPT-5.6 tool
+workflow with `store: false`. Run
+`run-019fa30a-0b7d-79b2-84de-0ee48fc369c7` completed two model requests, one
+model-selected `read_fixture` call, ordered client-held tool-call/tool-result
+continuation, the exact verdict, and the artifact write. Usage was 530 input
+tokens and 33 output tokens. The model returned no reasoning item for this
+simple turn; deterministic adapter tests prove that any returned reasoning
+item must contain and replay `encrypted_content`.
+
+With `OPENAI_API_KEY` removed, replay
+`replay-019fa30a-7e3e-73b1-ba5c-5dd293dbbf33` reproduced the output with zero
+effects, tool calls, and provider sessions. Exact ignored evidence is retained
+at `.release-evidence/openai-stateless-2026-07-27/`, and a credential-value
+scan passed.
+
+The first live execution also succeeded but exposed an over-strict evidence
+assertion that required a reasoning item even when the model returned none.
+The gate now requires `store: false` on every model effect, a conversation
+continuation with correlated tool call and result, and encrypted content on
+every reasoning item if present. It was not rerun in the container after that
+assertion-only correction to avoid two unnecessary provider requests. This
+follow-up used four live requests total, 1,060 input tokens, and 66 output
+tokens.
+
 ## Live OpenAI evidence
 
-Scenario: `examples/openai-live/workflow.yaml`, model `gpt-5.6`, Responses API, low reasoning, stored response, current-turn reasoning context, implicit 30-minute cache mode, parallel tool calls disabled.
+The section below records the earlier 2026-07-22 stateful evidence. At that
+time the canonical workflow used a stored response; it now uses the stateless
+contract documented above.
+
+Scenario at evidence time: `examples/openai-live/workflow.yaml`, model `gpt-5.6`, Responses API, low reasoning, stored response, current-turn reasoning context, implicit 30-minute cache mode, parallel tool calls disabled.
 
 The public path was YAML parse/schema → compiler/plan → capability and policy checks → SQLite run/effect creation → Responses API → strict `read_fixture` function call → tool input validation → workspace policy → real read → output validation → `previous_response_id` continuation → exact final token assertion → atomic report write → checkpoints/audit/traces → CLI result/inspect.
 

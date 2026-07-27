@@ -57,7 +57,7 @@ complete, every entry must have exactly one final disposition:
 | TRUST-001 | Pack integrity and signing | verified | implemented |
 | EXT-001 | Plugin strategy | verified | redesigned |
 | MEM-001 | Semantic memory | verified | implemented |
-| PROV-001 | Stateless provider continuation | open | implemented |
+| PROV-001 | Stateless provider continuation | verified | implemented |
 | OCI-001 | Container execution | in progress | implemented |
 | XPLAT-001 | Cross-platform hosted evidence | open | externally blocked |
 | EVENT-001 | Event triggers and calendars | verified | removed from supported surface |
@@ -625,22 +625,43 @@ complete, every entry must have exactly one final disposition:
 
 ### PROV-001: Stateless tool continuation
 
-- Current behavior: OpenAI/Azure tool agents reject `store: false`.
-- User impact: privacy-sensitive users cannot opt out of stored provider
-  responses for tool loops.
-- Security or durability impact: pretending support would lose reasoning and
-  function-call items needed for correct continuation.
+- Current behavior: OpenAI/Azure tool agents support `store: false` with
+  client-held, provider-neutral continuation.
+- User impact: privacy-sensitive users can opt out of stored provider responses
+  without losing tool-loop continuation.
+- Security or durability impact: reasoning and function-call items are
+  retained in order, and missing encrypted reasoning content fails closed.
 - Product decision: persist provider-neutral opaque returned items needed for
   stateless continuation and replay them on the next request.
 - Required implementation: versioned continuation items, provider mapping,
   size/redaction bounds, encryption under ENC-001, and capability negotiation.
-- Migration impact: provider continuation format.
+- Migration impact: the existing provider-session format version 1 already
+  represents provider-neutral conversations, so no database migration was
+  required.
 - Tests: multiple tools, reasoning items, cancellation, resume, repair session
   freshness, encrypted persistence, and malformed items.
 - Examples: stateless OpenAI tool workflow.
 - Live evidence: one packaged `store: false` OpenAI tool run.
 - Documentation: stateful versus stateless continuation.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified. The OpenAI/Azure adapter
+  automatically requests `reasoning.encrypted_content`, never sends
+  `previous_response_id` in stateless mode, preserves returned item order and
+  multiple call IDs, and rejects malformed unencrypted reasoning items.
+  The 8 MiB stateless-input cap, 4 MiB provider-response cap, secret scrubbing,
+  protected model-effect results, and protected provider-session columns
+  supply the size, redaction, and ENC-001 boundaries.
+  Compiler/provider/runtime tests cover
+  negotiation, multiple calls, reasoning items, cancellation, malformed
+  items, encrypted persistence, repair freshness, approval pause/resume, and
+  effect-free replay. Credential-free acceptance scenario 4 compiles the
+  stateless tool contract. The packaged GPT-5.6 run
+  `run-019fa30a-0b7d-79b2-84de-0ee48fc369c7` completed two stateless model
+  requests, one real tool call, and ordered call/result replay with 530 input
+  and 33 output tokens. Credential-free replay
+  `replay-019fa30a-7e3e-73b1-ba5c-5dd293dbbf33` produced identical output with
+  zero effects, tool calls, and provider sessions. Ignored exact evidence is
+  retained under `.release-evidence/openai-stateless-2026-07-27/`; the
+  credential value is absent.
 
 ## Security and operations
 

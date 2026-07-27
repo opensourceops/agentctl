@@ -21,6 +21,7 @@ use url::Url;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_STREAM_BYTES: usize = 8 * 1024 * 1024;
+const MAX_OPENAI_STATELESS_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct LocalHashEmbeddingProvider;
@@ -372,7 +373,7 @@ impl ModelProvider for OpenAiProvider {
             self.config.transport.max_response_bytes,
         )
         .await?;
-        parse_openai(response)
+        parse_openai(response, request)
     }
 
     async fn complete_streaming(
@@ -428,11 +429,12 @@ impl ModelProvider for OpenAiProvider {
             self.config.transport.max_response_bytes,
         )
         .await?;
-        parse_openai(response)
+        parse_openai(response, request)
     }
 }
 
 fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
+    let store = openai_store_enabled(request);
     let mut body = Map::from_iter([
         ("model".to_owned(), Value::String(request.model.clone())),
         (
@@ -443,18 +445,15 @@ fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
             "max_output_tokens".to_owned(),
             Value::from(request.max_output_tokens),
         ),
-        (
-            "store".to_owned(),
-            Value::Bool(
-                request
-                    .provider_options
-                    .get("store")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
-            ),
-        ),
+        ("store".to_owned(), Value::Bool(store)),
         ("input".to_owned(), Value::Array(openai_input(request)?)),
     ]);
+    if !store {
+        body.insert(
+            "include".to_owned(),
+            serde_json::json!(["reasoning.encrypted_content"]),
+        );
+    }
     if !request.tools.is_empty() {
         body.insert(
             "tools".to_owned(),
@@ -543,7 +542,26 @@ fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
             Value::String(identifier.to_owned()),
         );
     }
-    Ok(Value::Object(body))
+    let body = Value::Object(body);
+    if !store {
+        let size = serde_json::to_vec(&body)
+            .map_err(|error| ProviderError::Malformed(error.to_string()))?
+            .len();
+        if size > MAX_OPENAI_STATELESS_INPUT_BYTES {
+            return Err(ProviderError::Malformed(format!(
+                "stateless OpenAI input exceeds {MAX_OPENAI_STATELESS_INPUT_BYTES} bytes"
+            )));
+        }
+    }
+    Ok(body)
+}
+
+fn openai_store_enabled(request: &ProviderRequest) -> bool {
+    request
+        .provider_options
+        .get("store")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> {
@@ -567,19 +585,20 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
                             "type": "input_text",
                             "text": value
                         })),
-                        ContentBlock::ToolResult { id, output: value, .. } => output.push(
-                            serde_json::json!({
+                        ContentBlock::ToolResult {
+                            id, output: value, ..
+                        } => {
+                            flush_openai_text(&mut output, "user", &mut text);
+                            output.push(serde_json::json!({
                                 "type": "function_call_output",
                                 "call_id": id,
                                 "output": serde_json::to_string(value).map_err(|error| ProviderError::Malformed(error.to_string()))?
-                            }),
-                        ),
+                            }));
+                        }
                         ContentBlock::ToolCall { .. } | ContentBlock::OpaqueReasoning { .. } => {}
                     }
                 }
-                if !text.is_empty() {
-                    output.push(serde_json::json!({"role": "user", "content": text}));
-                }
+                flush_openai_text(&mut output, "user", &mut text);
             }
             Message::Assistant(blocks) if !only_latest_tool_results => {
                 let mut text = Vec::new();
@@ -591,19 +610,23 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
                         })),
                         ContentBlock::ToolCall {
                             id, name, input, ..
-                        } => output.push(serde_json::json!({
-                            "type": "function_call",
-                            "call_id": id,
-                            "name": name,
-                            "arguments": serde_json::to_string(input).map_err(|error| ProviderError::Malformed(error.to_string()))?
-                        })),
-                        ContentBlock::OpaqueReasoning { value } => output.push(value.clone()),
+                        } => {
+                            flush_openai_text(&mut output, "assistant", &mut text);
+                            output.push(serde_json::json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": name,
+                                "arguments": serde_json::to_string(input).map_err(|error| ProviderError::Malformed(error.to_string()))?
+                            }));
+                        }
+                        ContentBlock::OpaqueReasoning { value } => {
+                            flush_openai_text(&mut output, "assistant", &mut text);
+                            output.push(value.clone());
+                        }
                         ContentBlock::ToolResult { .. } => {}
                     }
                 }
-                if !text.is_empty() {
-                    output.push(serde_json::json!({"role": "assistant", "content": text}));
-                }
+                flush_openai_text(&mut output, "assistant", &mut text);
             }
             Message::Assistant(_) => {}
         }
@@ -611,7 +634,16 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
     Ok(output)
 }
 
-fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
+fn flush_openai_text(output: &mut Vec<Value>, role: &str, text: &mut Vec<Value>) {
+    if !text.is_empty() {
+        output.push(serde_json::json!({"role": role, "content": std::mem::take(text)}));
+    }
+}
+
+fn parse_openai(
+    value: Value,
+    request: &ProviderRequest,
+) -> Result<ProviderResponse, ProviderError> {
     let response_id = value
         .get("id")
         .and_then(Value::as_str)
@@ -673,9 +705,21 @@ fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
                     provider_metadata: None,
                 });
             }
-            Some("reasoning") => assistant_content.push(ContentBlock::OpaqueReasoning {
-                value: item.clone(),
-            }),
+            Some("reasoning") => {
+                if !openai_store_enabled(request)
+                    && item
+                        .get("encrypted_content")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
+                    return Err(ProviderError::Malformed(
+                        "stateless reasoning item missing encrypted_content".to_owned(),
+                    ));
+                }
+                assistant_content.push(ContentBlock::OpaqueReasoning {
+                    value: item.clone(),
+                });
+            }
             _ => {}
         }
     }
@@ -689,10 +733,17 @@ fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
         FinishReason::Complete
     };
     let usage = value.get("usage").cloned().unwrap_or(Value::Null);
-    Ok(ProviderResponse {
-        continuation: response_id
+    let continuation = if openai_store_enabled(request) {
+        response_id
             .clone()
-            .map(ContinuationState::OpenaiPreviousResponse),
+            .map(ContinuationState::OpenaiPreviousResponse)
+    } else {
+        let mut history = request.messages.clone();
+        history.push(Message::Assistant(assistant_content.clone()));
+        Some(ContinuationState::Conversation(history))
+    };
+    Ok(ProviderResponse {
+        continuation,
         response_id,
         text,
         tool_calls,
@@ -1809,6 +1860,10 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
         ]);
         let body = openai_request(&request).expect("request mapping");
         assert_eq!(body["store"], false);
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
         assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["reasoning"]["effort"], "max");
         assert_eq!(body["reasoning"]["mode"], "pro");
@@ -1821,14 +1876,18 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
 
     #[test]
     fn openai_preserves_multiple_function_call_ids() {
-        let response = parse_openai(serde_json::json!({
-            "id": "resp_tools",
-            "status": "completed",
-            "output": [
-                {"type": "function_call", "call_id": "call-a", "name": "echo", "arguments": "{\"text\":\"a\"}"},
-                {"type": "function_call", "call_id": "call-b", "name": "echo", "arguments": "{\"text\":\"b\"}"}
-            ]
-        }))
+        let request = request();
+        let response = parse_openai(
+            serde_json::json!({
+                "id": "resp_tools",
+                "status": "completed",
+                "output": [
+                    {"type": "function_call", "call_id": "call-a", "name": "echo", "arguments": "{\"text\":\"a\"}"},
+                    {"type": "function_call", "call_id": "call-b", "name": "echo", "arguments": "{\"text\":\"b\"}"}
+                ]
+            }),
+            &request,
+        )
         .expect("valid multiple function calls");
         assert_eq!(response.finish_reason, FinishReason::ToolCalls);
         assert_eq!(response.tool_calls.len(), 2);
@@ -1840,6 +1899,121 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
                 "resp_tools".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn openai_replays_stateless_reasoning_and_tool_items_in_order() {
+        let mut first = request();
+        first
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        let response = parse_openai(
+            serde_json::json!({
+                "id": "resp_stateless",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "encrypted_content": "encrypted-reasoning",
+                        "summary": []
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-stateless",
+                        "name": "echo",
+                        "arguments": "{\"text\":\"hello\"}"
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-stateless-2",
+                        "name": "echo",
+                        "arguments": "{\"text\":\"again\"}"
+                    }
+                ]
+            }),
+            &first,
+        )
+        .expect("stateless response");
+        assert!(matches!(
+            response.continuation,
+            Some(ContinuationState::Conversation(_))
+        ));
+
+        let mut second = first.clone();
+        second
+            .messages
+            .push(Message::Assistant(response.assistant_content.clone()));
+        second.messages.push(Message::User(vec![
+            ContentBlock::ToolResult {
+                id: "call-stateless".to_owned(),
+                output: serde_json::json!({"text": "hello"}),
+                is_error: false,
+            },
+            ContentBlock::ToolResult {
+                id: "call-stateless-2".to_owned(),
+                output: serde_json::json!({"text": "again"}),
+                is_error: false,
+            },
+        ]));
+        second.continuation = response.continuation;
+        let body = openai_request(&second).expect("stateless continuation request");
+        assert_eq!(body["store"], false);
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        assert!(body.get("previous_response_id").is_none());
+        let input = body["input"].as_array().expect("input items");
+        assert_eq!(input.len(), 6);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["encrypted_content"], "encrypted-reasoning");
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["call_id"], "call-stateless");
+        assert_eq!(input[3]["type"], "function_call");
+        assert_eq!(input[3]["call_id"], "call-stateless-2");
+        assert_eq!(input[4]["type"], "function_call_output");
+        assert_eq!(input[4]["call_id"], "call-stateless");
+        assert_eq!(input[5]["type"], "function_call_output");
+        assert_eq!(input[5]["call_id"], "call-stateless-2");
+    }
+
+    #[test]
+    fn openai_rejects_stateless_reasoning_without_encrypted_content() {
+        let mut request = request();
+        request
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        let result = parse_openai(
+            serde_json::json!({
+                "id": "resp_stateless",
+                "status": "completed",
+                "output": [{"type": "reasoning", "id": "rs_1", "summary": []}]
+            }),
+            &request,
+        );
+        assert!(matches!(
+            result,
+            Err(ProviderError::Malformed(message))
+                if message.contains("missing encrypted_content")
+        ));
+    }
+
+    #[test]
+    fn openai_bounds_stateless_continuation_input() {
+        let mut request = request();
+        request
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        request.messages = vec![Message::User(vec![ContentBlock::Text {
+            text: "x".repeat(MAX_OPENAI_STATELESS_INPUT_BYTES),
+        }])];
+        assert!(matches!(
+            openai_request(&request),
+            Err(ProviderError::Malformed(message))
+                if message.contains("stateless OpenAI input exceeds")
+        ));
     }
 
     #[tokio::test]

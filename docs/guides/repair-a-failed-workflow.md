@@ -155,7 +155,11 @@ agentctl effects --db .agentctl/runtime.db reconcile EFFECT_ID \
 
 Use `--status applied --result-file result.json` when the effect happened and resume needs its externally confirmed result. Use `--status compensated --compensation-effect EFFECT_ID` only after a distinct compensation effect is confirmed. There is no generic force option and no exactly-once claim. An applied non-idempotent effect stays blocked from duplicate fresh execution until it has a valid compensation record. Normal policy, approval, timeout, retry, and cancellation behavior applies to every fresh task. See [Effect reconciliation](EFFECT_RECONCILIATION.md).
 
-A repaired agent begins a new provider session. It receives target instructions and tools plus validated upstream output and reconstructed memory. It never receives the failed source task's `previous_response_id`, incomplete turn, pending call, or reasoning state. Within the new repaired task, normal multi-turn continuation still applies.
+A repaired agent begins a new provider session. It receives target instructions
+and tools plus validated upstream output and reconstructed memory. It never
+receives the failed source task's `previous_response_id`, stateless
+continuation items, incomplete turn, pending call, or reasoning state. Within
+the new repaired task, normal multi-turn continuation still applies.
 
 ## 7. Replay the repaired result offline
 

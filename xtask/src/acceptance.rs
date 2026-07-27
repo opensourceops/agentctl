@@ -115,7 +115,10 @@ pub fn run(root: &Path) -> Result<()> {
         2,
     )?;
 
-    scenario(4, "unsupported provider options fail explicitly");
+    scenario(
+        4,
+        "unsupported provider options fail and stateless tools compile",
+    );
     for (name, option) in [
         ("stream", "stream: true"),
         ("ptc", "programmaticToolCalling: true"),
@@ -131,11 +134,10 @@ pub fn run(root: &Path) -> Result<()> {
     }
     let stateless_tools = workspace.join("openai-stateless-tools.yaml");
     write(&stateless_tools, OPENAI_STATELESS_TOOL_WORKFLOW)?;
-    expect_code(
+    successful_json(
         &binary,
         &workspace,
         &strings(["check", path(&stateless_tools)?, "--output", "json"]),
-        2,
     )?;
 
     scenario(
@@ -3392,6 +3394,66 @@ fn assert_live_evidence(value: &Value) -> Result<()> {
     );
     ensure!(array_len(value, "/data/toolCalls")? == 1);
     ensure!(array_len(value, "/data/providerSessions")? == 1);
+    ensure_eq(
+        value,
+        "/data/providerSessions/0/continuation/kind",
+        "conversation",
+    )?;
+    let call_id = string_at(value, "/data/toolCalls/0/callId")?;
+    let continuation_blocks = value
+        .pointer("/data/providerSessions/0/continuation/value")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message.get("content"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .collect::<Vec<_>>();
+    ensure!(
+        continuation_blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_call")
+                && block.get("id").and_then(Value::as_str) == Some(call_id)
+        }),
+        "stateless continuation omitted the correlated tool call"
+    );
+    ensure!(
+        continuation_blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("id").and_then(Value::as_str) == Some(call_id)
+        }),
+        "stateless continuation omitted the correlated tool result"
+    );
+    let model_effects = value
+        .pointer("/data/effects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|effect| {
+            effect.pointer("/request/effectClass") == Some(&Value::String("model".to_owned()))
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        model_effects.iter().all(|effect| {
+            effect.pointer("/request/input/providerOptions/store") == Some(&Value::Bool(false))
+        }),
+        "live model effect did not request stateless continuation"
+    );
+    let reasoning_items = model_effects
+        .iter()
+        .filter_map(|effect| effect.pointer("/result/assistantContent"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("opaque_reasoning"))
+        .collect::<Vec<_>>();
+    ensure!(
+        reasoning_items.iter().all(|block| {
+            block
+                .pointer("/value/encrypted_content")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        }),
+        "stateless continuation persisted an unencrypted reasoning item"
+    );
     ensure!(array_len(value, "/data/checkpoints")? > 0);
     ensure!(array_len(value, "/data/traces")? > 0);
     ensure_eq(value, "/data/toolCalls/0/status", "succeeded")?;
@@ -4804,8 +4866,16 @@ spec:
     echo:
       kind: builtin.echo
       description: echo
-      inputSchema: { type: object }
-      outputSchema: { type: object }
+      inputSchema:
+        type: object
+        properties: {}
+        required: []
+        additionalProperties: false
+      outputSchema:
+        type: object
+        properties: {}
+        required: []
+        additionalProperties: false
       capability: internal
       risk: low
       effectClass: pure
@@ -5230,7 +5300,7 @@ spec:
       timeoutSeconds: 45
       reasoning: { effort: low }
       providerOptions:
-        store: true
+        store: false
         reasoningContext: current_turn
         promptCacheMode: implicit
         promptCacheTtl: 30m
@@ -5246,3 +5316,75 @@ spec:
       needs: [inspect]
       with: { path: "${{ inputs.reportPath }}", content: "${{ tasks.inspect.output.text }}" }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stateless_live_evidence() -> Value {
+        serde_json::json!({
+            "data": {
+                "effects": [
+                    {
+                        "request": {
+                            "effectClass": "model",
+                            "input": {"providerOptions": {"store": false}}
+                        },
+                        "result": {
+                            "assistantContent": [
+                                {"type": "tool_call", "id": "call-1"}
+                            ]
+                        }
+                    },
+                    {
+                        "request": {
+                            "effectClass": "model",
+                            "input": {"providerOptions": {"store": false}}
+                        },
+                        "result": {
+                            "assistantContent": [
+                                {"type": "text", "text": "done"}
+                            ]
+                        }
+                    }
+                ],
+                "toolCalls": [{"callId": "call-1", "status": "succeeded"}],
+                "providerSessions": [{
+                    "continuation": {
+                        "kind": "conversation",
+                        "value": [
+                            {
+                                "role": "assistant",
+                                "content": [{"type": "tool_call", "id": "call-1"}]
+                            },
+                            {
+                                "role": "user",
+                                "content": [{"type": "tool_result", "id": "call-1"}]
+                            }
+                        ]
+                    }
+                }],
+                "checkpoints": [{}],
+                "traces": [{}]
+            }
+        })
+    }
+
+    #[test]
+    fn stateless_live_evidence_allows_a_turn_without_reasoning_items() {
+        assert_live_evidence(&stateless_live_evidence()).expect("valid stateless evidence");
+    }
+
+    #[test]
+    fn stateless_live_evidence_rejects_unencrypted_reasoning_items() {
+        let mut evidence = stateless_live_evidence();
+        evidence["data"]["effects"][0]["result"]["assistantContent"]
+            .as_array_mut()
+            .expect("assistant content")
+            .push(serde_json::json!({
+                "type": "opaque_reasoning",
+                "value": {"type": "reasoning"}
+            }));
+        assert!(assert_live_evidence(&evidence).is_err());
+    }
+}

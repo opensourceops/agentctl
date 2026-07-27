@@ -9182,7 +9182,7 @@ mod tests {
     use agentctl_core::compile;
     use agentctl_core::dsl::{ApprovalRequirement, EffectClass, Idempotency, Risk, parse_workflow};
     use agentctl_core::effect::{ActionResult, ChangeStatus};
-    use agentctl_core::provider::{ProviderRequest, ProviderResponse, ToolCall};
+    use agentctl_core::provider::{ContinuationState, ProviderRequest, ProviderResponse, ToolCall};
     use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
     use agentctl_observability::BufferedTraceSink;
     use agentctl_store::ApprovalResolution;
@@ -9979,6 +9979,105 @@ mod tests {
                         text: "done".to_owned(),
                     }],
                     continuation: None,
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::Complete,
+                })
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct StatelessToolCallingProvider(AtomicU64);
+
+    #[async_trait]
+    impl ModelProvider for StatelessToolCallingProvider {
+        fn name(&self) -> &'static str {
+            "openai"
+        }
+
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            assert_eq!(
+                request.provider_options.get("store"),
+                Some(&Value::Bool(false))
+            );
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                assert!(request.continuation.is_none());
+                let assistant_content = vec![
+                    ContentBlock::OpaqueReasoning {
+                        value: serde_json::json!({
+                            "type": "reasoning",
+                            "id": "rs-stateless",
+                            "encrypted_content": "opaque-stateless-marker",
+                            "summary": []
+                        }),
+                    },
+                    ContentBlock::ToolCall {
+                        id: "call-stateless".to_owned(),
+                        name: "echo".to_owned(),
+                        input: serde_json::json!({"text": "hello"}),
+                        provider_metadata: None,
+                    },
+                ];
+                let mut history = request.messages.clone();
+                history.push(Message::Assistant(assistant_content.clone()));
+                Ok(ProviderResponse {
+                    response_id: Some("stateless-tool-turn".to_owned()),
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call-stateless".to_owned(),
+                        name: "echo".to_owned(),
+                        input: serde_json::json!({"text": "hello"}),
+                    }],
+                    assistant_content,
+                    continuation: Some(ContinuationState::Conversation(history)),
+                    usage: Usage::default(),
+                    finish_reason: FinishReason::ToolCalls,
+                })
+            } else {
+                assert!(matches!(
+                    request.continuation,
+                    Some(ContinuationState::Conversation(_))
+                ));
+                assert_eq!(request.messages.len(), 3);
+                assert!(matches!(
+                    request.messages[1],
+                    Message::Assistant(ref blocks)
+                        if matches!(
+                            blocks.first(),
+                            Some(ContentBlock::OpaqueReasoning { value })
+                                if value["encrypted_content"] == "opaque-stateless-marker"
+                        )
+                            && matches!(
+                                blocks.get(1),
+                                Some(ContentBlock::ToolCall { id, .. })
+                                    if id == "call-stateless"
+                            )
+                ));
+                assert!(matches!(
+                    request.messages[2],
+                    Message::User(ref blocks)
+                        if matches!(
+                            blocks.first(),
+                            Some(ContentBlock::ToolResult { id, .. })
+                                if id == "call-stateless"
+                        )
+                ));
+                let assistant_content = vec![ContentBlock::Text {
+                    text: "done".to_owned(),
+                }];
+                let mut history = request.messages.clone();
+                history.push(Message::Assistant(assistant_content.clone()));
+                Ok(ProviderResponse {
+                    response_id: Some("stateless-final-turn".to_owned()),
+                    text: "done".to_owned(),
+                    tool_calls: Vec::new(),
+                    assistant_content,
+                    continuation: Some(ContinuationState::Conversation(history)),
                     usage: Usage::default(),
                     finish_reason: FinishReason::Complete,
                 })
@@ -15249,6 +15348,119 @@ spec:
                 .collect::<Vec<_>>(),
             source_tool_call_ids
         );
+    }
+
+    #[tokio::test]
+    async fn stateless_tool_continuation_survives_pause_resume_and_recorded_replay() {
+        let directory = tempdir().expect("tempdir");
+        let source = r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: stateless-resume }
+spec:
+  providers: { openai: { kind: openai } }
+  policy:
+    providers: [openai]
+    networkAllowlist: [api.openai.com]
+    approval: never
+  tools:
+    echo:
+      kind: builtin.echo
+      description: echo
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: always
+  agents:
+    worker:
+      provider: openai
+      model: gpt-5.6
+      instructions: use the tool once
+      tools: [echo]
+      maxTurns: 2
+      maxToolCalls: 1
+      providerOptions: { store: false }
+  tasks: [{ id: work, uses: "agent:worker", with: { prompt: hello } }]
+"#;
+        let (workflow, plan) = compile_fixture(source);
+        let provider = Arc::new(StatelessToolCallingProvider::default());
+        let store = SqliteStore::open_memory().expect("store");
+        let mut tool = FixtureTool::new(false);
+        tool.contract.approval = ApprovalRequirement::Always;
+        let execution_runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default()
+                .with_provider("openai", provider.clone())
+                .with_tool("echo", Arc::new(tool)),
+        );
+        let paused = execution_runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions {
+                    interactive: true,
+                    ..RunOptions::default()
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("pause before tool");
+        assert_eq!(paused.state, RunState::Paused);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        let approvals = store.pending_approvals(&paused.run_id).expect("approvals");
+        assert_eq!(approvals.len(), 1);
+        store
+            .resolve_approval(
+                &approvals[0].approval_id,
+                ApprovalResolution::Approved,
+                "tester",
+                "resume stateless turn",
+                Utc::now(),
+            )
+            .expect("approve");
+        let resumed = execution_runtime
+            .resume(
+                &paused.run_id,
+                RunOptions {
+                    interactive: true,
+                    ..RunOptions::default()
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resume");
+        assert_eq!(resumed.state, RunState::Succeeded);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 2);
+        let sessions = store.provider_sessions(&resumed.run_id).expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert!(
+            serde_json::to_string(&sessions[0].continuation)
+                .expect("continuation JSON")
+                .contains("opaque-stateless-marker")
+        );
+
+        let replay_runtime = runtime(store.clone(), directory.path()).with_registry(
+            RuntimeRegistry::default()
+                .with_provider("openai", Arc::new(PanicProvider))
+                .with_tool(
+                    "echo",
+                    Arc::new(PanicTool {
+                        contract: FixtureTool::new(false).contract,
+                    }),
+                ),
+        );
+        let replay = replay_runtime
+            .replay(&resumed.run_id)
+            .await
+            .expect("recorded replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert_eq!(replay.output, resumed.output);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

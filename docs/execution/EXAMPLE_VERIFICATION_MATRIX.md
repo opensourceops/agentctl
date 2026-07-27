@@ -18,7 +18,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/docs/scheduled-review/workflow.yaml` | Scheduled deterministic review | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | Canonical | Canonical | passed |
 | `examples/hello.playbook.yaml` | Archived TypeScript hello example | legacy | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON error | passed |
 | `examples/memory-flow/mission.playbook.yaml` | Archived TypeScript memory example | legacy | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON error | passed |
-| `examples/openai-live/workflow.yaml` | Canonical OpenAI tool continuation | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-23 | Blocked: Podman unavailable | Canonical | Canonical | live passed; container blocked |
+| `examples/openai-live/workflow.yaml` | Canonical stateless OpenAI tool continuation | OpenAI | success | 0 | 0 | N/A | Protocol mock | Passed 2026-07-27 | Stateful container passed earlier; stateless not rerun | Canonical | Canonical | packaged stateless live and keyless replay passed |
 | `examples/prompt-cache/mission.playbook.yaml` | Archived TypeScript prompt-cache example | legacy | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON error | passed |
 | `examples/prompt-file-vars/mission.playbook.yaml` | Archived TypeScript prompt-file example | legacy | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON error | passed |
 | `examples/real-autonomy/mission.playbook.yaml` | Archived TypeScript autonomy example | legacy | validation failure | 2 | 2 | Expected failure | N/A | N/A | N/A | N/A | JSON error | passed |

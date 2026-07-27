@@ -60,7 +60,7 @@ spec:
       timeoutSeconds: 45
       reasoning: { effort: low }
       providerOptions:
-        store: true
+        store: false
         reasoningContext: current_turn
         promptCacheMode: implicit
         promptCacheTtl: 30m
