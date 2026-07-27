@@ -49,6 +49,8 @@ const EXIT_PERSISTENCE: u8 = 5;
 const EXIT_REMOTE: u8 = 6;
 const EXIT_CANCELLED: u8 = 130;
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
+#[cfg(windows)]
+const WINDOWS_CLI_STACK_BYTES: usize = 8 * 1024 * 1024;
 static VERBOSE_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
 static STREAM_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
@@ -647,8 +649,27 @@ impl CliError {
     }
 }
 
+fn main() {
+    #[cfg(windows)]
+    {
+        let thread = std::thread::Builder::new()
+            .name("agentctl-main".to_owned())
+            .stack_size(WINDOWS_CLI_STACK_BYTES)
+            .spawn(run_cli)
+            .unwrap_or_else(|error| {
+                eprintln!("failed to start agentctl runtime thread: {error}");
+                std::process::exit(i32::from(EXIT_REMOTE));
+            });
+        if let Err(payload) = thread.join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+    #[cfg(not(windows))]
+    run_cli();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_cli() {
     let mut args = std::env::args_os().collect::<Vec<_>>();
     normalize_binary_name(&mut args);
     let requested_output = requested_output(&args);
