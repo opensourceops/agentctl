@@ -1250,10 +1250,10 @@ pub fn run(root: &Path) -> Result<()> {
         "spec": {
             "policy": {
                 "workspaceRoot": ".",
-                "processAllowlist": ["agentctl"],
+                "processAllowlist": [binary_name()],
                 "environmentAllowlist": ["FILE_SECRET", "PROCESS_SECRET"],
                 "secretFileRoots": ["secrets"],
-                "secretProcessAllowlist": ["agentctl"],
+                "secretProcessAllowlist": [binary_name()],
                 "approval": "never"
             },
             "actions": {
@@ -5112,7 +5112,15 @@ impl ProtocolFixtureServer {
                     Ok((mut stream, _)) => {
                         let _ = serve_protocol_request(&mut stream, address, &thread_state);
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::Interrupted
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
                         thread::sleep(Duration::from_millis(2));
                     }
                     Err(_) => break,
