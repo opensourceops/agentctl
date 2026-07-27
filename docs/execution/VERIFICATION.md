@@ -74,11 +74,22 @@ Official feature/pricing references used for the audit: [GPT-5.6 model catalog](
 
 ## Operational and supply-chain evidence
 
+- On 2026-07-27, the current-source OCI gate passed again through Podman 5.8.2
+  on native Linux arm64 with `OPENAI_API_KEY` removed. It exercised the
+  digest-pinned action container, strict tool continuation, artifact export,
+  inspection, parallel ordered commit, selective repair, network-disabled
+  replay, failure exits, SIGTERM, non-root identity, read-only root, and
+  mounted state/artifacts. The gate now accepts and normalizes both Docker's
+  `sha256:<digest>` image ID and Podman 5.8's validated bare 64-hex form.
 - A copied binary ran help, version, schema, provider diagnostics, completion generation, and the canonical quickstart outside the source tree. `cargo install --path` also passed in a clean temporary root.
 - An empty-environment, non-TTY cron-equivalent run passed with stable JSON and explicit paths. Approval pause, overall timeout, SIGTERM exit `130`, concurrent SQLite use, and recovery paths passed.
 - Mock tests cover redacted non-retryable authentication errors, explicit 429 retryability, malformed success responses, provider cancellation, tool timeout/cancellation, invalid UTF-8, the 1 MiB workspace-read bound, read-only artifact failure, traversal/symlink escape, database lock/corruption, and protocol malformed/version/origin/timeout cases.
 - The OCI image inspection reported `linux arm64`, `nonroot:nonroot`, and version label `0.2.0`. The acceptance invocation used `--read-only` plus only mounted writable state/artifact paths.
-- Checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings in the current image and generated valid CycloneDX JSON. The temporary local SBOM was validation evidence, not the still-pending hosted artifact; hosted jobs surface retained artifact and file digests.
+- Trivy 0.72.0 with a freshly updated database found zero fixed
+  HIGH/CRITICAL findings in the current image and generated valid CycloneDX
+  JSON with 11 components. The temporary local SBOM was validation evidence,
+  not the still-pending hosted artifact; hosted jobs surface retained artifact
+  and file digests.
 - GitHub Actions, GitLab CI, Jenkins, Harness CI, Docker, and Kubernetes examples were not dispatched to external vendor platforms. The GitHub workflow syntax/lint is validated locally; hosted dispatch is pending.
 
 `cargo deny check` passed advisories, bans, licenses, and sources. Duplicate-version reports remain reviewed non-blocking warnings.

@@ -67,6 +67,40 @@ No image or container was started by this checkpoint. The OCI gate now includes
 a real digest-pinned action-level container test and must be rerun when the
 local engine is healthy.
 
+## OCI completion checkpoint
+
+Date: 2026-07-27, Asia/Kolkata.
+
+The existing Podman machine was recovered without deleting it or changing its
+security configuration. Its libkrun and `gvproxy` processes remained available
+while the starting terminal stayed open.
+
+| Gate | Result |
+| --- | --- |
+| `cargo test -p xtask` | passed all 7 tests, including Docker/Podman image-ID normalization and malformed-ID rejection |
+| `env -u OPENAI_API_KEY cargo xtask acceptance-container` | passed on Podman 5.8.2, native Linux arm64 |
+| Trivy 0.72.0 HIGH/CRITICAL fixed-vulnerability gate | passed with a freshly updated database and zero findings |
+| Trivy 0.72.0 CycloneDX generation and `jq` validation | passed; 11 components, 20,821 bytes |
+| Image configuration and history marker scan | passed; zero credential, authorization, bearer, or token-pattern lines |
+
+The first current-source run built the image and exposed a product-gate
+compatibility defect: Podman 5.8 returned `.Id` as bare 64-hex while the
+acceptance parser required Docker's `sha256:` prefix. The parser now validates
+both forms, normalizes both to `sha256:<digest>`, and rejects every malformed
+form. The cached rerun passed action-level digest-pinned isolation, strict tool
+continuation, declared artifact export, durable inspection, parallel ordered
+commit, selective repair, network-disabled replay, missing credentials,
+invalid input, SIGTERM, non-root identity, read-only root, and mounted state
+and artifacts.
+
+The exact image is Linux arm64, `nonroot:nonroot`, version `0.2.0`, and source
+`opensourceops/agentctl`. Its local image digest is
+`sha256:53821c62386b49a7e7bd8f75fecaf570a92fd2a1090c878c410854f051cac874`.
+The ignored SBOM at
+`.runtime/scan/agentctl-framework-completeness.cdx.json` has SHA-256
+`748d9126a0812ffe15812dfb1e5f1be731c37678062314e68a1429b5fd23c164`.
+No OpenAI request occurred.
+
 ## Evidence rules
 
 - Deterministic gates run without provider credentials.
@@ -125,11 +159,12 @@ cargo xtask acceptance-container
 | Packs/trust/extensions | 6 resolver/trust tests and 3 focused runtime protocol tests cover graph, sources, locks, Sigstore, trust gating, bounds, cancellation, redaction, and replay | packaged CLI scenario 42 verifies a two-pack lock plus one explicitly authorized process extension invocation and effect-free replay | verified |
 | Semantic memory | typed contracts; stable text/vector/hybrid ranking; filters, namespace, expiry, corrupt-dimension, encryption, external-adapter, OpenAI WireMock, credential-preflight, repair, and replay tests passed | packaged CLI scenario 43 covers hybrid retrieval, explicit promotion, CLI put/search/reindex, changed-memory repair, and effect-free replay | verified |
 | Network enforcement | scheme/host/port, IPv4/IPv6 classification, every-answer validation, DNS pinning, proxy default deny, redirect refusal, CA success/failure, response bounds, and deterministic credential preflight passed | packaged CLI scenario 44 denies private egress before persistence or I/O | verified |
-| Process isolation | DSL validation, plan requirements, command construction, environment, working directory, output/time/cancellation, process-tree cleanup, resource flags, and missing-backend tests passed | packaged CLI scenario 45 fails a requested unavailable engine before effect dispatch; real container action is wired into the OCI gate but locally blocked by Podman forwarding failure | deterministic verified; OCI pending |
-| Resource and cost budgets | pending | pending | open |
-| Container/cross-platform | baseline defect recorded | pending | in progress |
+| Process isolation | DSL validation, plan requirements, command construction, environment, working directory, output/time/cancellation, process-tree cleanup, resource flags, missing-backend tests, and engine image-ID normalization passed | packaged CLI scenario 45 fails a requested unavailable engine before effect dispatch; the real content-addressed container action passed through native Linux arm64 Podman | verified |
+| Resource and cost budgets | compiler, store, runtime, CLI, retry/repair/replay, race, and exact-bound tests passed | packaged CLI scenario 46 plus a one-request live GPT-5.6 denial-before-request-2 gate passed | verified |
+| Stateless provider continuation | compiler/provider/runtime tests cover negotiation, ordered multiple calls, opaque reasoning, malformed items, encrypted persistence, pause/resume, repair freshness, and replay | packaged GPT-5.6 stateless tool run and keyless zero-effect replay passed | verified |
+| Container/cross-platform | native Linux arm64 OCI runtime, signal, artifact, repair/replay, Trivy 0.72.0, SBOM, and image inspection passed | hosted Linux x64, macOS, and Windows remain undispatched under XPLAT-001 | OCI verified; hosted externally blocked |
 | OpenAI live matrix | retained selective-repair evidence only | pending | open |
-| Canonical and Pages docs | limitation register created | pending | in progress |
+| Canonical and Pages docs | canonical docs and generated schema passed the full local documentation gate | Pages sync at agentctl source `21e919d` passed writing, build, links, search, and 44 browser/accessibility tests | in progress until the final source commit is synced |
 
 ## Final adversarial review
 

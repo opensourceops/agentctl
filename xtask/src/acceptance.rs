@@ -4496,13 +4496,7 @@ fn container_isolation_acceptance(root: &Path, engine: &Path) -> Result<()> {
         "container isolation image inspection failed:\n{}",
         output_diagnostics(&output)
     );
-    let image = String::from_utf8(output.stdout)?.trim().to_owned();
-    ensure!(
-        image.strip_prefix("sha256:").is_some_and(
-            |digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-        ),
-        "container engine returned an invalid content-addressed image ID"
-    );
+    let image = normalize_container_image_id(&String::from_utf8(output.stdout)?)?;
     let runtime = engine
         .file_name()
         .and_then(OsStr::to_str)
@@ -4528,6 +4522,16 @@ fn container_isolation_acceptance(root: &Path, engine: &Path) -> Result<()> {
         output_diagnostics(&output)
     );
     Ok(())
+}
+
+fn normalize_container_image_id(image: &str) -> Result<String> {
+    let image = image.trim();
+    let digest = image.strip_prefix("sha256:").unwrap_or(image);
+    ensure!(
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "container engine returned an invalid content-addressed image ID"
+    );
+    Ok(format!("sha256:{digest}"))
 }
 
 fn container_base(engine: &Path, layout: &ContainerLayout) -> Result<Command> {
@@ -5386,5 +5390,25 @@ mod tests {
                 "value": {"type": "reasoning"}
             }));
         assert!(assert_live_evidence(&evidence).is_err());
+    }
+
+    #[test]
+    fn container_image_ids_are_normalized_across_engine_formats() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            normalize_container_image_id(&digest).expect("Podman image ID"),
+            format!("sha256:{digest}")
+        );
+        assert_eq!(
+            normalize_container_image_id(&format!(" sha256:{digest}\n")).expect("Docker image ID"),
+            format!("sha256:{digest}")
+        );
+    }
+
+    #[test]
+    fn malformed_container_image_ids_are_rejected() {
+        assert!(normalize_container_image_id(&"a".repeat(63)).is_err());
+        assert!(normalize_container_image_id(&format!("sha512:{}", "a".repeat(64))).is_err());
+        assert!(normalize_container_image_id(&format!("sha256:{}", "g".repeat(64))).is_err());
     }
 }

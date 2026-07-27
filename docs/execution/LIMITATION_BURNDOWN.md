@@ -41,7 +41,7 @@ complete, every entry must have exactly one final disposition:
 | ENC-001 | Sensitive-state encryption | verified | implemented |
 | SEC-001 | Secret providers | verified | implemented |
 | NET-001 | Network policy | verified | implemented |
-| ISO-001 | Process isolation | in progress | implemented |
+| ISO-001 | Process isolation | verified | implemented |
 | BUD-001 | Resource and cost budgets | verified | implemented |
 | SCH-001 | Deterministic parallel execution | in progress | implemented |
 | DYN-001 | Foreach and matrix | in progress | implemented |
@@ -58,7 +58,7 @@ complete, every entry must have exactly one final disposition:
 | EXT-001 | Plugin strategy | verified | redesigned |
 | MEM-001 | Semantic memory | verified | implemented |
 | PROV-001 | Stateless provider continuation | verified | implemented |
-| OCI-001 | Container execution | in progress | implemented |
+| OCI-001 | Container execution | verified | implemented |
 | XPLAT-001 | Cross-platform hosted evidence | open | externally blocked |
 | EVENT-001 | Event triggers and calendars | verified | removed from supported surface |
 | DIST-001 | Distributed execution and storage | verified | removed from supported surface |
@@ -749,16 +749,17 @@ complete, every entry must have exactly one final disposition:
   requested missing engine fails before process effect dispatch.
 - Examples: `examples/v1/process-isolation.yaml` contains explicit host and
   content-addressed container actions.
-- Live evidence: the OCI gate now invokes a real action inside the exact
-  repository image. Local execution is pending because Podman 5.8.2/libkrun
-  repeatedly lost `gvproxy`, leaving both forwarding endpoints unavailable
-  before image build.
+- Live evidence: the credential-free OCI gate invokes a real action inside the
+  exact repository image. On 2026-07-27 the action completed through Podman
+  5.8.2 on native Linux arm64 after keeping the libkrun starting terminal open.
 - Documentation: process-isolation guide, policy, YAML, DSL, security, threat
   model, limitations, architecture, container contract, terminology, and ADR
   0020.
-- Final disposition: implementation and deterministic evidence complete;
-  actual container execution remains environment-blocked and therefore this
-  entry is not yet marked verified.
+- Final disposition: implemented and verified. The real content-addressed
+  action ran through the production container path with the fixed networkless,
+  read-only, non-root, capability-dropped, and resource-bounded contract.
+  Docker-style `sha256:<digest>` and Podman 5.8's bare 64-hex `.Id` output are
+  both validated and normalized before dispatch; malformed IDs fail closed.
 
 ### BUD-001: Enforceable resource and cost budgets
 
@@ -786,26 +787,46 @@ complete, every entry must have exactly one final disposition:
 
 ### OCI-001: Complete container execution
 
-- Current behavior: OCI acceptance exists, but baseline execution on this host
-  failed because `/artifacts/report.txt` was rejected by workspace path policy.
-- User impact: the documented separate artifact mount is not usable through the
-  real current acceptance path.
-- Security or durability impact: weakening workspace containment would be an
-  unsafe fix.
-- Product decision: make the artifact store part of the writable `/state`
-  contract and materialize exports only through an explicitly authorized
-  artifact-export root. Detect usable Docker/Podman-compatible engines
-  truthfully.
-- Required implementation: runtime detection, persistent Podman handling,
-  non-root/read-only runs, mounted config/workspace/state/export roots, ART-001,
-  retry/repair/reconciliation/replay, signals, limits, CA extension, SBOM,
-  vulnerability/history/secret inspection, and multi-architecture builds.
-- Migration impact: container mount documentation and default state paths.
-- Tests: deterministic contract tests plus native/emulated execution labels.
-- Examples: composite container workflow.
-- Live evidence: OpenAI container scenario only when runtime remains usable.
-- Documentation: runtime troubleshooting and mount migration.
-- Final disposition: pending implementation evidence.
+- Current behavior: the production image and public mount contract execute
+  through Docker or Podman with `/config` and `/workspace` read-only,
+  `/state` and `/artifacts` explicitly writable, and the root filesystem
+  read-only.
+- User impact: durable state, content-addressed artifacts, declared exports,
+  inspection, repair, and replay work through the documented container path.
+- Security or durability impact: the runtime uses UID/GID 65532, a read-only
+  root, no network for replay, bounded temporary storage, and only the two
+  declared writable mounts. Build CA extension remains a protected secret
+  mount and never enters a layer.
+- Product decision: keep the artifact store beside the database under
+  `/state`, authorize declared exports through `/artifacts`, and truthfully
+  probe Docker/Podman before building or executing.
+- Required implementation: complete. Runtime detection, persistent Podman
+  operation, non-root/read-only runs, mounted roots, ART-001, selective repair,
+  offline replay, signals, limits, CA extension, SBOM, vulnerability and image
+  inspection, plus hosted multi-architecture configuration are present.
+- Migration impact: the container documentation defines the corrected mount
+  contract; no state migration is required.
+- Tests: deterministic mount/command tests and native Linux arm64 execution are
+  labeled separately from still-undispatched hosted Linux x64 evidence.
+- Examples: the credential-free composite container workflow covers a strict
+  tool call, declared artifact, durable inspection, parallel ordered commit,
+  selective repair, and replay.
+- Live evidence: `env -u OPENAI_API_KEY cargo xtask acceptance-container`
+  passed on 2026-07-27 through Podman 5.8.2 and native Linux arm64. It covered
+  action-level content-addressed container isolation, non-root/read-only
+  workflow execution, mounted state/artifacts, success and failure exits,
+  SIGTERM, repair, and network-disabled replay. No provider request occurred.
+- Documentation: runtime troubleshooting, persistent Podman terminal handling,
+  mount contract, state retention, artifact export, and CA extension.
+- Final disposition: implemented and verified. The exact image was Linux
+  arm64, `nonroot:nonroot`, version `0.2.0`, and source
+  `opensourceops/agentctl`. Trivy 0.72.0 with a freshly updated database found
+  zero fixed HIGH/CRITICAL vulnerabilities. A valid 20,821-byte CycloneDX SBOM
+  is retained at the ignored local evidence path
+  `.runtime/scan/agentctl-framework-completeness.cdx.json`; its SHA-256 is
+  `748d9126a0812ffe15812dfb1e5f1be731c37678062314e68a1429b5fd23c164`.
+  Image configuration and history scans found no credential or authorization
+  markers. Hosted architecture execution remains isolated under XPLAT-001.
 
 ### XPLAT-001: Hosted platform evidence
 

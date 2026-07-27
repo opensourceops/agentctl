@@ -340,4 +340,19 @@ For a one-time invocation, use the same Pod template in a `batch/v1` `Job` and o
 
 ## Validation level
 
-The current native-arm image was built through the optional secret-mounted CA path and executed with Podman as non-root with a read-only root. The suite exercised a mock tool workflow, artifact and durable inspection, missing-secret and invalid-workflow exit propagation, SIGTERM, and recorded replay under `--network none`. Checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings and generated valid CycloneDX JSON. The exact retained GPT-5.6 live database had previously replayed with no credential and no network, identical output and artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect audit links. GitHub, GitLab, Jenkins, Harness, and Kubernetes examples remain documentation-reviewed only; the automatic Ubuntu Linux x64 build, scan, and SBOM job is locally linted but has not been dispatched.
+On 2026-07-27, the current native-arm image built and passed the complete
+credential-free Podman gate as non-root with a read-only root. The suite
+exercised a real digest-pinned action container, a mock tool workflow, artifact
+export and durable inspection, parallel ordered commit, selective repair,
+missing-secret and invalid-workflow exits, SIGTERM, and recorded replay under
+`--network none`. Trivy 0.72.0 with a freshly updated database found zero fixed
+HIGH/CRITICAL findings and generated valid CycloneDX JSON with 11 components.
+Image configuration and history scans found no credential or authorization
+markers.
+
+The exact retained GPT-5.6 live database had previously replayed with no
+credential and no network, identical output and artifact digest, zero fresh
+effects/tool calls/provider sessions, and explicit source-effect audit links.
+GitHub, GitLab, Jenkins, Harness, and Kubernetes examples remain
+documentation-reviewed only; the automatic Ubuntu Linux x64 build, scan, and
+SBOM job is locally linted but has not been dispatched.
