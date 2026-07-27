@@ -56,7 +56,7 @@ complete, every entry must have exactly one final disposition:
 | PACK-001 | Pack resolution and lockfiles | verified | implemented |
 | TRUST-001 | Pack integrity and signing | verified | implemented |
 | EXT-001 | Plugin strategy | verified | redesigned |
-| MEM-001 | Semantic memory | open | implemented |
+| MEM-001 | Semantic memory | verified | implemented |
 | PROV-001 | Stateless provider continuation | open | implemented |
 | OCI-001 | Container execution | in progress | implemented |
 | XPLAT-001 | Cross-platform hosted evidence | open | externally blocked |
@@ -593,9 +593,12 @@ complete, every entry must have exactly one final disposition:
 
 ### MEM-001: Optional semantic retrieval
 
-- Current behavior: long-term memory supports namespace/key lookup only.
-- User impact: workflows cannot retrieve relevant prior entries by text or
-  vectors.
+- Current behavior: typed namespaced long-term memory supports exact reads,
+  metadata-filtered text/vector/hybrid retrieval, explicit retention, and
+  explicit promotion. SQLite and `local_hash` are built in; OpenAI embeddings
+  and external memory adapters are optional.
+- User impact: workflows can retrieve and selectively promote relevant prior
+  entries without hidden model state.
 - Security or durability impact: implicit model memory could bypass retention
   and replay boundaries.
 - Product decision: add typed entries with deterministic text search, optional
@@ -610,7 +613,15 @@ complete, every entry must have exactly one final disposition:
 - Examples: hybrid retrieval and promotion.
 - Live evidence: one bounded embedding scenario only if publicly exposed.
 - Documentation: memory versus provider cache and working state.
-- Final disposition: pending implementation evidence.
+- Final disposition: implemented and verified. Core, store, runtime, provider,
+  compiler, and CLI tests cover typed/legacy entries, stable text and hybrid
+  ranking, metadata filters, namespaces, expiry, corrupt dimensions, adapter
+  validation, OpenAI request mapping and redaction, credential preflight,
+  reindexing, repair refresh, and replay without adapter calls. Packaged
+  acceptance scenario 43 executes the public local-hash example, CLI
+  administration, selective retrieval repair, explicit promotion, and
+  effect-free replay. No live embedding request is required because public
+  examples remain deterministic and credential-free.
 
 ### PROV-001: Stateless tool continuation
 

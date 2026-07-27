@@ -11,6 +11,7 @@ use std::time::Duration;
 use agentctl_core::compiler::provider_capabilities;
 use agentctl_core::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 use agentctl_core::dsl::{ProviderKind, SecretReference, Workflow, parse_workflow, schema_json};
+use agentctl_core::memory::{MemoryEntry, MemoryQuery, MemorySearchMode, local_hash_embedding};
 use agentctl_core::pack::{PackManifest, verify_pack};
 use agentctl_core::policy::PolicyEngine;
 use agentctl_core::provider::{ContentBlock, Message, ModelProvider, ProviderRequest};
@@ -18,7 +19,8 @@ use agentctl_core::secret::SecretValue;
 use agentctl_core::{MACHINE_OUTPUT_VERSION, compile};
 use agentctl_protocols::{A2aClient, McpClient, ProtocolActionHandler, ProtocolHttpConfig};
 use agentctl_providers::{
-    AnthropicProvider, FakeProvider, GoogleProvider, HttpProviderConfig, OpenAiProvider,
+    AnthropicProvider, FakeEmbeddingProvider, FakeProvider, GoogleProvider, HttpProviderConfig,
+    OpenAiEmbeddingProvider, OpenAiProvider,
 };
 use agentctl_runtime::secret::{SecretResolutionError, SecretResolver};
 use agentctl_runtime::{
@@ -560,8 +562,32 @@ enum MemoryCommand {
         key: String,
         value: String,
         #[arg(long)]
+        text: Option<String>,
+        #[arg(long)]
+        metadata: Option<String>,
+        #[arg(long)]
         retention_days: Option<i64>,
     },
+    Search {
+        namespace: String,
+        query: String,
+        #[arg(long, value_enum, default_value_t = CliMemorySearchMode::Text)]
+        mode: CliMemorySearchMode,
+        #[arg(long, default_value_t = 10)]
+        limit: u16,
+        #[arg(long = "filter", value_name = "KEY=JSON")]
+        filters: Vec<String>,
+    },
+    Reindex {
+        namespace: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliMemorySearchMode {
+    Text,
+    Vector,
+    Hybrid,
 }
 
 #[derive(Debug, Args)]
@@ -2276,15 +2302,20 @@ fn memory_command(output: OutputFormat, args: MemoryArgs) -> Result<u8, CliError
     let store = open_store(&args.db)?;
     match args.command {
         MemoryCommand::Get { namespace, key } => {
-            let value = store
-                .get_long_term_memory(&namespace, &key, Utc::now())
+            let record = store
+                .get_memory_entry(&namespace, &key, Utc::now())
                 .map_err(CliError::persistence)?;
             print_value(
                 output,
                 "MemoryValue",
-                &serde_json::json!({"namespace": namespace, "key": key, "value": value}),
+                &serde_json::json!({
+                    "namespace": namespace,
+                    "key": key,
+                    "value": record.as_ref().map(|record| record.entry.value()),
+                    "record": record,
+                }),
                 Vec::new(),
-                if value.is_some() {
+                if record.is_some() {
                     "memory found"
                 } else {
                     "memory not found"
@@ -2296,20 +2327,166 @@ fn memory_command(output: OutputFormat, args: MemoryArgs) -> Result<u8, CliError
             namespace,
             key,
             value,
+            text,
+            metadata,
             retention_days,
         } => {
             let value: Value = serde_json::from_str(&value)
                 .map_err(|error| CliError::validation(format!("value must be JSON: {error}")))?;
+            let metadata = metadata
+                .map(|value| {
+                    serde_json::from_str(&value).map_err(|error| {
+                        CliError::validation(format!("--metadata must be a JSON object: {error}"))
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let text = text.or_else(|| match &value {
+                Value::String(value) => Some(value.clone()),
+                value => serde_json::to_string(value).ok(),
+            });
+            let entry = MemoryEntry::json(value, text, metadata);
+            entry
+                .validate()
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            let embedding = local_hash_embedding(
+                entry
+                    .searchable_text()
+                    .ok_or_else(|| CliError::validation("memory entry has no searchable text"))?,
+                64,
+            )
+            .map_err(|error| CliError::validation(error.to_string()))?;
+            if retention_days.is_some_and(|days| days <= 0 || days > 36_500) {
+                return Err(CliError::validation(
+                    "--retention-days must be between 1 and 36500",
+                ));
+            }
             let expires = retention_days.map(|days| Utc::now() + ChronoDuration::days(days));
             store
-                .put_long_term_memory(&namespace, &key, &value, expires, Utc::now())
+                .put_memory_entry(
+                    &namespace,
+                    &key,
+                    &entry,
+                    Some("local_hash"),
+                    Some(&embedding),
+                    expires,
+                    Utc::now(),
+                )
                 .map_err(CliError::persistence)?;
             print_value(
                 output,
                 "MemoryWrite",
-                &serde_json::json!({"namespace": namespace, "key": key, "written": true, "expiresAt": expires}),
+                &serde_json::json!({
+                    "namespace": namespace,
+                    "key": key,
+                    "written": true,
+                    "entry": entry,
+                    "embeddingProvider": "local_hash",
+                    "embeddingDimensions": embedding.len(),
+                    "expiresAt": expires,
+                }),
                 Vec::new(),
                 "memory written".to_owned(),
+            )?;
+        }
+        MemoryCommand::Search {
+            namespace,
+            query,
+            mode,
+            limit,
+            filters,
+        } => {
+            let mut parsed_filters = BTreeMap::new();
+            for filter in filters {
+                let (key, raw) = filter
+                    .split_once('=')
+                    .ok_or_else(|| CliError::validation("--filter must use KEY=JSON syntax"))?;
+                if key.is_empty() {
+                    return Err(CliError::validation("--filter key cannot be empty"));
+                }
+                let value = serde_json::from_str(raw).map_err(|error| {
+                    CliError::validation(format!("--filter value must be JSON: {error}"))
+                })?;
+                if parsed_filters.insert(key.to_owned(), value).is_some() {
+                    return Err(CliError::validation(format!(
+                        "duplicate --filter key `{key}`"
+                    )));
+                }
+            }
+            let mode = match mode {
+                CliMemorySearchMode::Text => MemorySearchMode::Text,
+                CliMemorySearchMode::Vector => MemorySearchMode::Vector,
+                CliMemorySearchMode::Hybrid => MemorySearchMode::Hybrid,
+            };
+            let query = MemoryQuery {
+                namespace,
+                text: query,
+                mode,
+                limit,
+                filters: parsed_filters,
+            };
+            query
+                .validate()
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            let embedding = if matches!(
+                query.mode,
+                MemorySearchMode::Vector | MemorySearchMode::Hybrid
+            ) {
+                Some(
+                    local_hash_embedding(&query.text, 64)
+                        .map_err(|error| CliError::validation(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            let results = store
+                .search_memory(&query, embedding.as_deref(), Utc::now())
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "MemorySearch",
+                &serde_json::json!({"query": query, "results": results}),
+                Vec::new(),
+                format!("{} memory result(s)", results.len()),
+            )?;
+        }
+        MemoryCommand::Reindex { namespace } => {
+            let now = Utc::now();
+            let records = store
+                .list_memory_entries(&namespace, now)
+                .map_err(CliError::persistence)?;
+            for record in &records {
+                let text = record.entry.searchable_text().ok_or_else(|| {
+                    CliError::validation(format!(
+                        "memory `{}/{}` has no searchable text",
+                        record.namespace, record.key
+                    ))
+                })?;
+                let embedding = local_hash_embedding(text, 64)
+                    .map_err(|error| CliError::validation(error.to_string()))?;
+                store
+                    .put_memory_entry(
+                        &record.namespace,
+                        &record.key,
+                        &record.entry,
+                        Some("local_hash"),
+                        Some(&embedding),
+                        record.expires_at,
+                        now,
+                    )
+                    .map_err(CliError::persistence)?;
+            }
+            print_value(
+                output,
+                "MemoryReindex",
+                &serde_json::json!({
+                    "namespace": namespace,
+                    "provider": "local_hash",
+                    "dimensions": 64,
+                    "entriesReindexed": records.len(),
+                }),
+                Vec::new(),
+                format!("reindexed {} memory entry(s)", records.len()),
             )?;
         }
     }
@@ -2468,7 +2645,7 @@ async fn build_registry(
         })?;
     let provider_secrets = SecretResolver::provider_credentials(tool_policy.clone());
     let restricted_secrets = SecretResolver::restricted(tool_policy.clone());
-    let required_providers = workflow
+    let mut required_providers = workflow
         .spec
         .tasks
         .iter()
@@ -2507,6 +2684,21 @@ async fn build_registry(
             .filter_map(|action| workflow.spec.actions.get(action))
             .map(|action| action.kind),
     );
+    let memory_embedding = workflow.spec.memory.long_term.as_ref().and_then(|memory| {
+        let uses_embeddings = selected_action_kinds.iter().any(|kind| {
+            matches!(
+                kind,
+                agentctl_core::dsl::ActionKind::LongTermMemorySearch
+                    | agentctl_core::dsl::ActionKind::LongTermMemoryWrite
+            )
+        });
+        uses_embeddings.then_some(&memory.embedding)
+    });
+    if let Some(embedding) = memory_embedding
+        && embedding.provider != "local_hash"
+    {
+        required_providers.insert(embedding.provider.as_str());
+    }
     for (name, definition) in &workflow.spec.providers {
         let credential = definition.credential.clone().unwrap_or_else(|| {
             SecretReference::environment(default_credential_env(definition.kind.clone()))
@@ -2514,6 +2706,10 @@ async fn build_registry(
         match definition.kind {
             ProviderKind::Fake => {
                 registry = registry.with_provider(name, Arc::new(FakeProvider::default()));
+                if memory_embedding.is_some_and(|embedding| embedding.provider == *name) {
+                    registry =
+                        registry.with_embedding_provider(name, Arc::new(FakeEmbeddingProvider));
+                }
             }
             ProviderKind::Openai => {
                 let mut config =
@@ -2538,6 +2734,20 @@ async fn build_registry(
                 }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
+                }
+                if let Some(embedding) =
+                    memory_embedding.filter(|embedding| embedding.provider == *name)
+                {
+                    registry = registry.with_embedding_provider(
+                        name,
+                        Arc::new(
+                            OpenAiEmbeddingProvider::new(
+                                config.clone(),
+                                embedding.model.as_deref().unwrap_or_default(),
+                            )
+                            .map_err(remote_error)?,
+                        ),
+                    );
                 }
                 registry = registry.with_provider(
                     name,
@@ -3244,5 +3454,60 @@ spec:
         build_registry(&unused, directory.path(), &CancellationToken::new(), None)
             .await
             .expect("unused provider does not require a credential");
+
+        std::fs::write(
+            directory.path().join("secrets/openai"),
+            "embedding-secret\n",
+        )
+        .expect("embedding secret");
+        let memory_only = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: memory-secret }
+spec:
+  policy:
+    secretFileRoots: [secrets]
+  providers:
+    embeddings:
+      kind: openai
+      credential: { file: secrets/openai }
+  memory:
+    longTerm:
+      embedding:
+        provider: embeddings
+        model: text-embedding-3-small
+        dimensions: 256
+  actions:
+    search: { kind: builtin.long_term_memory.search }
+  tasks:
+    - id: search
+      uses: action:search
+      with: { query: durable, mode: vector }
+"#,
+            "memory.yaml",
+        )
+        .expect("memory workflow")
+        .workflow;
+        build_registry(
+            &memory_only,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("memory embedding credential preflight");
+        std::fs::remove_file(directory.path().join("secrets/openai"))
+            .expect("remove embedding secret");
+        let error = build_registry(
+            &memory_only,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .err()
+        .expect("reachable memory embedding requires its credential");
+        assert_eq!(error.code, EXIT_POLICY);
     }
 }

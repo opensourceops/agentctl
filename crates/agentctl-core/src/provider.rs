@@ -159,3 +159,15 @@ pub trait ModelProvider: Send + Sync {
         )))
     }
 }
+
+#[async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError>;
+}

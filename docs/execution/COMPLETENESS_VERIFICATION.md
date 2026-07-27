@@ -29,6 +29,23 @@ configuration.
 
 No OpenAI request was made during baseline verification.
 
+## Semantic-memory checkpoint
+
+Date: 2026-07-27, Asia/Kolkata.
+
+| Gate | Result |
+| --- | --- |
+| `cargo xtask verify` | passed all 12 stages; 14 CLI, 55 core, 21 provider, 80 runtime, 31 store, and 15 protocol tests passed |
+| `cargo xtask acceptance` | passed all 43 credential-free packaged CLI scenarios |
+| `cargo xtask docs-verify` | passed all 6 stages |
+| `cargo xtask examples-verify` | passed |
+| `cargo xtask package` | passed for macOS arm64 |
+| `cargo xtask secret-scan` | passed |
+
+All deterministic commands ran with `OPENAI_API_KEY` removed. The optional
+OpenAI embedding adapter used only WireMock contract tests, so this checkpoint
+made zero OpenAI API requests.
+
 ## Evidence rules
 
 - Deterministic gates run without provider credentials.
@@ -82,9 +99,9 @@ cargo xtask acceptance-container
 | Compensation | compiler declarations plus runtime reverse order, approval, partial failure, source and inverse uncertainty, cancellation, retry, reconciliation, automatic trigger, repair/retry invalidation, and replay tests passed | packaged CLI scenario 38 and the full local release gate passed | verified |
 | Structured handoffs | compiler rejects hidden teams; typed role and handoff contracts use ordinary task recovery | packaged CLI scenario 39 covers tool separation, inspection, retry, repair, and replay | deterministic verified; live pending |
 | Streaming | provider SSE fragmentation plus runtime bounds, redaction, final validation, and replay tests passed | packaged CLI scenario 40 covers human, JSONL, final JSON, inspection, and replay | deterministic verified; live pending |
-| MCP/A2A resilience | 15 protocol tests, 79 runtime tests, schema 13 migration/encryption/replay tests, and `cargo xtask protocol-resilience` passed | packaged CLI scenario 41 reconnects MCP once and continues one known A2A task through CAS, retry, and replay without resubmission | verified |
+| MCP/A2A resilience | 15 protocol tests, 80 runtime tests, schema 13 migration/encryption/replay tests, and `cargo xtask protocol-resilience` passed | packaged CLI scenario 41 reconnects MCP once and continues one known A2A task through CAS, retry, and replay without resubmission | verified |
 | Packs/trust/extensions | 6 resolver/trust tests and 3 focused runtime protocol tests cover graph, sources, locks, Sigstore, trust gating, bounds, cancellation, redaction, and replay | packaged CLI scenario 42 verifies a two-pack lock plus one explicitly authorized process extension invocation and effect-free replay | verified |
-| Semantic memory | pending | pending | open |
+| Semantic memory | typed contracts; stable text/vector/hybrid ranking; filters, namespace, expiry, corrupt-dimension, encryption, external-adapter, OpenAI WireMock, credential-preflight, repair, and replay tests passed | packaged CLI scenario 43 covers hybrid retrieval, explicit promotion, CLI put/search/reindex, changed-memory repair, and effect-free replay | verified |
 | Network/isolation/budgets | pending | pending | open |
 | Container/cross-platform | baseline defect recorded | pending | in progress |
 | OpenAI live matrix | retained selective-repair evidence only | pending | open |

@@ -72,6 +72,8 @@ For schema-checked MCP reconnect and task-ID-based A2A continuation, use
 For deterministic dependency locking and publisher policy, use
 [Packs](docs/PACKS.md). For reviewed local executables, use the
 [bounded process extension protocol](docs/EXTENSIONS.md).
+For typed cross-run text, vector, and hybrid retrieval with explicit promotion,
+use [State and memory](docs/memory.md).
 
 ## Safety boundary
 

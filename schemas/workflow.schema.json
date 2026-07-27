@@ -614,7 +614,9 @@
         "builtin.memory.read",
         "builtin.memory.write",
         "builtin.long_term_memory.read",
+        "builtin.long_term_memory.search",
         "builtin.long_term_memory.write",
+        "builtin.long_term_memory.promote",
         "mcp.call",
         "a2a.delegate"
       ]
@@ -1189,6 +1191,36 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "embedding": {
+          "$ref": "#/$defs/MemoryEmbeddingDefinition",
+          "default": {
+            "provider": "local_hash",
+            "dimensions": 64
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MemoryEmbeddingDefinition": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "default": "local_hash"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 64
         }
       },
       "additionalProperties": false

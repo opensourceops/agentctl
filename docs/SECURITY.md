@@ -31,6 +31,11 @@
   before invocation. They use direct argv, cleared selected environment,
   bounded input/output/time, process-tree cancellation, a durable effect
   identity, and secret redaction.
+- Long-term memory uses typed bounded entries, exact metadata filters, explicit
+  retention, bounded result/candidate counts, finite dimension-checked vectors,
+  and recorded retrieval effects. External adapter results are validated before
+  entering task state. Embedding credentials use the same secret resolution
+  and redaction boundary as model providers.
 - The workspace forbids unsafe Rust, denies warnings, locks dependencies, checks licenses/sources/advisories, scans secret patterns, and keeps live tests outside CI.
 
 ## Limitations
@@ -50,5 +55,11 @@ Prompts, file content, model output, remote artifacts, and tool output may be co
 MCP reconnects at most once only for calls declared `pure`, `idempotent`, or `keyed`, and verifies the refreshed tool schema before redispatch. Unknown and at-most-once MCP calls are never automatically repeated after ambiguity. A2A persists a known remote task ID and may resume observation, but never resubmits an ambiguous `SendMessage`. Streaming is bounded but completed results, not progress deltas, enter workflow state. Windows cannot express Unix database mode bits; rely on the user profile ACL and CI tests.
 
 SQLite and sibling artifact-root access are the repair authorization boundary. There is no tenant identity or row-level authorization. Run IDs, task/effect identity, status, timing, digests, paths, sizes, schema metadata, and key references remain visible. Artifact blob bytes are not encrypted. An identity that can modify the state directory can corrupt or replace local history, although envelope authentication and artifact digest verification prevent silent use of changed protected content.
+
+Memory keys, namespaces, format versions, timestamps, expiry, embedding provider,
+and dimensions remain operational metadata. Entry payloads, searchable text,
+metadata JSON, and embedding vectors are protected when selected-field state
+encryption is enabled. The local hash provider is deterministic lexical
+indexing and must not be described as a confidential local neural model.
 
 Report vulnerabilities privately to the repository maintainer. Do not include credentials, database contents, or production prompts in a report.

@@ -407,8 +407,12 @@ pub enum ActionKind {
     MemoryWrite,
     #[serde(rename = "builtin.long_term_memory.read")]
     LongTermMemoryRead,
+    #[serde(rename = "builtin.long_term_memory.search")]
+    LongTermMemorySearch,
     #[serde(rename = "builtin.long_term_memory.write")]
     LongTermMemoryWrite,
+    #[serde(rename = "builtin.long_term_memory.promote")]
+    LongTermMemoryPromote,
     #[serde(rename = "mcp.call")]
     McpCall,
     #[serde(rename = "a2a.delegate")]
@@ -741,6 +745,29 @@ pub struct LongTermMemoryDefinition {
     pub namespace: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
+    #[serde(default)]
+    pub embedding: MemoryEmbeddingDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryEmbeddingDefinition {
+    #[serde(default = "default_local_hash_embedding")]
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default = "default_embedding_dimensions")]
+    pub dimensions: u16,
+}
+
+impl Default for MemoryEmbeddingDefinition {
+    fn default() -> Self {
+        Self {
+            provider: default_local_hash_embedding(),
+            model: None,
+            dimensions: default_embedding_dimensions(),
+        }
+    }
 }
 
 fn default_sqlite() -> String {
@@ -748,6 +775,12 @@ fn default_sqlite() -> String {
 }
 fn default_memory_namespace() -> String {
     "default".to_owned()
+}
+fn default_local_hash_embedding() -> String {
+    "local_hash".to_owned()
+}
+const fn default_embedding_dimensions() -> u16 {
+    64
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

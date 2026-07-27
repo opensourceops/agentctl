@@ -22,7 +22,7 @@ use crate::process::{bounded_output, bounded_wait, configure_piped_command, outp
 
 const VERIFY_TOKEN: &str = "AGENTCTL_MOCK_FIXTURE_VERIFIED";
 const LIVE_VERIFY_TOKEN: &str = "AGENTCTL_LIVE_FIXTURE_VERIFIED";
-const ACCEPTANCE_SCENARIOS: usize = 42;
+const ACCEPTANCE_SCENARIOS: usize = 43;
 
 pub fn run(root: &Path) -> Result<()> {
     command(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
@@ -2264,6 +2264,125 @@ spec:
     ensure_eq(&extension_replay, "/data/output/value", "extended")?;
     ensure!(fs::read_to_string(&invocation_marker)? == "invocation");
 
+    scenario(
+        43,
+        "packaged CLI retrieves, promotes, repairs, and replays semantic memory",
+    );
+    let memory_workflow = root.join("examples/v1/long-term-memory.yaml");
+    let memory_db = directory.path().join("semantic-memory.db");
+    let memory_run = successful_json(
+        &binary,
+        root,
+        &run_args(&memory_workflow, &memory_db, root, &[]),
+    )?;
+    ensure_eq(&memory_run, "/data/state", "succeeded")?;
+    ensure!(array_len(&memory_run, "/data/output/recalled")? == 1);
+    let memory_run_id = string_at(&memory_run, "/data/runId")?;
+    let memory_inspect = inspect(&binary, root, &memory_db, memory_run_id)?;
+    ensure!(count_task_items(&memory_inspect, "/data/effects", "search", true) == 1);
+    ensure!(count_task_items(&memory_inspect, "/data/effects", "promote", true) == 1);
+    successful_json(
+        &binary,
+        root,
+        &strings([
+            "memory",
+            "--db",
+            path(&memory_db)?,
+            "put",
+            "example",
+            "repair",
+            "\"hello durable repair\"",
+            "--metadata",
+            "{\"topic\":\"greeting\"}",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    let memory_reindex = successful_json(
+        &binary,
+        root,
+        &strings([
+            "memory",
+            "--db",
+            path(&memory_db)?,
+            "reindex",
+            "example",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&memory_reindex, "/data/entriesReindexed", 2)?;
+    let memory_search = successful_json(
+        &binary,
+        root,
+        &strings([
+            "memory",
+            "--db",
+            path(&memory_db)?,
+            "search",
+            "example",
+            "durable hello",
+            "--mode",
+            "hybrid",
+            "--filter",
+            "topic=\"greeting\"",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure!(array_len(&memory_search, "/data/results")? == 2);
+    let memory_repair = successful_json(
+        &binary,
+        root,
+        &strings([
+            "repair",
+            path(&memory_workflow)?,
+            memory_run_id,
+            "--from",
+            "search",
+            "--restart-successful",
+            "--db",
+            path(&memory_db)?,
+            "--workspace",
+            path(root)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&memory_repair, "/data/state", "succeeded")?;
+    ensure!(array_len(&memory_repair, "/data/output/recalled")? == 2);
+    ensure_eq(&memory_repair, "/data/reusedTasks/0", "write")?;
+    ensure_eq(&memory_repair, "/data/reusedTasks/1", "read")?;
+    ensure_eq(&memory_repair, "/data/executedTasks/0", "search")?;
+    ensure_eq(&memory_repair, "/data/executedTasks/1", "promote")?;
+    let memory_repair_id = string_at(&memory_repair, "/data/runId")?;
+    let memory_replay = successful_json(
+        &binary,
+        root,
+        &strings([
+            "replay",
+            memory_repair_id,
+            "--db",
+            path(&memory_db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure!(array_len(&memory_replay, "/data/output/recalled")? == 2);
+    let memory_replay_id = string_at(&memory_replay, "/data/runId")?;
+    let memory_replay_inspect = inspect(&binary, root, &memory_db, memory_replay_id)?;
+    ensure!(array_len(&memory_replay_inspect, "/data/effects")? == 0);
+
     println!("agentctl credential-free acceptance passed ({ACCEPTANCE_SCENARIOS} scenarios)");
     Ok(())
 }
@@ -3837,7 +3956,18 @@ fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
 }
 
 fn debug_binary(root: &Path) -> PathBuf {
-    root.join("target/debug").join(binary_name())
+    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || root.join("target"),
+        |target| {
+            let target = PathBuf::from(target);
+            if target.is_absolute() {
+                target
+            } else {
+                root.join(target)
+            }
+        },
+    );
+    target.join("debug").join(binary_name())
 }
 
 fn packaged_binary(root: &Path) -> Result<PathBuf> {

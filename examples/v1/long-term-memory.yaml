@@ -3,11 +3,18 @@ kind: Workflow
 metadata:
   name: long-term-memory
 spec:
+  outputs:
+    recalled: "${{ memory.recalled }}"
   memory:
+    working:
+      recalled: []
     longTerm:
       provider: sqlite
       namespace: example
       retentionDays: 30
+      embedding:
+        provider: local_hash
+        dimensions: 64
   policy:
     approval: never
   actions:
@@ -15,11 +22,32 @@ spec:
       kind: builtin.long_term_memory.write
     read:
       kind: builtin.long_term_memory.read
+    search:
+      kind: builtin.long_term_memory.search
+    promote:
+      kind: builtin.long_term_memory.promote
   tasks:
     - id: write
       uses: action:write
-      with: { key: greeting, value: hello }
+      with:
+        key: greeting
+        content: { type: text, text: "hello durable workflow" }
+        metadata: { topic: greeting }
     - id: read
       uses: action:read
       needs: [write]
       with: { key: greeting }
+    - id: search
+      uses: action:search
+      needs: [read]
+      with:
+        query: "durable hello"
+        mode: hybrid
+        filters: { topic: greeting }
+    - id: promote
+      uses: action:promote
+      needs: [search]
+      memoryWrites: [recalled]
+      with:
+        key: recalled
+        value: "${{ tasks.search.output.results }}"

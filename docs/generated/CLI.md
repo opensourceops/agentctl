@@ -1069,9 +1069,98 @@ Usage: agentctl memory [OPTIONS] <COMMAND>
 Commands:
   get
   put
+  search
+  reindex
 
 Options:
       --db <DB>          [default: .agentctl/runtime.db]
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help             Print help
+```
+
+## `agentctl memory get`
+
+```text
+Usage: agentctl memory get [OPTIONS] <NAMESPACE> <KEY>
+
+Arguments:
+  <NAMESPACE>
+  <KEY>
+
+Options:
+      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --verbose
+      --offline          Forbid pack network access and require cached Git/archive sources
+      --locked           Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help             Print help
+```
+
+## `agentctl memory put`
+
+```text
+Usage: agentctl memory put [OPTIONS] <NAMESPACE> <KEY> <VALUE>
+
+Arguments:
+  <NAMESPACE>
+  <KEY>
+  <VALUE>
+
+Options:
+      --output <OUTPUT>
+          [default: human] [possible values: human, json, jsonl]
+      --text <TEXT>
+
+      --color <COLOR>
+          [default: auto] [possible values: auto, always, never]
+      --metadata <METADATA>
+
+      --retention-days <RETENTION_DAYS>
+
+      --verbose
+
+      --offline
+          Forbid pack network access and require cached Git/archive sources
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help
+          Print help
+```
+
+## `agentctl memory search`
+
+```text
+Usage: agentctl memory search [OPTIONS] <NAMESPACE> <QUERY>
+
+Arguments:
+  <NAMESPACE>
+  <QUERY>
+
+Options:
+      --mode <MODE>        [default: text] [possible values: text, vector, hybrid]
+      --output <OUTPUT>    [default: human] [possible values: human, json, jsonl]
+      --color <COLOR>      [default: auto] [possible values: auto, always, never]
+      --limit <LIMIT>      [default: 10]
+      --filter <KEY=JSON>
+      --verbose
+      --offline            Forbid pack network access and require cached Git/archive sources
+      --locked             Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help               Print help
+```
+
+## `agentctl memory reindex`
+
+```text
+Usage: agentctl memory reindex [OPTIONS] <NAMESPACE>
+
+Arguments:
+  <NAMESPACE>
+
+Options:
       --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
       --color <COLOR>    [default: auto] [possible values: auto, always, never]
       --verbose

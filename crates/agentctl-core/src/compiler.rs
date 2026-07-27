@@ -10,6 +10,7 @@ use crate::dsl::{
     ActionKind, EffectClass, Idempotency, JsonMap, MAX_EXPANSION_ITEMS, MAX_LOOP_ITERATIONS,
     ProviderKind, RetryDefinition, TaskDefinition, ToolKind, Workflow,
 };
+use crate::memory::{MAX_EMBEDDING_DIMENSIONS, MIN_EMBEDDING_DIMENSIONS};
 use crate::template::{TemplateError, referenced_tasks, validate_expression};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -892,8 +893,12 @@ fn namespace_subworkflow_action_input(
         return;
     };
     let field = match action.kind {
-        ActionKind::MemoryRead | ActionKind::MemoryWrite => "key",
-        ActionKind::LongTermMemoryRead | ActionKind::LongTermMemoryWrite => "namespace",
+        ActionKind::MemoryRead | ActionKind::MemoryWrite | ActionKind::LongTermMemoryPromote => {
+            "key"
+        }
+        ActionKind::LongTermMemoryRead
+        | ActionKind::LongTermMemorySearch
+        | ActionKind::LongTermMemoryWrite => "namespace",
         _ => return,
     };
     let Some(Value::String(value)) = input.get_mut(field) else {
@@ -1045,6 +1050,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
     let mut declaration_order = Vec::new();
     let mut source_positions = BTreeMap::new();
     let (workflow, synthetic_uses) = expand_subworkflow_calls(workflow, file, &mut diagnostics);
+    validate_memory_configuration(&workflow, file, &mut diagnostics);
     let expanded_tasks = expand_tasks(&workflow, file, &mut diagnostics, &synthetic_uses);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
@@ -1349,6 +1355,119 @@ const fn default_max_concurrency() -> usize {
     1
 }
 
+fn validate_memory_configuration(
+    workflow: &Workflow,
+    file: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(memory) = &workflow.spec.memory.long_term else {
+        return;
+    };
+    if memory.provider.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "long-term memory provider must not be empty",
+            )
+            .with_path("spec.memory.longTerm.provider"),
+        );
+    }
+    if memory.namespace.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "long-term memory namespace must not be empty",
+            )
+            .with_path("spec.memory.longTerm.namespace"),
+        );
+    }
+    if memory
+        .retention_days
+        .is_some_and(|days| days == 0 || days > 36_500)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "long-term memory retentionDays must be between 1 and 36500",
+            )
+            .with_path("spec.memory.longTerm.retentionDays"),
+        );
+    }
+    if memory.embedding.provider.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                "memory embedding provider must not be empty",
+            )
+            .with_path("spec.memory.longTerm.embedding.provider"),
+        );
+    } else if memory.embedding.provider != "local_hash" {
+        match workflow.spec.providers.get(&memory.embedding.provider) {
+            None => diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::MissingReference,
+                    file,
+                    format!(
+                        "memory embedding provider `{}` is not defined",
+                        memory.embedding.provider
+                    ),
+                )
+                .with_path("spec.memory.longTerm.embedding.provider"),
+            ),
+            Some(provider)
+                if !matches!(provider.kind, ProviderKind::Openai | ProviderKind::Fake) =>
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        format!(
+                            "provider `{}` does not support memory embeddings",
+                            memory.embedding.provider
+                        ),
+                    )
+                    .with_path("spec.memory.longTerm.embedding.provider"),
+                );
+            }
+            Some(provider)
+                if provider.kind == ProviderKind::Openai
+                    && memory
+                        .embedding
+                        .model
+                        .as_deref()
+                        .is_none_or(|model| model.trim().is_empty()) =>
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SchemaViolation,
+                        file,
+                        "OpenAI memory embeddings require a model",
+                    )
+                    .with_path("spec.memory.longTerm.embedding.model"),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    if !(MIN_EMBEDDING_DIMENSIONS..=MAX_EMBEDDING_DIMENSIONS).contains(&memory.embedding.dimensions)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SchemaViolation,
+                file,
+                format!(
+                    "memory embedding dimensions must be between {MIN_EMBEDDING_DIMENSIONS} and {MAX_EMBEDDING_DIMENSIONS}"
+                ),
+            )
+            .with_path("spec.memory.longTerm.embedding.dimensions"),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn task_memory_writes(
     workflow: &Workflow,
@@ -1383,39 +1502,50 @@ fn task_memory_writes(
         }
     }
 
-    let is_memory_write = match task_use {
+    let memory_write_kind = match task_use {
         TaskUse::Action(name) => workflow
             .spec
             .actions
             .get(name)
-            .is_some_and(|action| action.kind == ActionKind::MemoryWrite),
+            .map(|action| action.kind)
+            .filter(|kind| {
+                matches!(
+                    kind,
+                    ActionKind::MemoryWrite | ActionKind::LongTermMemoryPromote
+                )
+            }),
         TaskUse::Agent(_)
         | TaskUse::Aggregate(_)
         | TaskUse::Router(_)
         | TaskUse::LoopAggregate(_)
         | TaskUse::SubworkflowInput(_)
-        | TaskUse::SubworkflowAggregate(_) => false,
+        | TaskUse::SubworkflowAggregate(_) => None,
     };
-    if !is_memory_write {
+    let Some(memory_write_kind) = memory_write_kind else {
         if !declared.is_empty() {
             diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::SchemaViolation,
                     file,
-                    "memoryWrites is only valid for builtin.memory.write tasks",
+                    "memoryWrites is only valid for working-memory write or long-term-memory promotion tasks",
                 )
                 .with_path(path),
             );
         }
         return writes.into_iter().collect();
-    }
+    };
+    let action_name = match memory_write_kind {
+        ActionKind::MemoryWrite => "builtin.memory.write",
+        ActionKind::LongTermMemoryPromote => "builtin.long_term_memory.promote",
+        _ => unreachable!(),
+    };
 
     let Some(key) = input.get("key").and_then(Value::as_str) else {
         diagnostics.push(
             Diagnostic::error(
                 DiagnosticCode::SchemaViolation,
                 file,
-                "builtin.memory.write requires a string `key`",
+                format!("{action_name} requires a string `key`"),
             )
             .with_path(format!("spec.tasks[{position}].with.key")),
         );
@@ -1426,7 +1556,7 @@ fn task_memory_writes(
             Diagnostic::error(
                 DiagnosticCode::SchemaViolation,
                 file,
-                "builtin.memory.write key must not be empty",
+                format!("{action_name} key must not be empty"),
             )
             .with_path(format!("spec.tasks[{position}].with.key")),
         );
@@ -1436,7 +1566,7 @@ fn task_memory_writes(
                 Diagnostic::error(
                     DiagnosticCode::SchemaViolation,
                     file,
-                    "a templated builtin.memory.write key requires an explicit memoryWrites set",
+                    format!("a templated {action_name} key requires an explicit memoryWrites set"),
                 )
                 .with_path(path),
             );
@@ -1799,8 +1929,10 @@ const fn action_effect_class(kind: ActionKind) -> EffectClass {
         ActionKind::Read => EffectClass::Observe,
         ActionKind::Write => EffectClass::WorkspaceMutate,
         ActionKind::ShellExec | ActionKind::ProcessExtension => EffectClass::ProcessExecution,
-        ActionKind::MemoryRead | ActionKind::MemoryWrite => EffectClass::InternalState,
-        ActionKind::LongTermMemoryRead => EffectClass::Observe,
+        ActionKind::MemoryRead | ActionKind::MemoryWrite | ActionKind::LongTermMemoryPromote => {
+            EffectClass::InternalState
+        }
+        ActionKind::LongTermMemoryRead | ActionKind::LongTermMemorySearch => EffectClass::Observe,
         ActionKind::LongTermMemoryWrite => EffectClass::ExternalMutate,
         ActionKind::McpCall => EffectClass::Network,
         ActionKind::A2aDelegate => EffectClass::RemoteAgent,
@@ -1944,6 +2076,7 @@ const fn action_kind_supports_compensation(kind: ActionKind) -> bool {
         ActionKind::Write
             | ActionKind::ShellExec
             | ActionKind::MemoryWrite
+            | ActionKind::LongTermMemoryPromote
             | ActionKind::LongTermMemoryWrite
             | ActionKind::McpCall
             | ActionKind::A2aDelegate
@@ -2566,11 +2699,13 @@ const fn action_predictability(kind: ActionKind) -> PlanPredictability {
         ActionKind::Assign
         | ActionKind::Assert
         | ActionKind::MemoryRead
-        | ActionKind::MemoryWrite => PlanPredictability::FullyPredictable,
+        | ActionKind::MemoryWrite
+        | ActionKind::LongTermMemoryPromote => PlanPredictability::FullyPredictable,
         ActionKind::Read | ActionKind::Write => PlanPredictability::PartiallyPredictable,
         ActionKind::ShellExec
         | ActionKind::ProcessExtension
         | ActionKind::LongTermMemoryRead
+        | ActionKind::LongTermMemorySearch
         | ActionKind::LongTermMemoryWrite
         | ActionKind::McpCall
         | ActionKind::A2aDelegate => PlanPredictability::RequiresExecution,
@@ -3516,6 +3651,70 @@ spec:
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.path.as_deref() == Some("spec.agents.worker.structuredOutput")
                 && diagnostic.code == DiagnosticCode::SchemaViolation
+        }));
+    }
+
+    #[test]
+    fn semantic_memory_bounds_and_promotion_writes_are_compiled() {
+        let valid = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: memory }
+spec:
+  memory:
+    longTerm:
+      provider: sqlite
+      namespace: docs
+      retentionDays: 30
+      embedding: { provider: local_hash, dimensions: 64 }
+  actions:
+    promote: { kind: builtin.long_term_memory.promote }
+  tasks:
+    - id: promote
+      uses: action:promote
+      with: { key: recalled, value: [] }
+"#,
+        );
+        let plan = compile(&valid, "fixture.yaml").expect("semantic memory compiles");
+        assert_eq!(plan.tasks["promote"].memory_writes, ["recalled"]);
+
+        let invalid = serde_yaml_ng::to_string(&valid)
+            .expect("serialize")
+            .replace("retentionDays: 30", "retentionDays: 0")
+            .replace("dimensions: 64", "dimensions: 7");
+        let diagnostics =
+            compile(&parse(&invalid), "fixture.yaml").expect_err("invalid bounds fail");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref() == Some("spec.memory.longTerm.retentionDays")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref() == Some("spec.memory.longTerm.embedding.dimensions")
+        }));
+
+        let openai_without_model = parse(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: memory }
+spec:
+  providers:
+    embeddings: { kind: openai }
+  memory:
+    longTerm:
+      embedding: { provider: embeddings, dimensions: 256 }
+  actions:
+    search: { kind: builtin.long_term_memory.search }
+  tasks:
+    - id: search
+      uses: action:search
+      with: { query: durable, mode: vector }
+"#,
+        );
+        let diagnostics = compile(&openai_without_model, "fixture.yaml")
+            .expect_err("OpenAI embedding model is required");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref() == Some("spec.memory.longTerm.embedding.model")
         }));
     }
 

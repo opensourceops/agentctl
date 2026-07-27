@@ -29,7 +29,7 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `compensation` | manual, policy approval | Best-effort compensation trigger and approval behavior. |
 | `tasks` | required list | Ordered graph nodes. |
 | `policy` | safe defaults | Filesystem, process, network, provider, tool, and approval rules. |
-| `memory` | empty | Initial working memory and optional SQLite long-term namespace. |
+| `memory` | empty | Initial working memory and optional typed long-term store, namespace, retention, and embedding configuration. |
 | `mcpServers` | `{}` | Pinned MCP Streamable HTTP peers. |
 | `a2aPeers` | `{}` | Pinned A2A Agent Card peers. |
 | `packs` | `[]` | Semver-constrained local, pinned Git, or immutable archive pack roots. |
@@ -94,7 +94,9 @@ Supported action kinds:
 - `builtin.memory.read`
 - `builtin.memory.write`
 - `builtin.long_term_memory.read`
+- `builtin.long_term_memory.search`
 - `builtin.long_term_memory.write`
+- `builtin.long_term_memory.promote`
 - `mcp.call`
 - `a2a.delegate`
 
@@ -108,6 +110,21 @@ An A2A peer accepts `timeoutSeconds`, `maxPolls` from 1 through 1,000, and
 `pollIntervalMs` from 1 through 60,000. Defaults are 120 seconds, 100 polls,
 and 100 milliseconds. These bounds apply to observation of a known task;
 `SendMessage` remains at most once.
+
+## Long-term memory
+
+`memory.longTerm` defaults to the built-in `sqlite` provider and `default`
+namespace. `retentionDays`, when set, is 1 through 36,500. Its `embedding`
+block defaults to `local_hash` with 64 dimensions and accepts 8 through 4096
+dimensions. Any non-local embedding provider must name a compatible entry in
+`spec.providers`. OpenAI embeddings also require `embedding.model`.
+
+Memory writes accept a versioned `entry`, a typed `content` block, or a legacy
+`value` plus optional searchable `text` and metadata. Search accepts exact
+metadata filters and `text`, `vector`, or `hybrid` mode, with a result limit
+from 1 through 100. Promotion is a separate internal-state action and requires
+its working-memory key in `memoryWrites` when the key is templated. See
+[State and memory](../memory.md).
 
 ## Tools
 

@@ -14,10 +14,14 @@ use agentctl_core::dsl::{
 use agentctl_core::effect::{
     ActionResult, ChangeStatus, EffectRecord, EffectRequest, EffectStatus,
 };
+use agentctl_core::memory::{
+    MAX_MEMORY_RESULTS, MEMORY_ENTRY_FORMAT_VERSION, MemoryContent, MemoryEntry, MemoryQuery,
+    MemorySearchMode, local_hash_embedding,
+};
 use agentctl_core::policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyError, redact};
 use agentctl_core::provider::{
-    ContentBlock, FinishReason, Message, ModelProvider, ProviderError, ProviderRequest,
-    ProviderResponse, ProviderStreamEvent, ProviderStreamSink, Usage,
+    ContentBlock, EmbeddingProvider, FinishReason, Message, ModelProvider, ProviderError,
+    ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderStreamSink, Usage,
 };
 use agentctl_core::state::{RunState, TaskState};
 use agentctl_core::template::{EvalContext, TemplateError, evaluate_when, render};
@@ -25,9 +29,9 @@ use agentctl_core::tool::{ToolContract, ToolContractError, ToolExecutor};
 use agentctl_observability::{NoopTraceSink, SpanKind, TraceEvent, TracePhase, TraceSink};
 use agentctl_store::{
     ApprovalRequest, ArtifactRecord, CheckpointRecord, EffectReconciliationRecord,
-    EffectReconciliationRequest, LegacyTaskUpgrade, ReconciliationStatus,
-    ReusedTaskMaterialization, RunMode, SqliteStore, StoreError, StreamEventRecord,
-    TaskBatchOutcome, TaskBatchResult, TaskCompletionMetadata, TaskDisposition,
+    EffectReconciliationRequest, LegacyTaskUpgrade, MemoryRecord, MemorySearchResult,
+    ReconciliationStatus, ReusedTaskMaterialization, RunMode, SqliteStore, StoreError,
+    StreamEventRecord, TaskBatchOutcome, TaskBatchResult, TaskCompletionMetadata, TaskDisposition,
     TaskExecutionMetadata, TaskRecord,
 };
 use async_trait::async_trait;
@@ -138,6 +142,38 @@ pub trait StreamEventSink: Send + Sync {
     fn record(&self, event: &StreamEventRecord);
 }
 
+#[async_trait]
+pub trait MemoryAdapter: Send + Sync {
+    async fn get(
+        &self,
+        namespace: &str,
+        key: &str,
+        now: DateTime<Utc>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<MemoryRecord>, RuntimeError>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn put(
+        &self,
+        namespace: &str,
+        key: &str,
+        entry: &MemoryEntry,
+        embedding_provider: &str,
+        embedding: &[f32],
+        expires_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RuntimeError>;
+
+    async fn search(
+        &self,
+        query: &MemoryQuery,
+        query_embedding: Option<&[f32]>,
+        now: DateTime<Utc>,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<MemorySearchResult>, RuntimeError>;
+}
+
 const MAX_WORKSPACE_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -242,6 +278,8 @@ impl ToolExecutor for BuiltinToolExecutor {
 #[derive(Default)]
 pub struct RuntimeRegistry {
     providers: BTreeMap<String, Arc<dyn ModelProvider>>,
+    embedding_providers: BTreeMap<String, Arc<dyn EmbeddingProvider>>,
+    memory_adapters: BTreeMap<String, Arc<dyn MemoryAdapter>>,
     tools: BTreeMap<String, Arc<dyn ToolExecutor>>,
     reconciliation_hooks: BTreeMap<String, Arc<dyn EffectReconciliationHook>>,
     external_actions: Option<Arc<dyn ExternalActionHandler>>,
@@ -255,6 +293,26 @@ impl RuntimeRegistry {
         provider: Arc<dyn ModelProvider>,
     ) -> Self {
         self.providers.insert(name.into(), provider);
+        self
+    }
+
+    #[must_use]
+    pub fn with_embedding_provider(
+        mut self,
+        name: impl Into<String>,
+        provider: Arc<dyn EmbeddingProvider>,
+    ) -> Self {
+        self.embedding_providers.insert(name.into(), provider);
+        self
+    }
+
+    #[must_use]
+    pub fn with_memory_adapter(
+        mut self,
+        name: impl Into<String>,
+        adapter: Arc<dyn MemoryAdapter>,
+    ) -> Self {
+        self.memory_adapters.insert(name.into(), adapter);
         self
     }
 
@@ -4262,6 +4320,170 @@ impl Runtime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    async fn embed_memory_text(
+        &self,
+        workflow: &Workflow,
+        text: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(String, Vec<f32>), RuntimeError> {
+        let (provider_name, dimensions) =
+            workflow
+                .spec
+                .memory
+                .long_term
+                .as_ref()
+                .map_or(("local_hash", 64), |memory| {
+                    (
+                        memory.embedding.provider.as_str(),
+                        memory.embedding.dimensions,
+                    )
+                });
+        if cancellation.is_cancelled() {
+            return Err(RuntimeError::Cancelled);
+        }
+        let embedding = if provider_name == "local_hash" {
+            local_hash_embedding(text, dimensions)
+                .map_err(|error| RuntimeError::InvalidState(error.to_string()))?
+        } else {
+            let provider = self
+                .registry
+                .embedding_providers
+                .get(provider_name)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidState(format!(
+                        "memory embedding provider `{provider_name}` is not registered"
+                    ))
+                })?;
+            provider.embed(text, dimensions, cancellation).await?
+        };
+        if embedding.len() != usize::from(dimensions)
+            || embedding.iter().any(|value| !value.is_finite())
+        {
+            return Err(RuntimeError::InvalidState(format!(
+                "memory embedding provider `{provider_name}` returned an invalid {}-dimension vector",
+                embedding.len()
+            )));
+        }
+        Ok((provider_name.to_owned(), embedding))
+    }
+
+    async fn get_memory_record(
+        &self,
+        workflow: &Workflow,
+        namespace: &str,
+        key: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<MemoryRecord>, RuntimeError> {
+        let provider = memory_provider(workflow);
+        let record = if provider == "sqlite" {
+            self.store
+                .get_memory_entry(namespace, key, self.clock.now())
+                .map_err(RuntimeError::from)?
+        } else {
+            let adapter = self.registry.memory_adapters.get(provider).ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "long-term memory adapter `{provider}` is not registered"
+                ))
+            })?;
+            adapter
+                .get(namespace, key, self.clock.now(), cancellation)
+                .await?
+        };
+        if let Some(record) = &record {
+            if record.namespace != namespace || record.key != key {
+                return Err(RuntimeError::InvalidState(
+                    "memory adapter returned a record with the wrong identity".to_owned(),
+                ));
+            }
+            record
+                .entry
+                .validate()
+                .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
+            if record
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= self.clock.now())
+            {
+                return Err(RuntimeError::InvalidState(
+                    "memory adapter returned an expired record".to_owned(),
+                ));
+            }
+        }
+        Ok(record)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn put_memory_record(
+        &self,
+        workflow: &Workflow,
+        namespace: &str,
+        key: &str,
+        entry: &MemoryEntry,
+        embedding_provider: &str,
+        embedding: &[f32],
+        expires_at: Option<DateTime<Utc>>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RuntimeError> {
+        let provider = memory_provider(workflow);
+        if provider == "sqlite" {
+            return self
+                .store
+                .put_memory_entry(
+                    namespace,
+                    key,
+                    entry,
+                    Some(embedding_provider),
+                    Some(embedding),
+                    expires_at,
+                    self.clock.now(),
+                )
+                .map_err(RuntimeError::from);
+        }
+        let adapter = self.registry.memory_adapters.get(provider).ok_or_else(|| {
+            RuntimeError::InvalidState(format!(
+                "long-term memory adapter `{provider}` is not registered"
+            ))
+        })?;
+        adapter
+            .put(
+                namespace,
+                key,
+                entry,
+                embedding_provider,
+                embedding,
+                expires_at,
+                self.clock.now(),
+                cancellation,
+            )
+            .await
+    }
+
+    async fn search_memory_records(
+        &self,
+        workflow: &Workflow,
+        query: &MemoryQuery,
+        query_embedding: Option<&[f32]>,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<MemorySearchResult>, RuntimeError> {
+        let provider = memory_provider(workflow);
+        let results = if provider == "sqlite" {
+            self.store
+                .search_memory(query, query_embedding, self.clock.now())
+                .map_err(RuntimeError::from)?
+        } else {
+            let adapter = self.registry.memory_adapters.get(provider).ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "long-term memory adapter `{provider}` is not registered"
+                ))
+            })?;
+            adapter
+                .search(query, query_embedding, self.clock.now(), cancellation)
+                .await?
+        };
+        validate_memory_results(query, &results)?;
+        Ok(results)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn execute_task(
         &self,
         workflow: &Workflow,
@@ -4282,7 +4504,10 @@ impl Runtime {
                 let action = workflow.spec.actions.get(name).ok_or_else(|| {
                     RuntimeError::InvalidState(format!("action `{name}` disappeared after compile"))
                 })?;
-                if action.kind == ActionKind::MemoryWrite {
+                if matches!(
+                    action.kind,
+                    ActionKind::MemoryWrite | ActionKind::LongTermMemoryPromote
+                ) {
                     let key = required_string(&input, "key")?;
                     if (workflow.spec.runtime.max_concurrency > 1 || !task.memory_writes.is_empty())
                         && !task.memory_writes.contains(&key)
@@ -4498,7 +4723,8 @@ impl Runtime {
                     memory: None,
                 })
             }
-            ActionKind::MemoryWrite => {
+            ActionKind::MemoryWrite | ActionKind::LongTermMemoryPromote => {
+                let promotion = action.kind == ActionKind::LongTermMemoryPromote;
                 let key = required_string(&input, "key")?;
                 let value = input.get("value").cloned().unwrap_or(Value::Null);
                 let mut memory = run.working_memory.clone();
@@ -4519,19 +4745,31 @@ impl Runtime {
                     &task.task_id,
                     task.attempt,
                     1,
-                    "builtin.memory.write",
+                    if promotion {
+                        "builtin.long_term_memory.promote"
+                    } else {
+                        "builtin.memory.write"
+                    },
                     EffectClass::InternalState,
                     Risk::Low,
                     Idempotency::Keyed,
                     input,
-                    "update transactional run working memory",
+                    if promotion {
+                        "promote an explicit long-term memory result into working memory"
+                    } else {
+                        "update transactional run working memory"
+                    },
                     trace_id,
                 );
                 match self.prepare_effect(
                     &request,
                     policy,
                     None,
-                    "memory.write",
+                    if promotion {
+                        "memory.promote"
+                    } else {
+                        "memory.write"
+                    },
                     "internal_state",
                     options.interactive,
                 )? {
@@ -4911,36 +5149,204 @@ impl Runtime {
                 .await
             }
             ActionKind::LongTermMemoryRead => {
-                let namespace = workflow
-                    .spec
-                    .memory
-                    .long_term
-                    .as_ref()
-                    .map_or("default", |memory| memory.namespace.as_str());
+                let namespace = memory_namespace(workflow, &input)?;
                 let key = required_string(&input, "key")?;
-                let value = self
-                    .store
-                    .get_long_term_memory(namespace, &key, self.clock.now())?;
-                Ok(TaskExecution::Complete {
-                    output: serde_json::json!({"status": "unchanged", "changed": false, "value": value}),
-                    memory: None,
-                })
-            }
-            ActionKind::LongTermMemoryWrite => {
                 if options.check {
                     return Ok(TaskExecution::Complete {
-                        output: serde_json::json!({"status": "requires_execution", "changed": false}),
+                        output: serde_json::json!({
+                            "status": "requires_execution",
+                            "changed": false,
+                            "namespace": namespace,
+                            "key": key,
+                        }),
                         memory: None,
                     });
                 }
-                let namespace = workflow
-                    .spec
-                    .memory
-                    .long_term
-                    .as_ref()
-                    .map_or("default", |memory| memory.namespace.as_str());
+                let request = EffectRequest::new(
+                    &run.run_id,
+                    &task.task_id,
+                    task.attempt,
+                    1,
+                    "builtin.long_term_memory.read",
+                    EffectClass::Observe,
+                    Risk::Low,
+                    Idempotency::Keyed,
+                    serde_json::json!({"namespace": namespace, "key": key}),
+                    "read one typed cross-run memory entry",
+                    trace_id,
+                );
+                match self.prepare_effect(
+                    &request,
+                    policy,
+                    None,
+                    "memory.read",
+                    "observe",
+                    options.interactive,
+                )? {
+                    PreparedEffect::Paused => Ok(TaskExecution::Paused),
+                    PreparedEffect::Recorded(output) => Ok(TaskExecution::Complete {
+                        output,
+                        memory: None,
+                    }),
+                    PreparedEffect::Execute => {
+                        self.store
+                            .mark_effect_started(&request.id, self.clock.now())?;
+                        match self
+                            .get_memory_record(workflow, &namespace, &key, cancellation)
+                            .await
+                        {
+                            Ok(record) => {
+                                let output = serde_json::json!({
+                                    "status": "unchanged",
+                                    "changed": false,
+                                    "value": record.as_ref().map(|record| record.entry.value()),
+                                    "record": record,
+                                });
+                                self.store.complete_effect(
+                                    &request.id,
+                                    Ok(&output),
+                                    self.clock.now(),
+                                )?;
+                                Ok(TaskExecution::Complete {
+                                    output,
+                                    memory: None,
+                                })
+                            }
+                            Err(error) => {
+                                let message = error.to_string();
+                                self.store.complete_effect(
+                                    &request.id,
+                                    Err(&message),
+                                    self.clock.now(),
+                                )?;
+                                Err(error)
+                            }
+                        }
+                    }
+                }
+            }
+            ActionKind::LongTermMemorySearch => {
+                let query = memory_query_from_input(workflow, &input)?;
+                if options.check {
+                    return Ok(TaskExecution::Complete {
+                        output: serde_json::json!({
+                            "status": "requires_execution",
+                            "changed": false,
+                            "query": query,
+                        }),
+                        memory: None,
+                    });
+                }
+                let request_input = serde_json::to_value(&query)?;
+                let request = EffectRequest::new(
+                    &run.run_id,
+                    &task.task_id,
+                    task.attempt,
+                    1,
+                    "builtin.long_term_memory.search",
+                    EffectClass::Observe,
+                    Risk::Low,
+                    Idempotency::Keyed,
+                    request_input,
+                    "retrieve an ordered typed cross-run memory result set",
+                    trace_id,
+                );
+                match self.prepare_effect(
+                    &request,
+                    policy,
+                    None,
+                    "memory.search",
+                    "observe",
+                    options.interactive,
+                )? {
+                    PreparedEffect::Paused => Ok(TaskExecution::Paused),
+                    PreparedEffect::Recorded(output) => Ok(TaskExecution::Complete {
+                        output,
+                        memory: None,
+                    }),
+                    PreparedEffect::Execute => {
+                        self.store
+                            .mark_effect_started(&request.id, self.clock.now())?;
+                        let query_embedding = if matches!(
+                            query.mode,
+                            MemorySearchMode::Vector | MemorySearchMode::Hybrid
+                        ) {
+                            match self
+                                .embed_memory_text(workflow, &query.text, cancellation)
+                                .await
+                            {
+                                Ok((_, embedding)) => Some(embedding),
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    self.store.complete_effect(
+                                        &request.id,
+                                        Err(&message),
+                                        self.clock.now(),
+                                    )?;
+                                    return Err(error);
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        match self
+                            .search_memory_records(
+                                workflow,
+                                &query,
+                                query_embedding.as_deref(),
+                                cancellation,
+                            )
+                            .await
+                        {
+                            Ok(results) => {
+                                let output = serde_json::json!({
+                                    "status": "unchanged",
+                                    "changed": false,
+                                    "count": results.len(),
+                                    "query": query,
+                                    "results": results,
+                                });
+                                self.store.complete_effect(
+                                    &request.id,
+                                    Ok(&output),
+                                    self.clock.now(),
+                                )?;
+                                Ok(TaskExecution::Complete {
+                                    output,
+                                    memory: None,
+                                })
+                            }
+                            Err(error) => {
+                                let message = error.to_string();
+                                self.store.complete_effect(
+                                    &request.id,
+                                    Err(&message),
+                                    self.clock.now(),
+                                )?;
+                                Err(error)
+                            }
+                        }
+                    }
+                }
+            }
+            ActionKind::LongTermMemoryWrite => {
+                let namespace = memory_namespace(workflow, &input)?;
                 let key = required_string(&input, "key")?;
-                let value = input.get("value").cloned().unwrap_or(Value::Null);
+                let entry = memory_entry_from_input(&input)?;
+                let expires_at = memory_expiration(workflow, &input, self.clock.now())?;
+                if options.check {
+                    return Ok(TaskExecution::Complete {
+                        output: serde_json::json!({
+                            "status": "requires_execution",
+                            "changed": false,
+                            "namespace": namespace,
+                            "key": key,
+                            "entry": entry,
+                            "expiresAt": expires_at,
+                        }),
+                        memory: None,
+                    });
+                }
                 let request = EffectRequest::new(
                     &run.run_id,
                     &task.task_id,
@@ -4950,8 +5356,13 @@ impl Runtime {
                     EffectClass::ExternalMutate,
                     Risk::Medium,
                     Idempotency::Keyed,
-                    serde_json::json!({"namespace": namespace, "key": key, "value": value}),
-                    "write cross-run memory",
+                    serde_json::json!({
+                        "namespace": namespace,
+                        "key": key,
+                        "entry": entry,
+                        "expiresAt": expires_at,
+                    }),
+                    "write one typed cross-run memory entry",
                     trace_id,
                 );
                 match self.prepare_effect(
@@ -4970,15 +5381,56 @@ impl Runtime {
                     PreparedEffect::Execute => {
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
-                        self.store.put_long_term_memory(
-                            namespace,
-                            &key,
-                            &value,
-                            None,
-                            self.clock.now(),
-                        )?;
-                        let output =
-                            serde_json::json!({"status": "changed", "changed": true, "key": key});
+                        let searchable_text =
+                            entry.searchable_text().ok_or_else(|| RuntimeError::Task {
+                                task: task.task_id.clone(),
+                                message: "typed memory entry has no searchable text".to_owned(),
+                            })?;
+                        let (embedding_provider, embedding) = match self
+                            .embed_memory_text(workflow, searchable_text, cancellation)
+                            .await
+                        {
+                            Ok(embedding) => embedding,
+                            Err(error) => {
+                                let message = error.to_string();
+                                self.store.complete_effect(
+                                    &request.id,
+                                    Err(&message),
+                                    self.clock.now(),
+                                )?;
+                                return Err(error);
+                            }
+                        };
+                        if let Err(error) = self
+                            .put_memory_record(
+                                workflow,
+                                &namespace,
+                                &key,
+                                &entry,
+                                &embedding_provider,
+                                &embedding,
+                                expires_at,
+                                cancellation,
+                            )
+                            .await
+                        {
+                            self.store.mark_effect_uncertain(
+                                &request.id,
+                                &error.to_string(),
+                                self.clock.now(),
+                            )?;
+                            return Err(error);
+                        }
+                        let output = serde_json::json!({
+                            "status": "changed",
+                            "changed": true,
+                            "namespace": namespace,
+                            "key": key,
+                            "entry": entry,
+                            "embeddingProvider": embedding_provider,
+                            "embeddingDimensions": embedding.len(),
+                            "expiresAt": expires_at,
+                        });
                         self.store
                             .complete_effect(&request.id, Ok(&output), self.clock.now())?;
                         Ok(TaskExecution::Complete {
@@ -7452,6 +7904,251 @@ fn collect_outputs(
     render(&serde_json::to_value(declared)?, &context).map_err(RuntimeError::from)
 }
 
+fn memory_provider(workflow: &Workflow) -> &str {
+    workflow
+        .spec
+        .memory
+        .long_term
+        .as_ref()
+        .map_or("sqlite", |memory| memory.provider.as_str())
+}
+
+fn memory_namespace(workflow: &Workflow, input: &Value) -> Result<String, RuntimeError> {
+    let namespace = input
+        .get("namespace")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            workflow
+                .spec
+                .memory
+                .long_term
+                .as_ref()
+                .map(|memory| memory.namespace.as_str())
+        })
+        .unwrap_or("default");
+    if namespace.is_empty() {
+        return Err(RuntimeError::InvalidState(
+            "memory namespace must not be empty".to_owned(),
+        ));
+    }
+    Ok(namespace.to_owned())
+}
+
+fn memory_entry_from_input(input: &Value) -> Result<MemoryEntry, RuntimeError> {
+    let metadata = input
+        .get("metadata")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| {
+            RuntimeError::InvalidState(format!("memory metadata must be an object: {error}"))
+        })?
+        .unwrap_or_default();
+    let mut entry = if let Some(value) = input.get("entry") {
+        let mut value = value.clone();
+        let object = value.as_object_mut().ok_or_else(|| {
+            RuntimeError::InvalidState("memory `entry` must be an object".to_owned())
+        })?;
+        object
+            .entry("formatVersion")
+            .or_insert_with(|| Value::from(MEMORY_ENTRY_FORMAT_VERSION));
+        serde_json::from_value::<MemoryEntry>(value).map_err(|error| {
+            RuntimeError::InvalidState(format!("memory entry is invalid: {error}"))
+        })?
+    } else if let Some(content) = input.get("content") {
+        let content =
+            serde_json::from_value::<MemoryContent>(content.clone()).map_err(|error| {
+                RuntimeError::InvalidState(format!("memory content is invalid: {error}"))
+            })?;
+        MemoryEntry {
+            format_version: MEMORY_ENTRY_FORMAT_VERSION,
+            content,
+            metadata,
+        }
+    } else {
+        let value = input.get("value").cloned().unwrap_or(Value::Null);
+        let text = input
+            .get("text")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| match &value {
+                Value::String(value) => Some(value.clone()),
+                value => serde_json::to_string(value).ok(),
+            });
+        MemoryEntry::json(value, text, metadata)
+    };
+    if entry.metadata.is_empty()
+        && let Some(value) = input.get("metadata")
+    {
+        entry.metadata = serde_json::from_value(value.clone()).map_err(|error| {
+            RuntimeError::InvalidState(format!("memory metadata must be an object: {error}"))
+        })?;
+    }
+    if let MemoryContent::Json { value, text } = &mut entry.content
+        && text.is_none()
+    {
+        *text = Some(serde_json::to_string(value)?);
+    }
+    entry
+        .validate()
+        .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
+    Ok(entry)
+}
+
+fn memory_query_from_input(
+    workflow: &Workflow,
+    input: &Value,
+) -> Result<MemoryQuery, RuntimeError> {
+    let namespace = memory_namespace(workflow, input)?;
+    let text = required_string(input, "query")?;
+    let mode = match input.get("mode").and_then(Value::as_str).unwrap_or("text") {
+        "text" => MemorySearchMode::Text,
+        "vector" => MemorySearchMode::Vector,
+        "hybrid" => MemorySearchMode::Hybrid,
+        value => {
+            return Err(RuntimeError::InvalidState(format!(
+                "memory search mode `{value}` must be text, vector, or hybrid"
+            )));
+        }
+    };
+    let limit = input.get("limit").map_or(Ok(10_u16), |value| {
+        value
+            .as_u64()
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| {
+                RuntimeError::InvalidState(format!(
+                    "memory search limit must be between 1 and {MAX_MEMORY_RESULTS}"
+                ))
+            })
+    })?;
+    let filters = input
+        .get("filters")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| {
+            RuntimeError::InvalidState(format!("memory search filters must be an object: {error}"))
+        })?
+        .unwrap_or_default();
+    let query = MemoryQuery {
+        namespace,
+        text,
+        mode,
+        limit,
+        filters,
+    };
+    query
+        .validate()
+        .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
+    Ok(query)
+}
+
+fn validate_memory_results(
+    query: &MemoryQuery,
+    results: &[MemorySearchResult],
+) -> Result<(), RuntimeError> {
+    if results.len() > usize::from(query.limit) {
+        return Err(RuntimeError::InvalidState(format!(
+            "memory adapter returned {} results for limit {}",
+            results.len(),
+            query.limit
+        )));
+    }
+    let mut keys = BTreeSet::new();
+    for result in results {
+        if result.record.namespace != query.namespace {
+            return Err(RuntimeError::InvalidState(format!(
+                "memory adapter returned namespace `{}` for query namespace `{}`",
+                result.record.namespace, query.namespace
+            )));
+        }
+        if !keys.insert(&result.record.key) {
+            return Err(RuntimeError::InvalidState(format!(
+                "memory adapter returned duplicate key `{}`",
+                result.record.key
+            )));
+        }
+        result
+            .record
+            .entry
+            .validate()
+            .map_err(|error| RuntimeError::InvalidState(error.to_string()))?;
+        if !query
+            .filters
+            .iter()
+            .all(|(key, value)| result.record.entry.metadata.get(key) == Some(value))
+        {
+            return Err(RuntimeError::InvalidState(format!(
+                "memory adapter result `{}` violates the requested metadata filters",
+                result.record.key
+            )));
+        }
+        if result.score_millionths > 1_000_000
+            || result.text_score_millionths > 1_000_000
+            || result.vector_score_millionths > 1_000_000
+        {
+            return Err(RuntimeError::InvalidState(format!(
+                "memory adapter result `{}` has an out-of-range score",
+                result.record.key
+            )));
+        }
+    }
+    if results.windows(2).any(|pair| {
+        pair[0].score_millionths < pair[1].score_millionths
+            || (pair[0].score_millionths == pair[1].score_millionths
+                && pair[0].record.key > pair[1].record.key)
+    }) {
+        return Err(RuntimeError::InvalidState(
+            "memory adapter results are not deterministically ordered by score and key".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn memory_expiration(
+    workflow: &Workflow,
+    input: &Value,
+    now: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, RuntimeError> {
+    let retention_days = input
+        .get("retentionDays")
+        .map(|value| {
+            value.as_u64().ok_or_else(|| {
+                RuntimeError::InvalidState(
+                    "memory retentionDays must be a positive integer".to_owned(),
+                )
+            })
+        })
+        .transpose()?
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                RuntimeError::InvalidState(
+                    "memory retentionDays exceeds the supported range".to_owned(),
+                )
+            })
+        })
+        .transpose()?
+        .or_else(|| {
+            workflow
+                .spec
+                .memory
+                .long_term
+                .as_ref()
+                .and_then(|memory| memory.retention_days)
+        });
+    let Some(retention_days) = retention_days else {
+        return Ok(None);
+    };
+    if retention_days == 0 || retention_days > 36_500 {
+        return Err(RuntimeError::InvalidState(
+            "memory retentionDays must be between 1 and 36500".to_owned(),
+        ));
+    }
+    Ok(Some(
+        now + chrono::Duration::days(i64::from(retention_days)),
+    ))
+}
+
 fn required_string(input: &Value, name: &str) -> Result<String, RuntimeError> {
     input
         .get(name)
@@ -7624,6 +8321,83 @@ mod tests {
     use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
     use tempfile::tempdir;
     use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct CountingEmbeddingProvider(AtomicUsize);
+
+    #[async_trait]
+    impl EmbeddingProvider for CountingEmbeddingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn embed(
+            &self,
+            text: &str,
+            dimensions: u16,
+            cancellation: &CancellationToken,
+        ) -> Result<Vec<f32>, ProviderError> {
+            if cancellation.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            self.0.fetch_add(1, Ordering::SeqCst);
+            local_hash_embedding(text, dimensions)
+                .map_err(|error| ProviderError::Malformed(error.to_string()))
+        }
+    }
+
+    struct CountingMemoryAdapter {
+        store: SqliteStore,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl MemoryAdapter for CountingMemoryAdapter {
+        async fn get(
+            &self,
+            namespace: &str,
+            key: &str,
+            now: DateTime<Utc>,
+            _cancellation: &CancellationToken,
+        ) -> Result<Option<MemoryRecord>, RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.store.get_memory_entry(namespace, key, now)?)
+        }
+
+        async fn put(
+            &self,
+            namespace: &str,
+            key: &str,
+            entry: &MemoryEntry,
+            embedding_provider: &str,
+            embedding: &[f32],
+            expires_at: Option<DateTime<Utc>>,
+            now: DateTime<Utc>,
+            _cancellation: &CancellationToken,
+        ) -> Result<(), RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.store.put_memory_entry(
+                namespace,
+                key,
+                entry,
+                Some(embedding_provider),
+                Some(embedding),
+                expires_at,
+                now,
+            )?)
+        }
+
+        async fn search(
+            &self,
+            query: &MemoryQuery,
+            query_embedding: Option<&[f32]>,
+            now: DateTime<Utc>,
+            _cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchResult>, RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.store.search_memory(query, query_embedding, now)?)
+        }
+    }
 
     struct FixedClock;
 
@@ -14678,6 +15452,154 @@ spec:
                 .expect("compensated output"),
             "compensated"
         );
+    }
+
+    #[tokio::test]
+    async fn semantic_memory_uses_typed_external_contracts_and_replays_offline() {
+        let directory = tempdir().expect("tempdir");
+        let state_store = SqliteStore::open_memory().expect("state store");
+        let memory_store = SqliteStore::open_memory().expect("memory store");
+        let adapter = Arc::new(CountingMemoryAdapter {
+            store: memory_store.clone(),
+            calls: AtomicUsize::new(0),
+        });
+        let embeddings = Arc::new(CountingEmbeddingProvider::default());
+        let registry = RuntimeRegistry::default()
+            .with_memory_adapter("external_test", adapter.clone())
+            .with_embedding_provider("fake", embeddings.clone());
+        let runtime = Runtime::new(state_store.clone(), directory.path())
+            .with_registry(registry)
+            .with_clock(Arc::new(FixedClock))
+            .with_ids(Arc::new(SequenceIds::default()));
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: semantic-memory }
+spec:
+  providers: { fake: { kind: fake } }
+  memory:
+    working: { recalled: [] }
+    longTerm:
+      provider: external_test
+      namespace: team
+      retentionDays: 30
+      embedding: { provider: fake, dimensions: 64 }
+  policy: { approval: never }
+  actions:
+    write: { kind: builtin.long_term_memory.write }
+    search: { kind: builtin.long_term_memory.search }
+    promote: { kind: builtin.long_term_memory.promote }
+  tasks:
+    - id: write
+      uses: action:write
+      with:
+        key: repair
+        content: { type: text, text: "durable workflow repair" }
+        metadata: { project: agentctl }
+    - id: search
+      uses: action:search
+      needs: [write]
+      with:
+        query: "durable repair"
+        mode: hybrid
+        limit: 5
+        filters: { project: agentctl }
+    - id: promote
+      uses: action:promote
+      needs: [search]
+      memoryWrites: [recalled]
+      with:
+        key: recalled
+        value: "${{ tasks.search.output.results }}"
+"#,
+        );
+        let source = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("semantic memory run");
+        assert_eq!(source.state, RunState::Succeeded);
+        let source_record = state_store.load_run(&source.run_id).expect("source");
+        assert_eq!(
+            source_record.working_memory["recalled"]
+                .as_array()
+                .expect("recalled results")
+                .len(),
+            1
+        );
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(embeddings.0.load(Ordering::SeqCst), 2);
+
+        let replay = runtime
+            .replay(&source.run_id)
+            .await
+            .expect("offline replay");
+        assert_eq!(replay.state, RunState::Succeeded);
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(embeddings.0.load(Ordering::SeqCst), 2);
+        assert!(
+            state_store
+                .list_effects(&replay.run_id)
+                .expect("replay effects")
+                .is_empty()
+        );
+
+        let added = MemoryEntry::text(
+            "durable repair checkpoint",
+            BTreeMap::from([("project".to_owned(), serde_json::json!("agentctl"))]),
+        );
+        let added_embedding =
+            local_hash_embedding(added.searchable_text().expect("text"), 64).expect("embedding");
+        memory_store
+            .put_memory_entry(
+                "team",
+                "checkpoint",
+                &added,
+                Some("fake"),
+                Some(&added_embedding),
+                Some(FixedClock.now() + chrono::Duration::days(30)),
+                FixedClock.now(),
+            )
+            .expect("add memory");
+        let repair_plan = runtime
+            .plan_repair(
+                &source.run_id,
+                &workflow,
+                &plan,
+                &["search".to_owned()],
+                true,
+            )
+            .expect("repair plan");
+        assert!(repair_plan.compatible, "{:?}", repair_plan.blocked_reuse);
+        let repaired = runtime
+            .repair(
+                &workflow,
+                &plan,
+                repair_plan,
+                Some("refresh semantic retrieval"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("repair");
+        assert_eq!(
+            state_store
+                .load_run(&repaired.run_id)
+                .expect("repaired")
+                .working_memory["recalled"]
+                .as_array()
+                .expect("repaired results")
+                .len(),
+            2
+        );
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(embeddings.0.load(Ordering::SeqCst), 3);
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod compiler;
 pub mod diagnostic;
 pub mod dsl;
 pub mod effect;
+pub mod memory;
 pub mod pack;
 pub mod policy;
 pub mod provider;

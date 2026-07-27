@@ -38,7 +38,7 @@ This inventory is enforced by `cargo xtask examples-verify`. The default command
 | `examples/v1/fake-provider.yaml` | Deterministic provider task | fake | success | 0 | 0 | Canonical | Canonical | N/A | N/A | N/A | Canonical | passed |
 | `examples/v1/google-live.yaml` | Google native provider | Google | credentialed execution | 0 | 0 | N/A | Protocol mock | External opt-in | N/A | N/A | Static | passed |
 | `examples/v1/hello.yaml` | Minimal assign workflow | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Canonical | passed |
-| `examples/v1/long-term-memory.yaml` | Namespaced durable memory | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | SQLite | Canonical | passed |
+| `examples/v1/long-term-memory.yaml` | Typed hybrid retrieval and explicit promotion | deterministic | success | 0 | 0 | Acceptance scenario 43 | N/A | N/A | N/A | SQLite entry and local index | Search result, promoted working memory, repair refresh, replay reuse | passed |
 | `examples/v1/loop.yaml` | Bounded durable loop and ordered iteration aggregation | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Iteration states and values | passed |
 | `examples/v1/matrix.yaml` | Bounded static matrix and ordered aggregation | deterministic | success | 0 | 0 | Canonical | N/A | N/A | N/A | N/A | Aggregate states and values | passed |
 | `examples/v1/mcp.yaml` | MCP call contract | MCP | external execution | 0 | 0 | Acceptance scenario 41 plus protocol mocks | Protocol mock | N/A | N/A | N/A | Reconnect generation and call status | passed |

@@ -23,7 +23,6 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
 
 These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
 
-- semantic and hybrid long-term-memory retrieval;
 - enforceable network, process-isolation, usage, resource, and cost budgets;
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
 - reliable monetary cost enforcement when providers expose sufficient authoritative metadata.
@@ -83,6 +82,12 @@ These core workstreams are tracked in the framework limitation burn-down and are
   sandbox. Handshake is a non-mutating protocol promise; invocation failures
   after dispatch remain uncertain. Use containers or stronger platform
   isolation for hostile executables.
+- SQLite memory search scans at most 10,000 active entries and returns at most
+  100 results. Its `local_hash` vectors are deterministic lexical features, not
+  neural embeddings. Use the optional OpenAI embedding adapter or implement the
+  public embedding and memory adapter traits when semantic quality or a
+  specialized external index is required. Promotion into run working memory is
+  always explicit.
 - SQLite is local durable state, not a secret vault or distributed lease service. Persist `/state` across container invocations and back it up according to the workflow's recovery needs.
 - State encryption is explicit and selected-field only. Before it is enabled, the database is plaintext. It does not encrypt artifact bytes or operational metadata, and it cannot retroactively protect old backups or snapshots. Preserve the current referenced key with encrypted backups.
 - Filesystem/process/network allowlists are not an OS sandbox. Run untrusted workflows in a restricted container/VM with least-privilege credentials and egress.

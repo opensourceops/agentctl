@@ -14,6 +14,11 @@ Unversioned `playbook:` YAML can be translated by `agentctl migrate`; `modules` 
 
 Schema 5 adds selective-repair metadata without changing resume, replay, retry, or fork semantics. New runs persist task fingerprints, output contracts/digests, state deltas, artifacts, and disposition. Older runs migrate and remain inspectable, but tasks completed without metadata version 1 cannot be silently reused by repair.
 
+Schema 14 preserves legacy long-term-memory values by wrapping them as typed
+format-version-1 JSON entries with derived searchable text. Exact namespace/key
+reads remain compatible. Text, vector, hybrid search, metadata, embedding
+identity, and explicit promotion are additive.
+
 ## Deprecated and removed
 
 Unversioned YAML is compatibility-only and warns. The TypeScript package exposes no `bin` or `main` and is archived. Placeholder memory adapters, provider environment-name-only “support,” YAML output, legacy profiles, automatic endpoint overrides, old prompt-cache fields, and optimistic replay semantics are removed from production.

@@ -187,11 +187,13 @@ pub(crate) fn package(root: &Path) -> Result<()> {
         .join("dist")
         .join(format!("agentctl-{}-{host}", env!("CARGO_PKG_VERSION")));
     fs::create_dir_all(&package)?;
-    let source = root.join("target").join("release").join(if cfg!(windows) {
-        "agentctl.exe"
-    } else {
-        "agentctl"
-    });
+    let source = target_directory(root)
+        .join("release")
+        .join(if cfg!(windows) {
+            "agentctl.exe"
+        } else {
+            "agentctl"
+        });
     let binary = package.join(source.file_name().context("release binary name")?);
     fs::copy(&source, &binary)?;
     fs::copy(root.join("LICENSE"), package.join("LICENSE"))?;
@@ -429,6 +431,10 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["db", "encryption", "enable"],
         &["db", "encryption", "rotate"],
         &["memory"],
+        &["memory", "get"],
+        &["memory", "put"],
+        &["memory", "search"],
+        &["memory", "reindex"],
         &["gc"],
         &["completion"],
         &["version"],
@@ -1116,11 +1122,25 @@ fn write(path: &Path, value: &str) -> Result<()> {
 }
 
 fn binary_path(root: &Path) -> PathBuf {
-    root.join("target").join("debug").join(if cfg!(windows) {
+    target_directory(root).join("debug").join(if cfg!(windows) {
         "agentctl.exe"
     } else {
         "agentctl"
     })
+}
+
+fn target_directory(root: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || root.join("target"),
+        |target| {
+            let target = PathBuf::from(target);
+            if target.is_absolute() {
+                target
+            } else {
+                root.join(target)
+            }
+        },
+    )
 }
 
 fn run(root: &Path, program: &str, args: &[&str]) -> Result<()> {

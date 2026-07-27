@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use agentctl_core::dsl::{ReasoningEffort, SecretReference};
 use agentctl_core::provider::{
-    ContentBlock, ContinuationState, FinishReason, Message, ModelProvider, ProviderError,
-    ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderStreamSink, ToolCall, Usage,
+    ContentBlock, ContinuationState, EmbeddingProvider, FinishReason, Message, ModelProvider,
+    ProviderError, ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderStreamSink,
+    ToolCall, Usage,
 };
 use agentctl_core::secret::{SecretSourceResolver, SecretValue};
 use async_trait::async_trait;
@@ -14,10 +15,130 @@ use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_STREAM_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub struct LocalHashEmbeddingProvider;
+
+#[async_trait]
+impl EmbeddingProvider for LocalHashEmbeddingProvider {
+    fn name(&self) -> &'static str {
+        "local_hash"
+    }
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError> {
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        agentctl_core::memory::local_hash_embedding(text, dimensions)
+            .map_err(|error| ProviderError::Malformed(error.to_string()))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FakeEmbeddingProvider;
+
+#[async_trait]
+impl EmbeddingProvider for FakeEmbeddingProvider {
+    fn name(&self) -> &'static str {
+        "fake"
+    }
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError> {
+        LocalHashEmbeddingProvider
+            .embed(text, dimensions, cancellation)
+            .await
+    }
+}
+
+#[derive(Clone)]
+pub struct OpenAiEmbeddingProvider {
+    client: Client,
+    config: HttpProviderConfig,
+    endpoint: Url,
+    model: String,
+}
+
+impl OpenAiEmbeddingProvider {
+    pub fn new(
+        config: HttpProviderConfig,
+        model: impl Into<String>,
+    ) -> Result<Self, ProviderError> {
+        let model = model.into();
+        if model.is_empty() {
+            return Err(ProviderError::Malformed(
+                "OpenAI embedding model must not be empty".to_owned(),
+            ));
+        }
+        let endpoint = openai_embeddings_endpoint(&config.endpoint)?;
+        Ok(Self {
+            client: secure_client()?,
+            config,
+            endpoint,
+            model,
+        })
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiEmbeddingProvider {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError> {
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if text.is_empty() {
+            return Err(ProviderError::Malformed(
+                "OpenAI embedding input must not be empty".to_owned(),
+            ));
+        }
+        let credential = load_credential(&self.config, cancellation).await?;
+        let mut http = self
+            .client
+            .post(self.endpoint.clone())
+            .bearer_auth(credential.expose())
+            .json(&serde_json::json!({
+                "model": self.model,
+                "input": text,
+                "dimensions": dimensions,
+                "encoding_format": "float",
+            }));
+        for (name, value) in &self.config.headers {
+            http = http.header(name, value.expose());
+        }
+        if let Some(organization) = &self.config.organization {
+            http = http.header("OpenAI-Organization", organization);
+        }
+        if let Some(project) = &self.config.project {
+            http = http.header("OpenAI-Project", project);
+        }
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send(http, cancellation, &secrets).await?;
+        parse_openai_embedding(&response, dimensions)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HttpProviderConfig {
@@ -81,6 +202,69 @@ fn secure_client() -> Result<Client, ProviderError> {
         .user_agent(concat!("agentctl/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| ProviderError::Malformed(error.to_string()))
+}
+
+fn openai_embeddings_endpoint(endpoint: &str) -> Result<Url, ProviderError> {
+    let mut endpoint = Url::parse(endpoint)
+        .map_err(|error| ProviderError::Malformed(format!("OpenAI endpoint: {error}")))?;
+    if endpoint.query().is_some() || endpoint.fragment().is_some() {
+        return Err(ProviderError::Malformed(
+            "OpenAI Responses endpoint must not contain a query or fragment".to_owned(),
+        ));
+    }
+    if endpoint.path_segments().and_then(Iterator::last) != Some("responses") {
+        return Err(ProviderError::Malformed(
+            "OpenAI endpoint path must end in `/responses`".to_owned(),
+        ));
+    }
+    {
+        let mut segments = endpoint.path_segments_mut().map_err(|()| {
+            ProviderError::Malformed("OpenAI endpoint cannot be a base URL".to_owned())
+        })?;
+        segments.pop_if_empty().pop();
+        segments.push("embeddings");
+    }
+    Ok(endpoint)
+}
+
+fn parse_openai_embedding(value: &Value, dimensions: u16) -> Result<Vec<f32>, ProviderError> {
+    let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
+        ProviderError::Malformed("embedding response is missing `data`".to_owned())
+    })?;
+    if data.len() != 1 || data[0].get("index").and_then(Value::as_u64) != Some(0) {
+        return Err(ProviderError::Malformed(
+            "embedding response must contain exactly one item at index 0".to_owned(),
+        ));
+    }
+    let values = data[0]
+        .get("embedding")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ProviderError::Malformed("embedding response is missing `embedding`".to_owned())
+        })?;
+    if values.len() != usize::from(dimensions) {
+        return Err(ProviderError::Malformed(format!(
+            "embedding response has {} dimensions, expected {dimensions}",
+            values.len()
+        )));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let value = value.as_f64().ok_or_else(|| {
+                ProviderError::Malformed(
+                    "embedding response contains a non-numeric value".to_owned(),
+                )
+            })? as f32;
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(ProviderError::Malformed(
+                    "embedding response contains a non-finite value".to_owned(),
+                ))
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -2005,5 +2189,122 @@ mod tests {
             .complete(&request(), &token)
             .await;
         assert!(matches!(result, Err(ProviderError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_use_the_documented_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_json(serde_json::json!({
+                "model": "text-embedding-3-small",
+                "input": "durable semantic memory",
+                "dimensions": 8,
+                "encoding_format": "float",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": "list",
+                "data": [{
+                    "object": "embedding",
+                    "embedding": [0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4],
+                    "index": 0
+                }],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 3, "total_tokens": 3}
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        let embedding = OpenAiEmbeddingProvider::new(config, "text-embedding-3-small")
+            .expect("provider")
+            .embed("durable semantic memory", 8, &CancellationToken::new())
+            .await
+            .expect("embedding");
+        assert_eq!(embedding.len(), 8);
+        assert_eq!(embedding[0], 0.1_f32);
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_fail_closed_and_redact_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"embedding": [0.1, 0.2], "index": 0}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        let provider =
+            OpenAiEmbeddingProvider::new(config, "text-embedding-3-small").expect("provider");
+        let error = provider
+            .embed("wrong dimensions", 8, &CancellationToken::new())
+            .await
+            .expect_err("dimension mismatch");
+        assert!(matches!(error, ProviderError::Malformed(_)));
+
+        let secret_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": {"message": "invalid test-key"}
+            })))
+            .mount(&secret_server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", secret_server.uri());
+        let error = OpenAiEmbeddingProvider::new(config, "text-embedding-3-small")
+            .expect("provider")
+            .embed("redact", 8, &CancellationToken::new())
+            .await
+            .expect_err("authentication error");
+        assert!(error.to_string().contains("[REDACTED]"));
+        assert!(!error.to_string().contains("test-key"));
+
+        assert!(
+            OpenAiEmbeddingProvider::new(
+                HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY"),
+                ""
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_honor_precancelled_requests() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = OpenAiEmbeddingProvider::new(
+            HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY"),
+            "text-embedding-3-small",
+        )
+        .expect("provider")
+        .embed("cancelled", 8, &cancellation)
+        .await;
+        assert!(matches!(result, Err(ProviderError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn fake_embeddings_are_deterministic_and_cancellable() {
+        let provider = FakeEmbeddingProvider;
+        let first = provider
+            .embed("durable semantic memory", 64, &CancellationToken::new())
+            .await
+            .expect("embedding");
+        let second = provider
+            .embed("durable semantic memory", 64, &CancellationToken::new())
+            .await
+            .expect("embedding");
+        assert_eq!(first, second);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            provider.embed("cancelled", 64, &cancellation).await,
+            Err(ProviderError::Cancelled)
+        ));
     }
 }

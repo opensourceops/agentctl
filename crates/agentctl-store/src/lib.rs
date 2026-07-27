@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use agentctl_core::effect::{EffectRecord, EffectRequest, EffectStatus};
+use agentctl_core::memory::{
+    MAX_EMBEDDING_DIMENSIONS, MEMORY_ENTRY_FORMAT_VERSION, MIN_EMBEDDING_DIMENSIONS, MemoryEntry,
+    MemoryQuery, MemorySearchMode, memory_tokens,
+};
 use agentctl_core::state::{RunState, TaskState};
 use agentctl_core::{CompiledPlan, PLAN_FORMAT_VERSION};
 use artifact::{ArtifactStore, ArtifactStoreError, ArtifactVerification, LocalArtifactStore};
@@ -25,12 +29,13 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 13;
+pub const DATABASE_SCHEMA_VERSION: u32 = 14;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
 pub const STREAM_EVENT_FORMAT_VERSION: u32 = 1;
 const ARTIFACT_INGEST_LEASE_MINUTES: i64 = 60;
+const MAX_MEMORY_SEARCH_CANDIDATES: usize = 10_000;
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE runs (
@@ -384,6 +389,17 @@ CREATE INDEX idx_protocol_sessions_run
   ON protocol_sessions(run_id, task_id, protocol);
 CREATE INDEX idx_protocol_calls_run
   ON protocol_calls(run_id, task_id, task_attempt, effect_id);
+"#;
+
+const MIGRATION_14: &str = r#"
+ALTER TABLE long_term_memory ADD COLUMN format_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE long_term_memory ADD COLUMN embedding_provider TEXT;
+ALTER TABLE long_term_memory ADD COLUMN embedding_dimensions INTEGER;
+ALTER TABLE long_term_memory ADD COLUMN embedding_json TEXT;
+ALTER TABLE long_term_memory ADD COLUMN created_at TEXT;
+UPDATE long_term_memory SET created_at = updated_at WHERE created_at IS NULL;
+CREATE INDEX idx_long_term_memory_search
+  ON long_term_memory(namespace, expires_at, memory_key);
 "#;
 
 #[derive(Clone)]
@@ -786,6 +802,28 @@ pub struct TraceRecord {
     pub trace_id: String,
     pub event: Value,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRecord {
+    pub namespace: String,
+    pub key: String,
+    pub entry: MemoryEntry,
+    pub embedding_provider: Option<String>,
+    pub embedding_dimensions: Option<u16>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchResult {
+    pub record: MemoryRecord,
+    pub score_millionths: u32,
+    pub text_score_millionths: u32,
+    pub vector_score_millionths: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4117,13 +4155,97 @@ impl SqliteStore {
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
         self.connection.lock().execute(
-            "INSERT INTO long_term_memory (namespace, memory_key, value_json, expires_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(namespace, memory_key) DO UPDATE SET value_json = excluded.value_json, expires_at = excluded.expires_at, updated_at = excluded.updated_at",
+            "INSERT INTO long_term_memory (namespace, memory_key, value_json, expires_at, updated_at, format_version, embedding_provider, embedding_dimensions, embedding_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, NULL, ?5)
+             ON CONFLICT(namespace, memory_key) DO UPDATE SET
+               value_json = excluded.value_json,
+               expires_at = excluded.expires_at,
+               updated_at = excluded.updated_at,
+               format_version = 0,
+               embedding_provider = NULL,
+               embedding_dimensions = NULL,
+               embedding_json = NULL",
             params![
                 namespace,
                 key,
                 encode_protected(&self.protection, value, "long_term_memory.value_json")?,
                 expires_at.map(|value| value.to_rfc3339()),
                 now.to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_memory_entry(
+        &self,
+        namespace: &str,
+        key: &str,
+        entry: &MemoryEntry,
+        embedding_provider: Option<&str>,
+        embedding: Option<&[f32]>,
+        expires_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        if namespace.is_empty() || key.is_empty() {
+            return Err(StoreError::Incompatible(
+                "memory namespace and key must not be empty".to_owned(),
+            ));
+        }
+        entry
+            .validate()
+            .map_err(|error| StoreError::Incompatible(error.to_string()))?;
+        if embedding_provider.is_some() != embedding.is_some() {
+            return Err(StoreError::Incompatible(
+                "memory embedding provider and vector must be supplied together".to_owned(),
+            ));
+        }
+        let embedding_dimensions = embedding
+            .map(|vector| {
+                if vector.is_empty() || vector.iter().any(|value| !value.is_finite()) {
+                    return Err(StoreError::Incompatible(
+                        "memory embedding must be non-empty and finite".to_owned(),
+                    ));
+                }
+                let dimensions = u16::try_from(vector.len()).map_err(|_| {
+                    StoreError::Incompatible(
+                        "memory embedding dimensions exceed the supported range".to_owned(),
+                    )
+                })?;
+                if !(MIN_EMBEDDING_DIMENSIONS..=MAX_EMBEDDING_DIMENSIONS).contains(&dimensions) {
+                    return Err(StoreError::Incompatible(format!(
+                        "memory embedding dimensions must be between {MIN_EMBEDDING_DIMENSIONS} and {MAX_EMBEDDING_DIMENSIONS}"
+                    )));
+                }
+                Ok(dimensions)
+            })
+            .transpose()?;
+        let embedding_json = embedding
+            .map(|vector| {
+                encode_protected(&self.protection, &vector, "long_term_memory.embedding_json")
+            })
+            .transpose()?;
+        self.connection.lock().execute(
+            "INSERT INTO long_term_memory (namespace, memory_key, value_json, expires_at, updated_at, format_version, embedding_provider, embedding_dimensions, embedding_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?5)
+             ON CONFLICT(namespace, memory_key) DO UPDATE SET
+               value_json = excluded.value_json,
+               expires_at = excluded.expires_at,
+               updated_at = excluded.updated_at,
+               format_version = excluded.format_version,
+               embedding_provider = excluded.embedding_provider,
+               embedding_dimensions = excluded.embedding_dimensions,
+               embedding_json = excluded.embedding_json",
+            params![
+                namespace,
+                key,
+                encode_protected(&self.protection, entry, "long_term_memory.value_json")?,
+                expires_at.map(|value| value.to_rfc3339()),
+                now.to_rfc3339(),
+                MEMORY_ENTRY_FORMAT_VERSION,
+                embedding_provider,
+                embedding_dimensions,
+                embedding_json,
             ],
         )?;
         Ok(())
@@ -4265,14 +4387,279 @@ impl SqliteStore {
         key: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<Value>, StoreError> {
-        let value: Option<String> = self.connection.lock().query_row(
-            "SELECT value_json FROM long_term_memory WHERE namespace = ?1 AND memory_key = ?2 AND (expires_at IS NULL OR expires_at > ?3)",
-            params![namespace, key, now.to_rfc3339()],
-            |row| row.get(0),
-        ).optional()?;
-        value
-            .map(|value| decode_protected(&self.protection, &value, "long_term_memory.value_json"))
-            .transpose()
+        Ok(self
+            .get_memory_entry(namespace, key, now)?
+            .map(|record| record.entry.value()))
+    }
+
+    pub fn get_memory_entry(
+        &self,
+        namespace: &str,
+        key: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<MemoryRecord>, StoreError> {
+        let raw = self
+            .connection
+            .lock()
+            .query_row(
+                "SELECT format_version, value_json, embedding_provider, embedding_dimensions, created_at, updated_at, expires_at
+                 FROM long_term_memory
+                 WHERE namespace = ?1 AND memory_key = ?2 AND (expires_at IS NULL OR expires_at > ?3)",
+                params![namespace, key, now.to_rfc3339()],
+                |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        raw.map(|raw| {
+            let updated_at = parse_time(&raw.5, "memory.updated_at")?;
+            let entry = decode_memory_entry(&self.protection, raw.0, &raw.1)?;
+            Ok(MemoryRecord {
+                namespace: namespace.to_owned(),
+                key: key.to_owned(),
+                entry,
+                embedding_provider: raw.2,
+                embedding_dimensions: raw
+                    .3
+                    .map(|value| sqlite_u16(value, "memory.embedding_dimensions"))
+                    .transpose()?,
+                created_at: raw
+                    .4
+                    .as_deref()
+                    .map(|value| parse_time(value, "memory.created_at"))
+                    .transpose()?
+                    .unwrap_or(updated_at),
+                updated_at,
+                expires_at: raw
+                    .6
+                    .as_deref()
+                    .map(|value| parse_time(value, "memory.expires_at"))
+                    .transpose()?,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn list_memory_entries(
+        &self,
+        namespace: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<MemoryRecord>, StoreError> {
+        let keys = {
+            let connection = self.connection.lock();
+            let mut statement = connection.prepare(
+                "SELECT memory_key
+                 FROM long_term_memory
+                 WHERE namespace = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+                 ORDER BY memory_key
+                 LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        namespace,
+                        now.to_rfc3339(),
+                        i64::try_from(MAX_MEMORY_SEARCH_CANDIDATES + 1).unwrap_or(i64::MAX)
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        if keys.len() > MAX_MEMORY_SEARCH_CANDIDATES {
+            return Err(StoreError::Incompatible(format!(
+                "memory listing exceeds the bounded candidate limit of {MAX_MEMORY_SEARCH_CANDIDATES}"
+            )));
+        }
+        keys.into_iter()
+            .map(|key| {
+                self.get_memory_entry(namespace, &key, now)?.ok_or_else(|| {
+                    StoreError::Corrupt(format!(
+                        "memory `{namespace}/{key}` disappeared during listing"
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    pub fn search_memory(
+        &self,
+        query: &MemoryQuery,
+        query_embedding: Option<&[f32]>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<MemorySearchResult>, StoreError> {
+        query
+            .validate()
+            .map_err(|error| StoreError::Incompatible(error.to_string()))?;
+        if matches!(
+            query.mode,
+            MemorySearchMode::Vector | MemorySearchMode::Hybrid
+        ) && query_embedding.is_none()
+        {
+            return Err(StoreError::Incompatible(
+                "vector and hybrid memory search require a query embedding".to_owned(),
+            ));
+        }
+        if query_embedding.is_some_and(|embedding| {
+            embedding.is_empty() || embedding.iter().any(|v| !v.is_finite())
+        }) {
+            return Err(StoreError::Incompatible(
+                "query embedding must be non-empty and finite".to_owned(),
+            ));
+        }
+        if query_embedding.is_some_and(|embedding| {
+            u16::try_from(embedding.len()).map_or(true, |dimensions| {
+                !(MIN_EMBEDDING_DIMENSIONS..=MAX_EMBEDDING_DIMENSIONS).contains(&dimensions)
+            })
+        }) {
+            return Err(StoreError::Incompatible(format!(
+                "query embedding dimensions must be between {MIN_EMBEDDING_DIMENSIONS} and {MAX_EMBEDDING_DIMENSIONS}"
+            )));
+        }
+        let raw = {
+            let connection = self.connection.lock();
+            let mut statement = connection.prepare(
+                "SELECT memory_key, format_version, value_json, embedding_provider, embedding_dimensions, embedding_json, created_at, updated_at, expires_at
+                 FROM long_term_memory
+                 WHERE namespace = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+                 ORDER BY memory_key
+                 LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        query.namespace,
+                        now.to_rfc3339(),
+                        i64::try_from(MAX_MEMORY_SEARCH_CANDIDATES + 1).unwrap_or(i64::MAX)
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, u32>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, Option<String>>(8)?,
+                        ))
+                    },
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        if raw.len() > MAX_MEMORY_SEARCH_CANDIDATES {
+            return Err(StoreError::Incompatible(format!(
+                "memory search exceeds the bounded candidate limit of {MAX_MEMORY_SEARCH_CANDIDATES}"
+            )));
+        }
+        let query_tokens = memory_tokens(&query.text);
+        let mut results = Vec::new();
+        for raw in raw {
+            let entry = decode_memory_entry(&self.protection, raw.1, &raw.2)?;
+            if !metadata_matches(&entry.metadata, &query.filters) {
+                continue;
+            }
+            let text_score = text_score(&query_tokens, entry.searchable_text().unwrap_or_default());
+            let embedding = raw
+                .5
+                .as_deref()
+                .map(|stored| {
+                    decode_protected::<Vec<f32>>(
+                        &self.protection,
+                        stored,
+                        "long_term_memory.embedding_json",
+                    )
+                })
+                .transpose()?;
+            match (raw.4, embedding.as_deref()) {
+                (Some(dimensions), Some(vector))
+                    if usize::try_from(dimensions).ok() != Some(vector.len()) =>
+                {
+                    return Err(StoreError::Corrupt(format!(
+                        "memory `{}/{}` embedding dimensions do not match the stored vector",
+                        query.namespace, raw.0
+                    )));
+                }
+                (None, Some(_)) | (Some(_), None) => {
+                    return Err(StoreError::Corrupt(format!(
+                        "memory `{}/{}` has incomplete embedding metadata",
+                        query.namespace, raw.0
+                    )));
+                }
+                _ => {}
+            }
+            if let (Some(query_embedding), Some(candidate)) =
+                (query_embedding, embedding.as_deref())
+                && query_embedding.len() != candidate.len()
+            {
+                return Err(StoreError::Incompatible(format!(
+                    "memory `{}/{}` uses {} embedding dimensions but the query uses {}; rebuild the namespace index",
+                    query.namespace,
+                    raw.0,
+                    candidate.len(),
+                    query_embedding.len()
+                )));
+            }
+            let vector_score = match (query_embedding, embedding.as_deref()) {
+                (Some(query), Some(candidate)) => vector_score(query, candidate),
+                _ => 0,
+            };
+            let score = match query.mode {
+                MemorySearchMode::Text => text_score,
+                MemorySearchMode::Vector => vector_score,
+                MemorySearchMode::Hybrid => {
+                    u32::try_from((u64::from(text_score) + u64::from(vector_score)) / 2)
+                        .unwrap_or(u32::MAX)
+                }
+            };
+            if score == 0 {
+                continue;
+            }
+            let updated_at = parse_time(&raw.7, "memory.updated_at")?;
+            results.push(MemorySearchResult {
+                record: MemoryRecord {
+                    namespace: query.namespace.clone(),
+                    key: raw.0,
+                    entry,
+                    embedding_provider: raw.3,
+                    embedding_dimensions: raw
+                        .4
+                        .map(|value| sqlite_u16(value, "memory.embedding_dimensions"))
+                        .transpose()?,
+                    created_at: raw
+                        .6
+                        .as_deref()
+                        .map(|value| parse_time(value, "memory.created_at"))
+                        .transpose()?
+                        .unwrap_or(updated_at),
+                    updated_at,
+                    expires_at: raw
+                        .8
+                        .as_deref()
+                        .map(|value| parse_time(value, "memory.expires_at"))
+                        .transpose()?,
+                },
+                score_millionths: score,
+                text_score_millionths: text_score,
+                vector_score_millionths: vector_score,
+            });
+        }
+        results.sort_by(|left, right| {
+            right
+                .score_millionths
+                .cmp(&left.score_millionths)
+                .then_with(|| left.record.key.cmp(&right.record.key))
+        });
+        results.truncate(usize::from(query.limit));
+        Ok(results)
     }
 
     pub fn artifact_references(
@@ -4820,6 +5207,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (11_u32, MIGRATION_11),
         (12_u32, MIGRATION_12),
         (13_u32, MIGRATION_13),
+        (14_u32, MIGRATION_14),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -5331,6 +5719,80 @@ fn media_type_for_path(path: &Path) -> &'static str {
     }
 }
 
+fn decode_memory_entry(
+    protection: &SharedStateProtection,
+    format_version: u32,
+    stored: &str,
+) -> Result<MemoryEntry, StoreError> {
+    let value: Value = decode_protected(protection, stored, "long_term_memory.value_json")?;
+    let entry = match format_version {
+        0 => MemoryEntry::from_legacy(value),
+        MEMORY_ENTRY_FORMAT_VERSION => serde_json::from_value(value)?,
+        version => {
+            return Err(StoreError::Corrupt(format!(
+                "unsupported long-term memory format version {version}"
+            )));
+        }
+    };
+    entry
+        .validate()
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    Ok(entry)
+}
+
+fn metadata_matches(metadata: &BTreeMap<String, Value>, filters: &BTreeMap<String, Value>) -> bool {
+    filters
+        .iter()
+        .all(|(key, expected)| metadata.get(key) == Some(expected))
+}
+
+fn text_score(query_tokens: &[String], candidate: &str) -> u32 {
+    let query = query_tokens.iter().collect::<BTreeSet<_>>();
+    if query.is_empty() {
+        return 0;
+    }
+    let candidate = memory_tokens(candidate)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let matches = query
+        .iter()
+        .filter(|token| candidate.contains(token.as_str()))
+        .count();
+    u32::try_from(
+        u64::try_from(matches)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(1_000_000)
+            / u64::try_from(query.len()).unwrap_or(u64::MAX),
+    )
+    .unwrap_or(1_000_000)
+}
+
+fn vector_score(query: &[f32], candidate: &[f32]) -> u32 {
+    if query.len() != candidate.len() || query.is_empty() {
+        return 0;
+    }
+    let mut dot = 0.0_f64;
+    let mut query_norm = 0.0_f64;
+    let mut candidate_norm = 0.0_f64;
+    for (left, right) in query.iter().zip(candidate) {
+        let left = f64::from(*left);
+        let right = f64::from(*right);
+        dot += left * right;
+        query_norm += left * left;
+        candidate_norm += right * right;
+    }
+    if query_norm == 0.0 || candidate_norm == 0.0 {
+        return 0;
+    }
+    let cosine = (dot / (query_norm.sqrt() * candidate_norm.sqrt())).clamp(0.0, 1.0);
+    (cosine * 1_000_000.0).round() as u32
+}
+
+fn sqlite_u16(value: i64, field: &str) -> Result<u16, StoreError> {
+    u16::try_from(value)
+        .map_err(|_| StoreError::Corrupt(format!("{field} is outside the u16 range: {value}")))
+}
+
 fn sqlite_u64(value: i64, field: &str) -> Result<u64, StoreError> {
     u64::try_from(value)
         .map_err(|_| StoreError::Corrupt(format!("{field} cannot be negative: {value}")))
@@ -5541,6 +6003,7 @@ spec:
             MIGRATION_10,
             MIGRATION_11,
             MIGRATION_12,
+            MIGRATION_13,
         ]
         .into_iter()
         .enumerate()
@@ -5677,11 +6140,20 @@ spec:
                 Utc::now(),
             )
             .expect("protocol call");
+        let memory_entry = MemoryEntry::json(
+            serde_json::json!({"value": marker}),
+            Some(marker.to_owned()),
+            BTreeMap::from([("classification".to_owned(), serde_json::json!("secret"))]),
+        );
+        let memory_embedding =
+            agentctl_core::memory::local_hash_embedding(marker, 64).expect("memory embedding");
         store
-            .put_long_term_memory(
+            .put_memory_entry(
                 "test",
                 "secret",
-                &serde_json::json!({"value": marker}),
+                &memory_entry,
+                Some("local_hash"),
+                Some(&memory_embedding),
                 None,
                 Utc::now(),
             )
@@ -6444,6 +6916,31 @@ spec:
     }
 
     #[test]
+    fn migration_fourteen_preserves_legacy_memory_as_typed_entries() {
+        let directory = tempdir().expect("temp dir");
+        let path = directory.path().join("runtime-v13.db");
+        create_version_database(&path, 13);
+        let now = Utc::now();
+        Connection::open(&path)
+            .expect("legacy connection")
+            .execute(
+                "INSERT INTO long_term_memory (namespace, memory_key, value_json, expires_at, updated_at)
+                 VALUES ('legacy', 'greeting', '\"hello\"', NULL, ?1)",
+                [now.to_rfc3339()],
+            )
+            .expect("legacy memory");
+
+        let store = SqliteStore::open(&path).expect("migrate");
+        let record = store
+            .get_memory_entry("legacy", "greeting", now)
+            .expect("read")
+            .expect("record");
+        assert_eq!(record.entry.value(), serde_json::json!("hello"));
+        assert_eq!(record.entry.searchable_text(), Some("hello"));
+        assert_eq!(store.schema_version(), DATABASE_SCHEMA_VERSION);
+    }
+
+    #[test]
     fn upgrades_the_pre_repair_schema_and_creates_repair_records() {
         let directory = tempdir().expect("temp dir");
         let path = directory.path().join("runtime.db");
@@ -6774,6 +7271,92 @@ spec:
                 .expect("read"),
             Some(serde_json::json!(2))
         );
+    }
+
+    #[test]
+    fn typed_memory_search_is_stable_filtered_and_retention_aware() {
+        let store = SqliteStore::open_memory().expect("store");
+        let now = Utc::now();
+        let first = MemoryEntry::text(
+            "Rust durable workflow repair",
+            BTreeMap::from([
+                ("project".to_owned(), serde_json::json!("agentctl")),
+                ("kind".to_owned(), serde_json::json!("guide")),
+            ]),
+        );
+        let second = MemoryEntry::text(
+            "Python web application",
+            BTreeMap::from([("project".to_owned(), serde_json::json!("other"))]),
+        );
+        let expired = MemoryEntry::text(
+            "Rust expired note",
+            BTreeMap::from([("project".to_owned(), serde_json::json!("agentctl"))]),
+        );
+        for (key, entry, expires_at) in [
+            ("repair", &first, Some(now + chrono::Duration::days(1))),
+            ("web", &second, None),
+            (
+                "expired",
+                &expired,
+                Some(now - chrono::Duration::seconds(1)),
+            ),
+        ] {
+            let embedding =
+                agentctl_core::memory::local_hash_embedding(entry.searchable_text().unwrap(), 64)
+                    .expect("embedding");
+            store
+                .put_memory_entry(
+                    "docs",
+                    key,
+                    entry,
+                    Some("local_hash"),
+                    Some(&embedding),
+                    expires_at,
+                    now,
+                )
+                .expect("put");
+        }
+        let query = MemoryQuery {
+            namespace: "docs".to_owned(),
+            text: "Rust workflow".to_owned(),
+            mode: MemorySearchMode::Hybrid,
+            limit: 10,
+            filters: BTreeMap::from([("project".to_owned(), serde_json::json!("agentctl"))]),
+        };
+        let embedding =
+            agentctl_core::memory::local_hash_embedding(&query.text, 64).expect("query embedding");
+        let results = store
+            .search_memory(&query, Some(&embedding), now)
+            .expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].record.key, "repair");
+        assert!(results[0].score_millionths > 0);
+        assert_eq!(
+            store
+                .get_memory_entry("docs", "repair", now)
+                .expect("get")
+                .expect("record")
+                .entry,
+            first
+        );
+        assert!(
+            store
+                .get_memory_entry("docs", "expired", now)
+                .expect("expired")
+                .is_none()
+        );
+        store
+            .connection()
+            .execute(
+                "UPDATE long_term_memory SET embedding_dimensions = 63
+                 WHERE namespace = 'docs' AND memory_key = 'repair'",
+                [],
+            )
+            .expect("corrupt dimensions");
+        assert!(matches!(
+            store.search_memory(&query, Some(&embedding), now),
+            Err(StoreError::Corrupt(_))
+        ));
     }
 
     #[test]
