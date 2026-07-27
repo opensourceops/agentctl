@@ -1,0 +1,280 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: live-framework-composite
+  description: Verify bounded OpenAI tasks across deterministic workflow composition.
+spec:
+  runtime:
+    maxConcurrency: 4
+    budgets:
+      maxProviderRequests: 12
+      maxTurns: 12
+      maxInputTokens: 24000
+      maxOutputTokens: 1536
+      maxTotalTokens: 25536
+      maxTasks: 24
+      maxExpansionItems: 2
+      maxLoopIterations: 3
+  outputs:
+    left: "${{ tasks.branch-left.output.marker }}"
+    right: "${{ tasks.branch-right.output.marker }}"
+    matrix: "${{ tasks.matrix-agents.output.items }}"
+    route: "${{ tasks.route-decision.output.route }}"
+    iterations: "${{ tasks.loop-agents.output.iterations }}"
+    subworkflow: "${{ tasks.subworkflow-agent.output.status }}"
+    decision: "${{ tasks.review.output.decision }}"
+    stream: "${{ tasks.stream.output.text }}"
+  providers:
+    openai:
+      kind: openai
+      credential: { env: OPENAI_API_KEY }
+  policy:
+    workspaceRoot: .
+    networkAllowlist: [api.openai.com]
+    approval: never
+  agents:
+    marker:
+      provider: openai
+      model: gpt-5.6
+      instructions: Return only the requested marker through the structured output.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [marker]
+        additionalProperties: false
+        properties:
+          marker: { type: string }
+      providerOptions: { store: false }
+    matrix-worker:
+      provider: openai
+      model: gpt-5.6
+      instructions: Return only the requested matrix item through the structured output.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [item]
+        additionalProperties: false
+        properties:
+          item: { type: string }
+      providerOptions: { store: false }
+    route-selector:
+      provider: openai
+      model: gpt-5.6
+      instructions: Select the execute route exactly as requested.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [route]
+        additionalProperties: false
+        properties:
+          route: { type: string, enum: [execute] }
+      providerOptions: { store: false }
+    loop-worker:
+      provider: openai
+      model: gpt-5.6
+      instructions: Return the requested zero-based loop iteration.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [iteration]
+        additionalProperties: false
+        properties:
+          iteration: { type: integer, minimum: 0, maximum: 1 }
+      providerOptions: { store: false }
+    subworker:
+      provider: openai
+      model: gpt-5.6
+      instructions: Return status ready through the structured output.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [status]
+        additionalProperties: false
+        properties:
+          status: { type: string, enum: [ready] }
+      providerOptions: { store: false }
+    collector:
+      provider: openai
+      model: gpt-5.6
+      instructions: Return evidence LIVE_TEAM_READY through the structured output.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [evidence]
+        additionalProperties: false
+        properties:
+          evidence: { type: string, enum: [LIVE_TEAM_READY] }
+      providerOptions: { store: false }
+    reviewer:
+      provider: openai
+      model: gpt-5.6
+      instructions: Approve the typed evidence payload through the structured output.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        required: [decision]
+        additionalProperties: false
+        properties:
+          decision: { type: string, enum: [approved] }
+      providerOptions: { store: false }
+    streamer:
+      provider: openai
+      model: gpt-5.6
+      instructions: Reply with exactly LIVE_STREAM_VERIFIED.
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      stream: true
+      providerOptions: { store: false }
+  actions:
+    assign: { kind: builtin.assign }
+    assert: { kind: builtin.assert }
+  subworkflows:
+    live-agent:
+      version: 1.0.0
+      inputSchema:
+        type: object
+        required: [label]
+        additionalProperties: false
+        properties:
+          label: { type: string }
+      outputSchema:
+        type: object
+        required: [status]
+        additionalProperties: false
+        properties:
+          status: { type: string, enum: [ready] }
+      outputs:
+        status: "${{ tasks.work.output.status }}"
+      tasks:
+        - id: work
+          uses: agent:subworker
+          with:
+            prompt: "Return ready for ${{ inputs.label }}."
+  tasks:
+    - id: branch-left
+      uses: agent:marker
+      with:
+        prompt: Return marker left.
+    - id: branch-right
+      uses: agent:marker
+      with:
+        prompt: Return marker right.
+    - id: matrix-agents
+      uses: agent:matrix-worker
+      matrix:
+        axes:
+          item: [alpha, beta]
+        maxItems: 2
+      with:
+        prompt: "Return item ${{ vars.matrix.item }}."
+    - id: route-decision
+      uses: agent:route-selector
+      needs: [branch-left, branch-right, matrix-agents]
+      with:
+        prompt: Select execute.
+    - id: route
+      uses: router
+      needs: [route-decision]
+      route:
+        select: "${{ tasks.route-decision.output.route }}"
+        cases:
+          - equals: execute
+            tasks: [route-selected]
+        default: [route-hold]
+    - id: route-selected
+      uses: action:assign
+      needs: [route]
+      with: { selected: true }
+    - id: route-hold
+      uses: action:assign
+      needs: [route]
+      with: { selected: false }
+    - id: loop-agents
+      uses: agent:loop-worker
+      needs: [route-selected]
+      loop:
+        maxIterations: 3
+        while: "${{ vars.loopIndex < 2 }}"
+        initial: { iteration: -1 }
+      with:
+        prompt: "Return iteration ${{ vars.loopIndex }}."
+    - id: subworkflow-agent
+      uses: workflow:live-agent
+      needs: [loop-agents]
+      with: { label: composite }
+    - id: collect
+      uses: agent:collector
+      needs: [subworkflow-agent]
+      with:
+        prompt: Return the required live team evidence.
+    - id: handoff
+      uses: action:assign
+      needs: [collect]
+      with:
+        from: collector
+        to: reviewer
+        payload: "${{ tasks.collect.output }}"
+      outputSchema:
+        type: object
+        required: [output]
+        properties:
+          output:
+            type: object
+            required: [from, to, payload]
+            additionalProperties: false
+            properties:
+              from: { const: collector }
+              to: { const: reviewer }
+              payload:
+                type: object
+                required: [evidence]
+                additionalProperties: false
+                properties:
+                  evidence: { const: LIVE_TEAM_READY }
+    - id: review
+      uses: agent:reviewer
+      needs: [handoff]
+      with:
+        prompt: "${{ tasks.handoff.output.output.payload }}"
+    - id: stream
+      uses: agent:streamer
+      needs: [review]
+      with:
+        prompt: Reply now.
+    - id: verify
+      uses: action:assert
+      needs: [branch-left, branch-right, matrix-agents, route-selected, loop-agents, subworkflow-agent, review, stream]
+      with:
+        that: "${{ tasks.review.output.decision == 'approved' }}"
+        message: the live structured handoff was not approved

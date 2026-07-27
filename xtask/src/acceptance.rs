@@ -2466,6 +2466,572 @@ spec:
     Ok(())
 }
 
+pub fn completeness(root: &Path) -> Result<()> {
+    super::package(root)?;
+    let binary = packaged_binary(root)?;
+    let directory = tempfile::tempdir()?;
+
+    println!("[1/3] durable pipeline recovery composition");
+    durable_composite_acceptance(root, &binary, directory.path())?;
+
+    println!("[2/3] operational protocol and compensation composition");
+    operational_composite_acceptance(root, &binary, directory.path())?;
+
+    println!("[3/3] structured role handoff composition");
+    structured_handoff_composite_acceptance(root, &binary, directory.path())?;
+
+    println!(
+        "agentctl framework completeness passed: packaged CLI, parallel matrix, typed agent output, approval, artifact CAS, retry, repair, offline replay, sub-workflow, loop, route, MCP reconnect, compensation, reconciliation, cancellation, and structured handoff"
+    );
+    Ok(())
+}
+
+fn durable_composite_acceptance(root: &Path, binary: &Path, directory: &Path) -> Result<()> {
+    let workspace = directory.join("durable-pipeline");
+    fs::create_dir_all(workspace.join("artifacts"))?;
+    let source = workspace.join("durable-pipeline.yaml");
+    let target = workspace.join("durable-pipeline-repaired.yaml");
+    fs::copy(
+        root.join("examples/framework-completeness/durable-pipeline.yaml"),
+        &source,
+    )?;
+    fs::copy(
+        root.join("examples/framework-completeness/durable-pipeline-repaired.yaml"),
+        &target,
+    )?;
+    let db = workspace.join("runtime.db");
+
+    for workflow in [&source, &target] {
+        credential_free_json(
+            binary,
+            &workspace,
+            &strings([
+                "check",
+                path(workflow)?,
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+            0,
+        )?;
+        credential_free_json(
+            binary,
+            &workspace,
+            &strings([
+                "plan",
+                path(workflow)?,
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ]),
+            0,
+        )?;
+    }
+
+    let paused = credential_free_json(
+        binary,
+        &workspace,
+        &run_args(&source, &db, &workspace, &[]),
+        3,
+    )?;
+    ensure_eq(&paused, "/data/state", "paused")?;
+    let source_run_id = string_at(&paused, "/data/runId")?;
+    let pending = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "approvals",
+            "--db",
+            path(&db)?,
+            "list",
+            source_run_id,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure!(array_len(&pending, "/data")? == 1);
+    let approval_id = string_at(&pending, "/data/0/approvalId")?;
+    credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "approvals",
+            "--db",
+            path(&db)?,
+            "approve",
+            approval_id,
+            "--reason",
+            "framework completeness acceptance",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    let failure = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "resume",
+            source_run_id,
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        4,
+    )?;
+    ensure_eq(&failure, "/error/runId", source_run_id)?;
+    let source_inspect = inspect_without_openai(binary, &workspace, &db, source_run_id)?;
+    ensure_eq(&source_inspect, "/data/run/state", "failed")?;
+    ensure!(array_len(&source_inspect, "/data/tasks")? == 10);
+    ensure!(model_effects(&source_inspect) == 1);
+    ensure!(array_len(&source_inspect, "/data/artifacts")? == 1);
+    ensure_eq(
+        &source_inspect,
+        "/data/budget/usage/providerRequests",
+        1_u64,
+    )?;
+    ensure_eq(&source_inspect, "/data/budget/usage/artifactBytes", 25_u64)?;
+    let artifact_digest = string_at(&source_inspect, "/data/artifacts/0/digest")?;
+
+    let retry_plan = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "retry",
+            path(&source)?,
+            source_run_id,
+            "--failed",
+            "--plan",
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&retry_plan, "/data/compatible", true)?;
+    ensure!(array_len(&retry_plan, "/data/reusedTasks")? == 9);
+    ensure_eq(&retry_plan, "/data/reusedTasks/7", "analyze")?;
+    ensure_eq(&retry_plan, "/data/reusedTasks/8", "publish")?;
+    ensure_eq(&retry_plan, "/data/rerunTasks/0", "validate")?;
+    let retry_failure = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "retry",
+            path(&source)?,
+            source_run_id,
+            "--failed",
+            "--reason",
+            "verify failed-only terminal retry",
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        4,
+    )?;
+    let retry_run_id = string_at(&retry_failure, "/error/runId")?;
+    let retry_inspect = inspect_without_openai(binary, &workspace, &db, retry_run_id)?;
+    ensure!(model_effects(&retry_inspect) == 0);
+    ensure!(array_len(&retry_inspect, "/data/artifacts")? == 1);
+    ensure!(task_has(&retry_inspect, "validate", "failed", "executed"));
+    ensure!(task_has(&retry_inspect, "analyze", "succeeded", "reused"));
+
+    fs::remove_file(workspace.join("artifacts/framework-completeness.txt"))?;
+    let repair_plan = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "repair",
+            path(&target)?,
+            source_run_id,
+            "--from",
+            "validate",
+            "--plan",
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&repair_plan, "/data/compatible", true)?;
+    ensure!(array_len(&repair_plan, "/data/reusedTasks")? == 9);
+    ensure_eq(&repair_plan, "/data/rerunTasks/0", "validate")?;
+    let repair = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "repair",
+            path(&target)?,
+            source_run_id,
+            "--from",
+            "validate",
+            "--reason",
+            "fix the validation boundary",
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&repair, "/data/state", "succeeded")?;
+    ensure_eq(&repair, "/data/output/verdict", "DURABLE_PIPELINE_VERIFIED")?;
+    ensure!(array_len(&repair, "/data/output/matrix")? == 4);
+    ensure!(array_len(&repair, "/data/reusedTasks")? == 9);
+    ensure_eq(&repair, "/data/executedTasks/0", "validate")?;
+    let repair_run_id = string_at(&repair, "/data/runId")?;
+    let repair_inspect = inspect_without_openai(binary, &workspace, &db, repair_run_id)?;
+    ensure!(model_effects(&repair_inspect) == 0);
+    ensure!(array_len(&repair_inspect, "/data/toolCalls")? == 0);
+    ensure_eq(&repair_inspect, "/data/artifacts/0/digest", artifact_digest)?;
+
+    let artifact_verify = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "artifacts",
+            "--db",
+            path(&db)?,
+            "verify",
+            artifact_digest,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&artifact_verify, "/data/valid", true)?;
+    let exported = workspace.join("exports/framework-completeness.txt");
+    credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "artifacts",
+            "--db",
+            path(&db)?,
+            "export",
+            artifact_digest,
+            path(&exported)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure!(fs::read_to_string(exported)? == "DURABLE_PIPELINE_VERIFIED");
+
+    let replay = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "replay",
+            repair_run_id,
+            "--db",
+            path(&db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&replay, "/data/output/verdict", "DURABLE_PIPELINE_VERIFIED")?;
+    let replay_run_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = inspect_without_openai(binary, &workspace, &db, replay_run_id)?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/toolCalls")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/providerSessions")? == 0);
+    ensure_eq(&replay_inspect, "/data/artifacts/0/digest", artifact_digest)?;
+    Ok(())
+}
+
+fn operational_composite_acceptance(root: &Path, binary: &Path, directory: &Path) -> Result<()> {
+    let server = ProtocolFixtureServer::start()?;
+    let workspace = directory.join("operational-workflow");
+    fs::create_dir_all(workspace.join("artifacts"))?;
+    let workflow = workspace.join("operational-workflow.yaml");
+    let source =
+        fs::read_to_string(root.join("examples/framework-completeness/operational-workflow.yaml"))?
+            .replace(
+                "http://127.0.0.1:8765/mcp",
+                &format!("http://{}/mcp", server.address()),
+            );
+    write(&workflow, &source)?;
+    let db = workspace.join("runtime.db");
+
+    let failure = credential_free_json(
+        binary,
+        &workspace,
+        &run_args(&workflow, &db, &workspace, &[]),
+        4,
+    )?;
+    let source_run_id = string_at(&failure, "/error/runId")?;
+    let inspection = inspect_without_openai(binary, &workspace, &db, source_run_id)?;
+    ensure_eq(&inspection, "/data/run/state", "failed")?;
+    ensure!(server.mcp_calls() == 2);
+    ensure_eq(&inspection, "/data/protocolSessions/0/generation", 2_u64)?;
+    ensure_eq(&inspection, "/data/protocolCalls/0/status", "succeeded")?;
+    ensure!(task_has(&inspection, "probe", "succeeded", "executed"));
+    ensure!(task_has(&inspection, "route", "succeeded", "executed"));
+    ensure!(task_has(&inspection, "provision", "succeeded", "executed"));
+    ensure!(task_has(&inspection, "hold", "skipped", "executed"));
+    ensure!(task_has(&inspection, "fail", "failed", "executed"));
+    ensure!(task_prefix_count(&inspection, "normalize--") >= 2);
+    ensure!(task_prefix_count(&inspection, "verify-loop--") == 3);
+    ensure!(
+        task_record(&inspection, "verify-loop").and_then(|task| task.pointer("/output/iterations"))
+            == Some(&Value::from(2_u64))
+    );
+    ensure!(array_len(&inspection, "/data/audit")? > 0);
+    ensure!(array_len(&inspection, "/data/traces")? > 0);
+    ensure!(
+        fs::read_to_string(workspace.join("artifacts/operational-resource.txt"))? == "provisioned"
+    );
+
+    let compensation_plan = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "compensate",
+            source_run_id,
+            "--plan",
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&compensation_plan, "/data/executable", true)?;
+    ensure_eq(
+        &compensation_plan,
+        "/data/tasks/0/sourceTaskId",
+        "provision",
+    )?;
+    let compensation = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "compensate",
+            source_run_id,
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&compensation, "/data/state", "succeeded")?;
+    ensure_eq(&compensation, "/data/compensatedTasks/0", "provision")?;
+    ensure!(
+        fs::read_to_string(workspace.join("artifacts/operational-resource.txt"))? == "compensated"
+    );
+    let compensation_run_id = string_at(&compensation, "/data/runId")?;
+    let source_after = inspect_without_openai(binary, &workspace, &db, source_run_id)?;
+    ensure!(
+        source_after["data"]["effectReconciliations"]
+            .as_array()
+            .is_some_and(|records| records.iter().any(|record| {
+                record.get("status").and_then(Value::as_str) == Some("compensated")
+            }))
+    );
+    let replay = credential_free_json(
+        binary,
+        &workspace,
+        &strings([
+            "replay",
+            compensation_run_id,
+            "--db",
+            path(&db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    let replay_run_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = inspect_without_openai(binary, &workspace, &db, replay_run_id)?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    operational_cancellation_acceptance(binary, &workspace, &workflow)?;
+    Ok(())
+}
+
+fn operational_cancellation_acceptance(
+    binary: &Path,
+    workspace: &Path,
+    workflow: &Path,
+) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let db = workspace.join("cancellation.db");
+        let args = run_args(
+            workflow,
+            &db,
+            workspace,
+            &[
+                "--input".to_owned(),
+                "mode=cancel".to_owned(),
+                "--timeout-seconds".to_owned(),
+                "20".to_owned(),
+            ],
+        );
+        let mut command = command_for(binary, workspace, &args);
+        command.env_remove("OPENAI_API_KEY");
+        configure_piped_command(&mut command);
+        let child = command.spawn()?;
+        for _ in 0..100 {
+            if db.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(500));
+        let status = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()?;
+        ensure!(status.success(), "failed to deliver operational SIGTERM");
+        let output = bounded_wait(child, "operational composite cancellation")?;
+        ensure!(
+            output.status.code() == Some(130),
+            "operational SIGTERM exit was not 130"
+        );
+        let cancelled = parse_output(&output)?;
+        ensure_eq(&cancelled, "/data/state", "cancelled")?;
+        let run_id = string_at(&cancelled, "/data/runId")?;
+        let inspection = inspect_without_openai(binary, workspace, &db, run_id)?;
+        ensure_eq(&inspection, "/data/run/state", "cancelled")?;
+        ensure!(task_has(
+            &inspection,
+            "cancel-boundary",
+            "cancelled",
+            "executed"
+        ));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (binary, workspace, workflow);
+        println!("operational SIGTERM composition is not applicable on this platform");
+    }
+    Ok(())
+}
+
+fn structured_handoff_composite_acceptance(
+    root: &Path,
+    binary: &Path,
+    directory: &Path,
+) -> Result<()> {
+    let workflow = root.join("examples/v1/structured-handoff.yaml");
+    let workspace = root.join("examples/v1");
+    let db = directory.join("structured-handoff.db");
+    let run = credential_free_json(binary, root, &run_args(&workflow, &db, &workspace, &[]), 0)?;
+    ensure_eq(&run, "/data/state", "succeeded")?;
+    ensure_eq(&run, "/data/output/decision", "approved")?;
+    ensure_eq(
+        &run,
+        "/data/output/handoff/payload/evidence",
+        "TEAM_EVIDENCE_VERIFIED",
+    )?;
+    let source_run_id = string_at(&run, "/data/runId")?;
+    let inspection = inspect_without_openai(binary, root, &db, source_run_id)?;
+    ensure!(array_len(&inspection, "/data/tasks")? == 4);
+    ensure!(array_len(&inspection, "/data/toolCalls")? == 1);
+    ensure!(task_has(&inspection, "collect", "succeeded", "executed"));
+    ensure!(task_has(&inspection, "handoff", "succeeded", "executed"));
+    ensure!(task_has(&inspection, "review", "succeeded", "executed"));
+    ensure!(task_has(&inspection, "verify", "succeeded", "executed"));
+
+    let retry = credential_free_json(
+        binary,
+        root,
+        &strings([
+            "retry",
+            path(&workflow)?,
+            source_run_id,
+            "--from",
+            "review",
+            "--restart-successful",
+            "--db",
+            path(&db)?,
+            "--workspace",
+            path(&workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    ensure_eq(&retry, "/data/state", "succeeded")?;
+    ensure_eq(&retry, "/data/reusedTasks/0", "collect")?;
+    ensure_eq(&retry, "/data/reusedTasks/1", "handoff")?;
+    ensure_eq(&retry, "/data/executedTasks/0", "review")?;
+    ensure_eq(&retry, "/data/executedTasks/1", "verify")?;
+    let retry_run_id = string_at(&retry, "/data/runId")?;
+    let replay = credential_free_json(
+        binary,
+        root,
+        &strings([
+            "replay",
+            retry_run_id,
+            "--db",
+            path(&db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )?;
+    let replay_run_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = inspect_without_openai(binary, root, &db, replay_run_id)?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/toolCalls")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/providerSessions")? == 0);
+    Ok(())
+}
+
 pub fn container(root: &Path) -> Result<()> {
     let engine = container_engine()?;
     ensure_engine_ready(&engine)?;
@@ -2599,6 +3165,9 @@ pub fn container(root: &Path) -> Result<()> {
     ensure_eq(&repaired, "/data/state", "succeeded")?;
     ensure_eq(&repaired, "/data/reusedTasks/0", "first")?;
 
+    container_durable_composite_acceptance(root, &engine)?;
+    container_compensation_reconciliation_acceptance(&engine)?;
+
     let missing_directory = tempfile::tempdir()?;
     let missing = container_layout(missing_directory.path(), false)?;
     write(&missing.config.join("workflow.yaml"), OPENAI_AUTH_WORKFLOW)?;
@@ -2615,8 +3184,424 @@ pub fn container(root: &Path) -> Result<()> {
 
     container_signal_acceptance(&engine, directory.path())?;
     println!(
-        "agentctl OCI acceptance passed: success, artifact, inspect, parallel ordered commit, network-disabled replay, selective repair, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
+        "agentctl OCI acceptance passed: success, artifact, inspect, parallel matrix composite, approval, retry, repair, compensation reconciliation, network-disabled replay, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
     );
+    Ok(())
+}
+
+fn container_durable_composite_acceptance(root: &Path, engine: &Path) -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let layout = container_layout(directory.path(), false)?;
+    for (source, destination) in [
+        (
+            "examples/framework-completeness/durable-pipeline.yaml",
+            "durable-source.yaml",
+        ),
+        (
+            "examples/framework-completeness/durable-pipeline-repaired.yaml",
+            "durable-target.yaml",
+        ),
+    ] {
+        let workflow = fs::read_to_string(root.join(source))?
+            .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
+            .replace(
+                "path: artifacts/framework-completeness.txt",
+                "path: /artifacts/framework-completeness.txt",
+            );
+        write(&layout.config.join(destination), &workflow)?;
+    }
+    let db = "/state/composite.db";
+    let paused = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "run",
+            "/config/durable-source.yaml",
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        3,
+        "OCI durable composite approval pause",
+    )?;
+    ensure_eq(&paused, "/data/state", "paused")?;
+    let source_run_id = string_at(&paused, "/data/runId")?;
+    let approvals = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "approvals",
+            "--db",
+            db,
+            "list",
+            source_run_id,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite approval list",
+    )?;
+    let approval_id = string_at(&approvals, "/data/0/approvalId")?;
+    container_agentctl(
+        engine,
+        &layout,
+        &[
+            "approvals",
+            "--db",
+            db,
+            "approve",
+            approval_id,
+            "--reason",
+            "OCI framework completeness",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite approval",
+    )?;
+    let failure = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "resume",
+            source_run_id,
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        4,
+        "OCI durable composite source failure",
+    )?;
+    ensure_eq(&failure, "/error/runId", source_run_id)?;
+    let source_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            source_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite source inspect",
+    )?;
+    ensure!(array_len(&source_inspect, "/data/tasks")? == 10);
+    ensure!(model_effects(&source_inspect) == 1);
+    ensure!(array_len(&source_inspect, "/data/artifacts")? == 1);
+    let artifact_digest = string_at(&source_inspect, "/data/artifacts/0/digest")?;
+
+    let retry_plan = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "retry",
+            "/config/durable-source.yaml",
+            source_run_id,
+            "--failed",
+            "--plan",
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite retry plan",
+    )?;
+    ensure!(array_len(&retry_plan, "/data/reusedTasks")? == 9);
+    ensure_eq(&retry_plan, "/data/rerunTasks/0", "validate")?;
+    let retry = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "retry",
+            "/config/durable-source.yaml",
+            source_run_id,
+            "--failed",
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        4,
+        "OCI durable composite retry",
+    )?;
+    let retry_run_id = string_at(&retry, "/error/runId")?;
+    let retry_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            retry_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite retry inspect",
+    )?;
+    ensure!(model_effects(&retry_inspect) == 0);
+    ensure!(task_has(&retry_inspect, "analyze", "succeeded", "reused"));
+
+    fs::remove_file(layout.artifacts.join("framework-completeness.txt"))?;
+    let repair = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "repair",
+            "/config/durable-target.yaml",
+            source_run_id,
+            "--from",
+            "validate",
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite repair",
+    )?;
+    ensure_eq(&repair, "/data/state", "succeeded")?;
+    ensure_eq(&repair, "/data/output/verdict", "DURABLE_PIPELINE_VERIFIED")?;
+    ensure!(array_len(&repair, "/data/output/matrix")? == 4);
+    ensure!(array_len(&repair, "/data/reusedTasks")? == 9);
+    let repair_run_id = string_at(&repair, "/data/runId")?;
+    let repair_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            repair_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite repair inspect",
+    )?;
+    ensure!(model_effects(&repair_inspect) == 0);
+    ensure_eq(&repair_inspect, "/data/artifacts/0/digest", artifact_digest)?;
+    container_agentctl(
+        engine,
+        &layout,
+        &[
+            "artifacts",
+            "--db",
+            db,
+            "verify",
+            artifact_digest,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite artifact verify",
+    )?;
+    container_agentctl(
+        engine,
+        &layout,
+        &[
+            "artifacts",
+            "--db",
+            db,
+            "export",
+            artifact_digest,
+            "/artifacts/framework-completeness-exported.txt",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite artifact export",
+    )?;
+    ensure!(
+        fs::read_to_string(layout.artifacts.join("framework-completeness-exported.txt"))?
+            == "DURABLE_PIPELINE_VERIFIED"
+    );
+    let replay = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "replay",
+            repair_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite offline replay",
+    )?;
+    let replay_run_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            replay_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI durable composite replay inspect",
+    )?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/toolCalls")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/providerSessions")? == 0);
+    Ok(())
+}
+
+fn container_compensation_reconciliation_acceptance(engine: &Path) -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let layout = container_layout(directory.path(), false)?;
+    let workflow = COMPENSATION_WORKFLOW
+        .replace("writableRoots: [artifacts]", "writableRoots: [/artifacts]")
+        .replace(
+            "path: artifacts/compensation.txt",
+            "path: /artifacts/compensation.txt",
+        );
+    write(&layout.config.join("compensation.yaml"), &workflow)?;
+    let db = "/state/reconciliation.db";
+    let failure = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "run",
+            "/config/compensation.yaml",
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        4,
+        "OCI compensation source",
+    )?;
+    let source_run_id = string_at(&failure, "/error/runId")?;
+    let compensation = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "compensate",
+            source_run_id,
+            "--workspace",
+            "/workspace",
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI compensation",
+    )?;
+    ensure_eq(&compensation, "/data/state", "succeeded")?;
+    ensure!(fs::read_to_string(layout.artifacts.join("compensation.txt"))? == "compensated");
+    let source_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            source_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI compensation source inspect",
+    )?;
+    ensure!(
+        source_inspect["data"]["effectReconciliations"]
+            .as_array()
+            .is_some_and(|records| records.iter().any(|record| {
+                record.get("status").and_then(Value::as_str) == Some("compensated")
+            }))
+    );
+    let compensation_run_id = string_at(&compensation, "/data/runId")?;
+    let replay = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "replay",
+            compensation_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI compensation offline replay",
+    )?;
+    let replay_run_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            replay_run_id,
+            "--db",
+            db,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        0,
+        "OCI compensation replay inspect",
+    )?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
     Ok(())
 }
 
@@ -2760,6 +3745,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     super::verify_example_matrix(root)?;
     let expected_live = BTreeSet::from([
         "examples/docs/provider-portability/openai.yaml".to_owned(),
+        "examples/framework-completeness/live-composite.yaml".to_owned(),
         "examples/openai-live/workflow.yaml".to_owned(),
         "examples/selective-repair-openai/repaired.workflow.yaml".to_owned(),
         "examples/selective-repair-openai/source.workflow.yaml".to_owned(),
@@ -2784,6 +3770,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         ("examples/v1/openai-live.yaml", 0),
         ("examples/v1/secret-reference.yaml", 0),
         ("examples/docs/provider-portability/openai.yaml", 0),
+        ("examples/framework-completeness/live-composite.yaml", 0),
     ] {
         let directory = tempfile::tempdir()?;
         let source = root.join(example);
@@ -2835,12 +3822,60 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         usage = usage.plus(usage_totals(&evidence));
         tool_calls = tool_calls.saturating_add(array_len(&evidence, "/data/toolCalls")?);
         guard_live_budget(requests, &usage)?;
+        let mut replay_run_id = None;
         if example == "examples/openai-live/workflow.yaml" {
             ensure_eq(&result, "/data/output/verdict", LIVE_VERIFY_TOKEN)?;
             ensure!(
                 fs::read_to_string(directory.path().join("artifacts/openai-live-report.txt"))?
                     == LIVE_VERIFY_TOKEN
             );
+        } else if example == "examples/framework-completeness/live-composite.yaml" {
+            ensure_eq(&result, "/data/output/left", "left")?;
+            ensure_eq(&result, "/data/output/right", "right")?;
+            ensure_eq(&result, "/data/output/route", "execute")?;
+            ensure_eq(&result, "/data/output/iterations", 2_u64)?;
+            ensure_eq(&result, "/data/output/subworkflow", "ready")?;
+            ensure_eq(&result, "/data/output/decision", "approved")?;
+            ensure_eq(&result, "/data/output/stream", "LIVE_STREAM_VERIFIED")?;
+            ensure!(array_len(&result, "/data/output/matrix")? == 2);
+            ensure_eq(&result, "/data/output/matrix/0/output/item", "alpha")?;
+            ensure_eq(&result, "/data/output/matrix/1/output/item", "beta")?;
+            ensure!(model_effects(&evidence) == 11);
+            ensure!(task_has(&evidence, "branch-left", "succeeded", "executed"));
+            ensure!(task_has(&evidence, "branch-right", "succeeded", "executed"));
+            ensure!(task_has(&evidence, "route-hold", "skipped", "executed"));
+            ensure!(task_prefix_count(&evidence, "matrix-agents--") == 2);
+            ensure!(task_prefix_count(&evidence, "loop-agents--") == 3);
+            ensure!(
+                evidence["data"]["streamEvents"]
+                    .as_array()
+                    .is_some_and(|events| events.iter().any(|event| {
+                        event.get("taskId").and_then(Value::as_str) == Some("stream")
+                    }))
+            );
+            let replay = json_with_removed_env(
+                &binary,
+                directory.path(),
+                &strings([
+                    "replay",
+                    run_id,
+                    "--db",
+                    path(&db)?,
+                    "--output",
+                    "json",
+                    "--color",
+                    "never",
+                ]),
+                "OPENAI_API_KEY",
+                0,
+            )?;
+            ensure!(replay.pointer("/data/output") == result.pointer("/data/output"));
+            let replay_id = string_at(&replay, "/data/runId")?.to_owned();
+            let replay_evidence = inspect(&binary, directory.path(), &db, &replay_id)?;
+            ensure!(array_len(&replay_evidence, "/data/effects")? == 0);
+            ensure!(array_len(&replay_evidence, "/data/toolCalls")? == 0);
+            ensure!(array_len(&replay_evidence, "/data/providerSessions")? == 0);
+            replay_run_id = Some(replay_id);
         }
         example_runs.push(serde_json::json!({
             "example": example,
@@ -2849,6 +3884,8 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
             "status": evidence.pointer("/data/run/state"),
             "requestCount": model_effects(&evidence),
             "toolCallCount": array_len(&evidence, "/data/toolCalls")?,
+            "replayRunId": replay_run_id,
+            "replayFreshEffects": replay_run_id.as_ref().map(|_| 0),
         }));
     }
 
@@ -2907,6 +3944,63 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
             .pointer("/data/providerSessions/1/continuation")
             .is_some(),
         "failed source task did not retain provider continuation evidence"
+    );
+
+    let retry_plan = successful_json(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "retry",
+            path(&source_workflow)?,
+            source_run_id,
+            "--failed",
+            "--plan",
+            "--db",
+            path(&repair_db)?,
+            "--workspace",
+            path(&repair_workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+    )?;
+    ensure_eq(&retry_plan, "/data/compatible", true)?;
+    ensure_eq(&retry_plan, "/data/reusedTasks/0", "analyze")?;
+    ensure_eq(&retry_plan, "/data/rerunTasks/0", "publish")?;
+    let retry_result = json_with_code(
+        &binary,
+        &repair_workspace,
+        &strings([
+            "retry",
+            path(&source_workflow)?,
+            source_run_id,
+            "--failed",
+            "--reason",
+            "live deterministic agent failure retry",
+            "--db",
+            path(&repair_db)?,
+            "--workspace",
+            path(&repair_workspace)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        4,
+    )?;
+    let retry_run_id = string_at(&retry_result, "/error/runId")?;
+    let retry_evidence = inspect(&binary, &repair_workspace, &repair_db, retry_run_id)?;
+    ensure_eq(&retry_evidence, "/data/run/mode", "retry")?;
+    ensure!(task_has(&retry_evidence, "analyze", "succeeded", "reused"));
+    ensure!(task_has(&retry_evidence, "publish", "failed", "executed"));
+    ensure!(
+        count_task_items(&retry_evidence, "/data/effects", "analyze", true) == 0,
+        "live retry repeated the successful upstream agent"
+    );
+    ensure!(
+        count_task_items(&retry_evidence, "/data/effects", "publish", true) == 1,
+        "live retry did not make exactly one bounded provider attempt"
     );
 
     let repair_plan = successful_json(
@@ -3028,7 +4122,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         "offline replay changed the repair artifact"
     );
 
-    for evidence in [&source_before, &repair_evidence] {
+    for evidence in [&source_before, &retry_evidence, &repair_evidence] {
         assert_secret_absent(evidence)?;
         requests = requests.saturating_add(model_effects(evidence));
         usage = usage.plus(usage_totals(evidence));
@@ -3042,6 +4136,16 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         "status": "failed",
         "requestCount": model_effects(&source_before),
         "toolCallCount": array_len(&source_before, "/data/toolCalls")?,
+    }));
+    example_runs.push(serde_json::json!({
+        "example": "examples/selective-repair-openai/source.workflow.yaml",
+        "scenario": "terminal retry after deterministic agent failure",
+        "model": "gpt-5.6",
+        "runId": retry_run_id,
+        "status": "failed-as-designed",
+        "requestCount": model_effects(&retry_evidence),
+        "toolCallCount": array_len(&retry_evidence, "/data/toolCalls")?,
+        "upstreamReused": true,
     }));
     example_runs.push(serde_json::json!({
         "example": "examples/selective-repair-openai/repaired.workflow.yaml",
@@ -3503,6 +4607,62 @@ fn inspect(binary: &Path, cwd: &Path, db: &Path, run_id: &str) -> Result<Value> 
             "never",
         ]),
     )
+}
+
+fn inspect_without_openai(binary: &Path, cwd: &Path, db: &Path, run_id: &str) -> Result<Value> {
+    credential_free_json(
+        binary,
+        cwd,
+        &strings([
+            "inspect",
+            run_id,
+            "--db",
+            path(db)?,
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ]),
+        0,
+    )
+}
+
+fn credential_free_json(binary: &Path, cwd: &Path, args: &[String], code: i32) -> Result<Value> {
+    json_with_removed_env(binary, cwd, args, "OPENAI_API_KEY", code)
+}
+
+fn task_has(value: &Value, task_id: &str, state: &str, disposition: &str) -> bool {
+    task_record(value, task_id).is_some_and(|task| {
+        task.get("state").and_then(Value::as_str) == Some(state)
+            && task.get("disposition").and_then(Value::as_str) == Some(disposition)
+    })
+}
+
+fn task_record<'a>(value: &'a Value, task_id: &str) -> Option<&'a Value> {
+    value
+        .pointer("/data/tasks")
+        .and_then(Value::as_array)
+        .and_then(|tasks| {
+            tasks
+                .iter()
+                .find(|task| task.get("taskId").and_then(Value::as_str) == Some(task_id))
+        })
+}
+
+fn task_prefix_count(value: &Value, prefix: &str) -> usize {
+    value
+        .pointer("/data/tasks")
+        .and_then(Value::as_array)
+        .map_or(0, |tasks| {
+            tasks
+                .iter()
+                .filter(|task| {
+                    task.get("taskId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|task_id| task_id.starts_with(prefix))
+                })
+                .count()
+        })
 }
 
 fn model_effects(value: &Value) -> usize {

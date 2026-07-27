@@ -1,0 +1,140 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: operational-composite
+  description: Combine reusable workflow, loop, router, MCP, compensation, and reconciliation boundaries.
+spec:
+  inputs:
+    mode: failure
+  compensation:
+    onFailure: manual
+    approval: policy
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    networkAllowlist: [127.0.0.1]
+    network:
+      allowPrivate: true
+    approval: never
+  mcpServers:
+    fixture:
+      url: http://127.0.0.1:8765/mcp
+      protocolVersion: 2025-11-25
+      timeoutSeconds: 2
+  providers:
+    fake:
+      kind: fake
+  agents:
+    cancellation-boundary:
+      provider: fake
+      model: scripted
+      instructions: Wait until the enclosing run is cancelled.
+      maxTurns: 1
+      maxToolCalls: 0
+      timeoutSeconds: 20
+      providerOptions:
+        delayMs: 10000
+        finalText: cancellation boundary was not interrupted
+  actions:
+    assign:
+      kind: builtin.assign
+    write:
+      kind: builtin.write
+    assert:
+      kind: builtin.assert
+    probe:
+      kind: mcp.call
+      idempotency: idempotent
+  subworkflows:
+    normalize:
+      version: 1.0.0
+      inputSchema:
+        type: object
+        required: [value]
+        additionalProperties: false
+        properties:
+          value:
+            type: string
+      outputSchema:
+        type: object
+        required: [value]
+        additionalProperties: false
+        properties:
+          value:
+            type: string
+      outputs:
+        value: "${{ tasks.copy.output.output.value }}"
+      tasks:
+        - id: copy
+          uses: action:assign
+          with:
+            value: "${{ inputs.value }}"
+  tasks:
+    - id: normalize
+      uses: workflow:normalize
+      with: { value: operational }
+    - id: probe
+      uses: action:probe
+      needs: [normalize]
+      outputSchema:
+        type: object
+        required: [ok]
+        properties:
+          ok:
+            const: true
+      with:
+        server: fixture
+        tool: durable
+        arguments: { value: safe }
+    - id: verify-loop
+      uses: action:assign
+      needs: [probe]
+      loop:
+        maxIterations: 3
+        while: "${{ vars.loopIndex < 2 }}"
+        initial:
+          value: seed
+      with:
+        previous: "${{ vars.loopPrevious }}"
+        iteration: "${{ vars.loopIndex }}"
+    - id: decide
+      uses: action:assign
+      needs: [verify-loop]
+      with: { route: provision }
+    - id: route
+      uses: router
+      needs: [decide]
+      route:
+        select: "${{ tasks.decide.output.output.route }}"
+        cases:
+          - equals: provision
+            tasks: [provision]
+        default: [hold]
+    - id: provision
+      uses: action:write
+      needs: [route]
+      with:
+        path: artifacts/operational-resource.txt
+        content: provisioned
+      compensate:
+        uses: action:write
+        with:
+          path: artifacts/operational-resource.txt
+          content: compensated
+    - id: hold
+      uses: action:assign
+      needs: [route]
+      with: { result: held }
+    - id: fail
+      uses: action:assert
+      needs: [provision]
+      when: "${{ inputs.mode == 'failure' }}"
+      with:
+        that: false
+        message: expected operational failure before compensation
+    - id: cancel-boundary
+      uses: agent:cancellation-boundary
+      needs: [provision]
+      when: "${{ inputs.mode == 'cancel' }}"
+      with:
+        prompt: Wait for cancellation.

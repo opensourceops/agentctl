@@ -29,6 +29,7 @@ fn main() -> Result<()> {
         "migration-verify" => migration_verify(&root),
         "protocol-resilience" => protocol_resilience(&root),
         "acceptance" => acceptance::run(&root),
+        "completeness" => acceptance::completeness(&root),
         "acceptance-container" => acceptance::container(&root),
         "acceptance-live-openai" => acceptance::live_openai(&root),
         "resource-budget-live-openai" => acceptance::live_openai_budget(&root),
@@ -42,7 +43,7 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }

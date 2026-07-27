@@ -1,0 +1,86 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: durable-composite-pipeline
+  description: Combine bounded concurrency, matrix expansion, an agent, approval, artifacts, and recovery.
+spec:
+  runtime:
+    maxConcurrency: 4
+    budgets:
+      maxProviderRequests: 1
+      maxTurns: 1
+      maxTasks: 12
+      maxExpansionItems: 4
+      maxArtifactBytes: 4096
+  outputs:
+    verdict: "${{ tasks.analyze.output.text }}"
+    matrix: "${{ tasks.coverage.output.items }}"
+  providers:
+    fake:
+      kind: fake
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: mutations
+  agents:
+    analyst:
+      provider: fake
+      model: scripted
+      instructions: Return the deterministic pipeline verdict.
+      tools: []
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 64
+      timeoutSeconds: 5
+      providerOptions:
+        finalText: DURABLE_PIPELINE_VERIFIED
+  actions:
+    assign:
+      kind: builtin.assign
+    write:
+      kind: builtin.write
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: left
+      uses: action:assign
+      with: { branch: left, value: one }
+    - id: right
+      uses: action:assign
+      with: { branch: right, value: two }
+    - id: coverage
+      uses: action:assign
+      matrix:
+        axes:
+          platform: [linux, macos]
+          profile: [debug, release]
+        maxItems: 4
+      with:
+        platform: "${{ vars.matrix.platform }}"
+        profile: "${{ vars.matrix.profile }}"
+        index: "${{ vars.matrixIndex }}"
+    - id: analyze
+      uses: agent:analyst
+      needs: [left, right, coverage]
+      with:
+        prompt:
+          left: "${{ tasks.left.output.output }}"
+          right: "${{ tasks.right.output.output }}"
+          coverage: "${{ tasks.coverage.output.items }}"
+      outputSchema:
+        type: object
+        required: [text]
+        properties:
+          text: { const: DURABLE_PIPELINE_VERIFIED }
+    - id: publish
+      uses: action:write
+      needs: [analyze]
+      with:
+        path: artifacts/framework-completeness.txt
+        content: "${{ tasks.analyze.output.text }}"
+    - id: validate
+      uses: action:assert
+      needs: [analyze, publish]
+      with:
+        that: false
+        message: expected source failure for retry and selective repair
