@@ -26,6 +26,7 @@ fn main() -> Result<()> {
         "extension-fixture" => process_extension_fixture(),
         "verify" => verify(&root),
         "docs-verify" => docs_verify(&root),
+        "artifact-store-verify" => artifact_store_verify(&root),
         "migration-verify" => migration_verify(&root),
         "protocol-resilience" => protocol_resilience(&root),
         "acceptance" => acceptance::run(&root),
@@ -46,7 +47,7 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask examples-verify-live-openai-container\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask artifact-store-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask examples-verify-live-openai-container\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
@@ -109,6 +110,29 @@ fn process_extension_fixture() -> Result<()> {
         }
         other => bail!("unknown extension fixture mode `{other}`"),
     }
+}
+
+fn artifact_store_verify(root: &Path) -> Result<()> {
+    println!("[1/2] artifact store integrity, concurrency, and garbage collection");
+    run(
+        root,
+        "cargo",
+        &["test", "-p", "agentctl-store", "artifact", "--locked"],
+    )?;
+    println!("[2/2] repair from CAS after workspace deletion");
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-runtime",
+            "repair_uses_cas_after_workspace_deletion_and_blocks_blob_corruption",
+            "--locked",
+        ],
+    )?;
+    println!("agentctl artifact-store verification passed");
+    Ok(())
 }
 
 fn migration_verify(root: &Path) -> Result<()> {
