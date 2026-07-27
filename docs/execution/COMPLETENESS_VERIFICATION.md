@@ -198,7 +198,7 @@ cargo xtask acceptance-container
 | Stateless provider continuation | compiler/provider/runtime tests cover negotiation, ordered multiple calls, opaque reasoning, malformed items, encrypted persistence, pause/resume, repair freshness, and replay | packaged GPT-5.6 stateless tool run and keyless zero-effect replay passed | verified |
 | Container/cross-platform | native Linux arm64 OCI runtime, signal, durable composite, retry, repair, CAS export, compensation/reconciliation, replay, Trivy 0.72.0, SBOM, and image inspection passed | hosted Linux x64, macOS, and Windows remain undispatched under XPLAT-001 | OCI verified; hosted externally blocked |
 | OpenAI live matrix | 27-request retained GPT-5.6 matrix, 3,939 input tokens, 560 output tokens, 20 reasoning tokens, and 8 tool calls | packaged macOS arm64 and native Linux arm64 OCI runs cover basic, tool, parallel, matrix, route, loop, sub-workflow, handoff, retry, repair, CAS, replay, streaming, and budget boundaries | verified |
-| Canonical and Pages docs | canonical docs and generated schema passed the full local documentation gate | Pages sync at agentctl source `21e919d` passed writing, build, links, search, and 44 browser/accessibility tests | in progress until the final source commit is synced |
+| Canonical and Pages docs | canonical docs and generated schema passed the full local documentation gate | Pages imported 61 canonical pages; writing, spelling, 70 HTML routes/links, search, and 44 responsive/accessibility browser tests passed | verified |
 
 ## Final adversarial review
 
