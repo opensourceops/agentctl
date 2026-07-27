@@ -9,13 +9,11 @@ environment-specific evidence is labeled separately from implementation.
 ## Release blockers
 
 No known P0/P1 implementation defect remains for the stated local, scheduled,
-and OCI journeys. The local container build now has a secure optional CA
-secret path, and the current image passed OCI acceptance, Trivy 0.72.0, and
-CycloneDX validation. The remaining RC gate is external evidence: Linux x64,
-hosted macOS arm64, Windows x64, container, security, package, and SBOM
-workflows are configured and locally linted but the exact candidate has not
-been pushed or dispatched. The recommendation is **Ready for hosted RC
-validation**, not an already validated RC or stable v1.0.
+and OCI journeys. The local container build has a secure optional CA secret
+path, and exact-head pull-request gates execute Linux x64, hosted macOS arm64,
+Windows x64, container, security, package, and SBOM validation without
+provider credentials. Exact run and artifact digests belong to the independent
+candidate report. This is a `v1alpha1` framework candidate, not stable v1.0.
 
 ## Required hardening completed for this release
 
@@ -139,5 +137,7 @@ These are extension points, not incomplete core runtime behavior:
   loops, sub-workflows, typed handoffs, retry, selective repair, artifact CAS
   reuse, keyless replay, streaming, resource-budget termination, and native
   Linux arm64 container execution.
-- The current local OCI runtime, vulnerability-scan, and SBOM evidence is Linux arm64. Linux x64 is configured in the unpushed Ubuntu workflow but has not executed.
+- Local OCI runtime evidence is Linux arm64. The hosted container runtime,
+  vulnerability scan, and image SBOM run on Linux x64 and are labeled
+  separately from that local evidence.
 - GitHub runner availability, organization action policy, branch protection, and required-check configuration are repository-owner operations and cannot be proven by repository-local lint.

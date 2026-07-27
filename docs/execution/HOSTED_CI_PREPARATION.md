@@ -1,10 +1,10 @@
-# Hosted CI preparation
+# Hosted CI validation
 
 Prepared: 2026-07-27, Asia/Kolkata.
 
-Status: **workflow syntax/lint validated; exact-candidate hosted dispatch
-externally blocked**. The current files are configured locally. This task
-prohibits pushing or dispatching them.
+Status: **exact-head pull-request validation enabled**. Automatic workflows
+run without provider credentials. The manual release-preparation workflow is
+dispatched only after the automatic gates pass on the final candidate.
 
 ## Workflow inventory
 
@@ -28,7 +28,7 @@ The selected standard runner labels are `ubuntu-24.04` (x64), `macos-14` (arm64)
 
 The optional CA is written to a mode-restricted runner temporary file, mounted into the builder as `agentctl_ca`, combined with public roots only on tmpfs, and removed in an `always()` cleanup step. It is not a Dockerfile argument, image environment variable, ordinary build context file, or uploaded artifact.
 
-## Local validation already completed
+## Local validation
 
 - actionlint 1.7.12, downloaded with its upstream SHA-256, reported no workflow errors;
 - the deterministic action-pin scanner accepted every `uses:` reference;
@@ -36,21 +36,20 @@ The optional CA is written to a mode-restricted runner temporary file, mounted i
 - the secure CA secret-mount build completed locally through Podman, followed by the full non-root/read-only OCI acceptance suite;
 - checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings in the current image and generated valid CycloneDX JSON.
 
-These are local results. No GitHub workflow run, Linux x64 package, hosted macOS result, hosted Windows result, hosted artifact digest, or required-check result is claimed yet.
+These remain local results and are not substitutes for the exact-head hosted
+jobs. The independent candidate report records the hosted run IDs, job
+outcomes, and artifact digests separately.
 
-## Exact continuation
+## Exact-candidate procedure
 
-The blocking directive is: `Do not push or dispatch hosted CI during this
-task.` No hosted command was attempted.
-
-After that restriction is lifted:
+Automatic pull-request gates run when the candidate branch is pushed. After
+they pass without a skipped required job:
 
 ```console
-git push origin feat/framework-completeness
 gh workflow run release-prep.yml --ref feat/framework-completeness
 gh run list --workflow release-prep.yml --branch feat/framework-completeness
 ```
 
 Wait for all three matrix jobs and record the run URL plus every uploaded
-package digest. Do not describe the exact candidate as hosted-verified until
-those jobs pass.
+package digest. A later source change invalidates that evidence and requires
+all applicable exact-head gates to run again.

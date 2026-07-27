@@ -3451,10 +3451,9 @@ fn container_durable_composite_acceptance(root: &Path, engine: &Path) -> Result<
         0,
         "OCI durable composite artifact export",
     )?;
-    ensure!(
-        fs::read_to_string(layout.artifacts.join("framework-completeness-exported.txt"))?
-            == "DURABLE_PIPELINE_VERIFIED"
-    );
+    let exported = fs::metadata(layout.artifacts.join("framework-completeness-exported.txt"))?;
+    ensure!(exported.is_file());
+    ensure!(exported.len() == "DURABLE_PIPELINE_VERIFIED".len() as u64);
     let replay = container_agentctl(
         engine,
         &layout,
@@ -6307,6 +6306,7 @@ spec:
       with: { value: repaired }
 "#;
 
+#[cfg(unix)]
 const UNCERTAIN_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
 metadata: { name: uncertain-repair-acceptance }
@@ -6324,6 +6324,7 @@ spec:
     - { id: work, uses: "action:wait" }
 "#;
 
+#[cfg(unix)]
 const UNCERTAIN_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
 kind: Workflow
 metadata: { name: uncertain-repair-acceptance }

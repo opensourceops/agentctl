@@ -8,7 +8,14 @@ The independent final audit and the completed exact live-state replay are author
 
 The final repository-local gate replaced unbounded subprocess `output()`/`wait_with_output()` capture in the runtime and verification/container helpers. Shell actions now drain stdout/stderr concurrently under independent and combined byte ceilings, isolate Unix process groups, terminate Windows process trees, kill/reap on output/timeout/cancellation paths, record structured output-limit failures, omit diagnostic output when secret environment values are present, and preserve uncertain-effect recovery for timeout/cancellation. Tests cover stdout, stderr, combined/interleaved output, normal parseable JSON, timeout, cancellation, direct-child and descendant termination, secret-safe durable errors, pack actions, and invalid configuration.
 
-Hosted workflows now target Linux x64, macOS arm64, and Windows x64; build the Linux container; run current dependency, secret, and vulnerability tools; and retain package plus production/image CycloneDX artifacts with digests. All actions use full commit SHAs with exact-version comments. Checksum-verified actionlint 1.7.12 accepted the workflows locally. Gitleaks 8.30.1 found no leak in all 21 commits or the current tracked tree and rejected the synthetic fixture. These workflows remain undispatched.
+Hosted workflows target Linux x64, macOS arm64, and Windows x64; build the
+Linux container; run current dependency, secret, and vulnerability tools; and
+retain package plus production/image CycloneDX artifacts with digests. All
+actions use full commit SHAs with exact-version comments. Checksum-verified
+actionlint 1.7.12 accepted the workflows locally. Gitleaks scans complete
+history and the exact checked-out tree and rejects a synthetic fixture.
+Pull-request jobs check out the exact head rather than GitHub's synthetic merge
+commit.
 
 ## Independent audit corrections
 
@@ -90,6 +97,9 @@ Official feature/pricing references used for the audit: [GPT-5.6 model catalog](
   JSON with 11 components. The temporary local SBOM was validation evidence,
   not the still-pending hosted artifact; hosted jobs surface retained artifact
   and file digests.
-- GitHub Actions, GitLab CI, Jenkins, Harness CI, Docker, and Kubernetes examples were not dispatched to external vendor platforms. The GitHub workflow syntax/lint is validated locally; hosted dispatch is pending.
+- GitHub Actions exact-head platform, container, security, package, and SBOM
+  jobs are hosted execution evidence. GitLab CI, Jenkins, Harness CI, and
+  Kubernetes examples remain documentation-reviewed and are not claimed as
+  vendor-executed.
 
 `cargo deny check` passed advisories, bans, licenses, and sources. Duplicate-version reports remain reviewed non-blocking warnings.

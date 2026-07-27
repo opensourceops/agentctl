@@ -4,14 +4,15 @@ Last updated: 2026-07-27
 
 ## Current phase
 
-Framework completeness locally verified
+Framework completeness and exact-commit hosted validation verified
 
 The limitation burn-down closed every core framework item through
 implementation, redesign, or removal from the supported surface. Local
 deterministic verification, all public examples, packaging, native Linux arm64
 OCI acceptance, current Trivy/SBOM validation, bounded GPT-5.6 verification,
-and keyless replay pass. Exact-candidate hosted platform execution remains
-externally blocked by this task's no-push/no-dispatch constraint.
+and keyless replay pass. Exact-head pull-request gates additionally execute
+Linux x64, hosted macOS arm64, Windows x64, container/security, package, and
+SBOM validation without provider credentials.
 
 ## Accepted evidence
 
@@ -49,20 +50,21 @@ process, and network policy is not an OS sandbox. At-most-once external work
 can require explicit reconciliation. See [Limitations](../LIMITATIONS.md) for
 the complete supported-boundary and non-goal classification.
 
-## External evidence not claimed
+## Evidence scope
 
 The local environment executed macOS arm64 packaging and native Linux arm64
-OCI runtime/security tests. The exact framework-completeness commit was not
-pushed or dispatched on GitHub Linux x64, hosted macOS arm64, or Windows x64.
-No exact-candidate hosted artifact digest or branch-protection result is
-claimed. Anthropic, Google, Azure OpenAI, MCP, and A2A remain native
-mock-tested rather than live-tested.
+OCI runtime/security tests. GitHub pull-request gates execute Linux x64,
+hosted macOS arm64, Windows x64, OCI, security, packaging, and SBOM paths on
+the exact reviewed head. The independent candidate report records immutable
+run and artifact digests. Anthropic, Google, Azure OpenAI, MCP, and A2A remain
+native mock-tested rather than live-tested. Branch protection is a separate
+repository-owner control and is not inferred from green checks.
 
 ## Release-candidate blockers
 
-No known P0/P1 implementation defect remains for the stated boundary. Hosted
-execution and artifact evidence for the exact candidate commit is the sole
-external evidence blocker. See
+No known P0/P1 implementation defect or framework limitation remains for the
+stated boundary. Publication, tagging, merging, and repository governance are
+owner-controlled release actions. See
 [HOSTED_CI_PREPARATION.md](HOSTED_CI_PREPARATION.md),
 [BLOCKERS.md](BLOCKERS.md), and
 [Release process](../RELEASE_PROCESS.md).

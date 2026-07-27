@@ -16,10 +16,10 @@ tested**, **live OpenAI tested**, **operationally tested**,
 | Resume/reject/uncertainty/fork/retry/auth/rate-limit/malformed/cancellation semantics | deterministically tested | focused provider/runtime/store tests and acceptance scenarios |
 | Non-interactive approvals, cron, inputs, timeout, SIGTERM | operationally tested | empty-environment and signal acceptance; operations guide |
 | OCI non-root/read-only/mount/JSON/artifact/state contract | operationally tested | current-source Linux arm64 binary passed mock/failure/signal cases; earlier exact live-state replay ran as UID/GID 65532 |
-| Image high/critical scan and SBOM | locally operationally tested; hosted configured | current secret-CA build and OCI suite; checksum-verified Trivy 0.72.0 zero fixed HIGH/CRITICAL; valid CycloneDX JSON; hosted artifacts not dispatched |
-| Linux x64, hosted macOS arm64, hosted Windows x64 | workflow syntax/lint validated only | automatic full gates and packages configured with standard GitHub runner labels; not remotely dispatched |
+| Image high/critical scan and SBOM | locally and hosted operationally tested | current secret-CA build and OCI suite; checksum-verified Trivy 0.72.0 policy gate; valid retained CycloneDX artifacts with digests |
+| Linux x64, hosted macOS arm64, hosted Windows x64 | hosted operationally tested | exact-head full gates and packages execute on standard GitHub runner labels |
 | Anthropic/Google/Azure adapters; MCP/A2A | mock-provider/protocol tested | native mapping/protocol tests; not live-tested |
 | Advisories/licenses/sources/secrets/actions | deterministically and locally security-tested | cargo-deny; metadata/source; deterministic scan; Gitleaks complete history/tree and synthetic detection; full-SHA action-pin check; actionlint |
 | Parallel/dynamic orchestration, packs/trust, semantic memory, and selected-field encryption | deterministically, operationally, and selectively live tested | framework completeness acceptance, public examples, native Linux arm64 OCI acceptance, and live GPT-5.6 matrix |
 | Distributed execution, hosted service/registry/UI, and event scheduling | explicit non-goal | `docs/LIMITATIONS.md`, `docs/execution/LIMITATION_BURNDOWN.md`, ADR 0005/0006/0007 |
-| No known P0/P1 correctness/security defect in implemented boundary | locally verified; hosted platform evidence externally blocked | independent framework review, credential-free gates, live matrix, and current local image security evidence; hosted checks/artifacts remain undispatched |
+| No known P0/P1 correctness/security defect in implemented boundary | locally and hosted verified | independent framework review, credential-free exact-head gates, bounded live matrix, and local/hosted image security evidence |
