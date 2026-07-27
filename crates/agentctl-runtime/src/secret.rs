@@ -187,7 +187,9 @@ pub enum SecretResolutionError {
 mod tests {
     use std::fs;
 
-    use agentctl_core::dsl::{PolicyDefinition, SecretProcessReference};
+    use agentctl_core::dsl::PolicyDefinition;
+    #[cfg(unix)]
+    use agentctl_core::dsl::SecretProcessReference;
     use tempfile::tempdir;
 
     use super::*;

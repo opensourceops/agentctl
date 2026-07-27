@@ -9210,6 +9210,18 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::Notify;
 
+    #[cfg(unix)]
+    fn make_writable(permissions: &mut std::fs::Permissions) {
+        use std::os::unix::fs::PermissionsExt;
+
+        permissions.set_mode(0o600);
+    }
+
+    #[cfg(not(unix))]
+    fn make_writable(permissions: &mut std::fs::Permissions) {
+        permissions.set_readonly(false);
+    }
+
     #[derive(Default)]
     struct CountingEmbeddingProvider(AtomicUsize);
 
@@ -12964,13 +12976,7 @@ spec:
         let mut permissions = std::fs::metadata(&blob_path)
             .expect("blob metadata")
             .permissions();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            permissions.set_mode(0o600);
-        }
-        #[cfg(not(unix))]
-        permissions.set_readonly(false);
+        make_writable(&mut permissions);
         std::fs::set_permissions(&blob_path, permissions).expect("make blob writable");
         std::fs::write(&blob_path, b"corrupt").expect("corrupt blob");
 
