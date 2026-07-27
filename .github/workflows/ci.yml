@@ -61,6 +61,9 @@ jobs:
       - name: Run credential-free acceptance gate
         run: cargo xtask acceptance
 
+      - name: Run framework completeness composites
+        run: cargo xtask completeness
+
       - name: Build production package
         run: cargo xtask package
 

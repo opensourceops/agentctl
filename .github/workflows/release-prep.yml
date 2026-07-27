@@ -42,6 +42,7 @@ jobs:
         run: |
           cargo xtask verify
           cargo xtask acceptance
+          cargo xtask completeness
           cargo xtask package
 
       - name: Upload RC package
