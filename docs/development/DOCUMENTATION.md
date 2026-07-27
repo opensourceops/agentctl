@@ -15,7 +15,9 @@ Place public journeys in `examples/docs/` with a README entry, provider classifi
 - Use sentence-case headings, active voice, short paragraphs, and descriptive links.
 - State the working directory, writes, credentials, and network effect for commands.
 - Use exact commands and complete valid YAML.
-- Distinguish implemented, deterministic, mock-tested, live evidence, hosted configuration, hosted execution, and deferred work.
+- Distinguish implemented, deterministic, mock-tested, live evidence, hosted
+  configuration, hosted execution, and functionality outside the supported
+  surface.
 - Never use an em dash in public copy.
 - Avoid hype, generic AI claims, and unsupported maturity language.
 - Explain every Mermaid diagram before and after it.

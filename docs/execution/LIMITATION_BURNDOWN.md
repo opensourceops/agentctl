@@ -14,6 +14,10 @@ complete, every entry must have exactly one final disposition:
 - `removed from supported surface`
 - `externally blocked`
 
+Closure count: 29 limitations, comprising 22 implemented, 2 redesigned, 4
+removed from the supported surface, and 1 externally blocked. All 29 program
+states are verified.
+
 ## Dependency order
 
 1. Persistence foundations: artifact content addressing, schema migration,
@@ -43,14 +47,14 @@ complete, every entry must have exactly one final disposition:
 | NET-001 | Network policy | verified | implemented |
 | ISO-001 | Process isolation | verified | implemented |
 | BUD-001 | Resource and cost budgets | verified | implemented |
-| SCH-001 | Deterministic parallel execution | in progress | implemented |
-| DYN-001 | Foreach and matrix | in progress | implemented |
-| COND-001 | Conditions and routers | in progress | implemented |
-| LOOP-001 | Bounded loops | in progress | implemented |
-| SUB-001 | Sub-workflows | in progress | implemented |
+| SCH-001 | Deterministic parallel execution | verified | implemented |
+| DYN-001 | Foreach and matrix | verified | implemented |
+| COND-001 | Conditions and routers | verified | implemented |
+| LOOP-001 | Bounded loops | verified | implemented |
+| SUB-001 | Sub-workflows | verified | implemented |
 | COMP-001 | Compensation | verified | implemented |
-| TEAM-001 | Structured teams and handoffs | in progress | redesigned |
-| STR-001 | Streaming | in progress | implemented |
+| TEAM-001 | Structured teams and handoffs | verified | redesigned |
+| STR-001 | Streaming | verified | implemented |
 | MCP-001 | MCP resilience | verified | implemented |
 | A2A-001 | A2A resilience | verified | implemented |
 | PACK-001 | Pack resolution and lockfiles | verified | implemented |
@@ -59,7 +63,7 @@ complete, every entry must have exactly one final disposition:
 | MEM-001 | Semantic memory | verified | implemented |
 | PROV-001 | Stateless provider continuation | verified | implemented |
 | OCI-001 | Container execution | verified | implemented |
-| XPLAT-001 | Cross-platform hosted evidence | open | externally blocked |
+| XPLAT-001 | Cross-platform hosted evidence | verified | externally blocked |
 | EVENT-001 | Event triggers and calendars | verified | removed from supported surface |
 | DIST-001 | Distributed execution and storage | verified | removed from supported surface |
 | REG-001 | Hosted public registry | verified | removed from supported surface |
@@ -230,8 +234,10 @@ complete, every entry must have exactly one final disposition:
   declared-key enforcement before effects, atomic rollback injection,
   plan-order audit assertions, disjoint state merge, stop/continue boundary
   behavior, cancellation, multi-approval resume, failed-only retry, selective
-  repair, and offline replay. Program state remains in progress until the
-  bounded live OpenAI branch scenario and OCI gate execute.
+  repair, and offline replay. The packaged durable composite and native Linux
+  arm64 OCI composite both passed with four deterministic ready tasks and
+  ordered recovery. The packaged GPT-5.6 composite then executed two live
+  branches and keyless replay, closing the live boundary.
 
 ### DYN-001: Bounded foreach and matrix expansion
 
@@ -256,8 +262,10 @@ complete, every entry must have exactly one final disposition:
   to stable digest-qualified child IDs and an ordered parent aggregate.
   Deterministic verification covers bounds, malformed bindings, identity,
   output aggregation, partial failure, failed-only child retry, sibling reuse,
-  and offline replay. Program state remains in progress until the bounded live
-  OpenAI matrix scenario executes.
+  and offline replay. The packaged and native Linux arm64 composites both
+  passed a four-child matrix through retry, repair, and replay. The packaged
+  GPT-5.6 composite executed a two-child agent matrix with stable inspection
+  and keyless replay.
 
 ### COND-001: Typed conditions and routers
 
@@ -283,8 +291,10 @@ complete, every entry must have exactly one final disposition:
   destinations, and durably skip unselected branches. Deterministic
   verification covers strict typing, malformed routes, local vars, plan
   guards, retry, changed-decision repair, skipped-task replay, and zero replay
-  effects. Program state remains in progress until the structured OpenAI
-  routing scenario executes.
+  effects. The packaged operational composite selected one route and durably
+  skipped the other before compensation. The packaged GPT-5.6 composite used
+  a structured agent output to select `execute`, durably skipped the default
+  branch, and replayed without effects.
 
 ### LOOP-001: Bounded loops
 
@@ -312,9 +322,10 @@ complete, every entry must have exactly one final disposition:
   final guard fails closed. Deterministic verification covers zero, one, and
   maximum iterations, bound exhaustion, cancellation with an uncertain
   in-flight provider effect, per-boundary retry and repair, offline replay, and
-  zero replay effects. Packaged CLI scenario 36 verifies plan, run, inspect,
-  and replay. Program state remains in progress until the bounded live agent
-  scenario executes.
+  zero replay effects. Packaged CLI scenario 36 and the operational composite
+  verify plan, two committed iterations, one skipped bound, cancellation,
+  inspection, and replay. The packaged GPT-5.6 composite executed two bounded
+  agent iterations, skipped the third compiled child, and replayed keylessly.
 
 ### SUB-001: Reusable sub-workflows
 
@@ -345,8 +356,10 @@ complete, every entry must have exactly one final disposition:
   retry/repair/replay lineage. Focused compiler and runtime verification covers
   stable expansion, typed rejection, state isolation, selected-boundary retry
   and repair, and zero-effect replay. Packaged CLI scenario 37 and the
-  integrity-pinned pack example pass. Program state remains in progress until
-  the bounded live sub-workflow scenario executes.
+  integrity-pinned pack example pass. The operational composite also executed
+  its namespaced typed sub-workflow through failure and compensation. The
+  packaged GPT-5.6 composite executed one agent inside the versioned typed
+  sub-workflow and replayed the flattened graph without effects.
 
 ### COMP-001: Explicit compensation
 
@@ -408,8 +421,11 @@ complete, every entry must have exactly one final disposition:
   explicit branching. Packaged scenario 39 verifies role-specific tool
   visibility, durable inspection, upstream handoff reuse during retry and
   repair, and effect-free replay. Free-form `team:` orchestration is rejected
-  with migration guidance. The full local gate passes. Program state remains
-  in progress until the bounded live handoff scenario executes.
+  with migration guidance. The dedicated packaged completeness gate repeats
+  the typed handoff, downstream verification, retry reuse, and effect-free
+  replay as one composite. The packaged GPT-5.6 composite executed collector
+  and reviewer roles with the typed `LIVE_TEAM_READY` handoff and a
+  deterministic downstream verifier.
 
 ### STR-001: End-to-end streaming
 
@@ -431,7 +447,7 @@ complete, every entry must have exactly one final disposition:
 - Examples: streaming agent workflow.
 - Live evidence: one packaged OpenAI streaming run.
 - Documentation: stdout contracts and replay.
-- Final disposition: implemented with bounded live evidence pending. Provider
+- Final disposition: implemented and verified. Provider
   fragments cross an awaited persistence boundary with monotonic task-attempt
   sequence numbers. SQLite schema 12 stores at most 256 events per task
   attempt and 4 KiB per payload; OpenAI SSE is capped at 8 MiB. Cancellation
@@ -443,8 +459,8 @@ complete, every entry must have exactly one final disposition:
   document. Recorded replay copies source-linked events and performs zero
   effects. Focused provider/runtime tests and packaged CLI scenario 40 cover
   fragmentation, bounds, redaction, inspection, output isolation, and replay.
-  The full local gate passes. Program state remains in progress until the
-  bounded live OpenAI streaming scenario executes.
+  The packaged GPT-5.6 composite persisted real stream events, returned the
+  exact final marker, and replayed with zero effects or provider sessions.
 
 ## Remote protocols, packs, and memory
 
@@ -808,23 +824,29 @@ complete, every entry must have exactly one final disposition:
   contract; no state migration is required.
 - Tests: deterministic mount/command tests and native Linux arm64 execution are
   labeled separately from still-undispatched hosted Linux x64 evidence.
-- Examples: the credential-free composite container workflow covers a strict
-  tool call, declared artifact, durable inspection, parallel ordered commit,
-  selective repair, and replay.
+- Examples: the credential-free container workflows cover a strict tool call,
+  declared artifact, durable inspection, parallel ordered commit, a four-child
+  matrix, approval, failed-only retry, selective repair after workspace
+  artifact deletion, CAS verify/export, compensation reconciliation, and
+  replay.
 - Live evidence: `env -u OPENAI_API_KEY cargo xtask acceptance-container`
   passed on 2026-07-27 through Podman 5.8.2 and native Linux arm64. It covered
   action-level content-addressed container isolation, non-root/read-only
   workflow execution, mounted state/artifacts, success and failure exits,
-  SIGTERM, repair, and network-disabled replay. No provider request occurred.
+  SIGTERM, the durable composite, failed-only retry, repair, CAS reuse,
+  compensation reconciliation, and network-disabled replay. No provider
+  request occurred.
 - Documentation: runtime troubleshooting, persistent Podman terminal handling,
   mount contract, state retention, artifact export, and CA extension.
 - Final disposition: implemented and verified. The exact image was Linux
   arm64, `nonroot:nonroot`, version `0.2.0`, and source
-  `opensourceops/agentctl`. Trivy 0.72.0 with a freshly updated database found
-  zero fixed HIGH/CRITICAL vulnerabilities. A valid 20,821-byte CycloneDX SBOM
-  is retained at the ignored local evidence path
+  `opensourceops/agentctl`, with local image digest
+  `sha256:ddcf174ab2b1ce2481395380d482292a41d79ee5f4620fd52cbd3733e712127c`.
+  Trivy 0.72.0 with a freshly updated database found zero fixed HIGH/CRITICAL
+  vulnerabilities. A valid 20,821-byte CycloneDX SBOM is retained at the
+  ignored local evidence path
   `.runtime/scan/agentctl-framework-completeness.cdx.json`; its SHA-256 is
-  `748d9126a0812ffe15812dfb1e5f1be731c37678062314e68a1429b5fd23c164`.
+  `0ee27f16491108f0f018ac2bc7ad201b3f97bdb539cd6b78584264c9eedd67ff`.
   Image configuration and history scans found no credential or authorization
   markers. Hosted architecture execution remains isolated under XPLAT-001.
 
@@ -845,7 +867,17 @@ complete, every entry must have exactly one final disposition:
 - Examples: all public examples inventoried by jobs.
 - Live evidence: not run because hosted dispatch is explicitly prohibited.
 - Documentation: exact blocker and continuation.
-- Final disposition: pending external-blocker evidence.
+- Final disposition: `externally blocked`. The exact continuation would first
+  push this local branch and then run
+  `gh workflow run release-prep.yml --ref feat/framework-completeness`.
+  Neither command was executed because the governing task explicitly says
+  `Do not push or dispatch hosted CI during this task.` Local substitutes were
+  exhausted: all workflow YAML and full-SHA action pins passed the repository
+  gate, the existing three-platform matrices now include
+  `cargo xtask completeness`, macOS arm64 passed locally, and native Linux
+  arm64 OCI/runtime/security evidence passed. Once push/dispatch authority is
+  available, run the command above, wait for all three matrix jobs, then record
+  each package digest and update this entry with the run URL.
 
 ## Removed unsupported surface
 

@@ -1,17 +1,19 @@
 # Hosted CI preparation
 
-Prepared: 2026-07-22, Asia/Kolkata.
+Prepared: 2026-07-27, Asia/Kolkata.
 
-Status: **workflow syntax/lint validated; hosted dispatch pending**. The files are configured locally and have not been pushed or dispatched.
+Status: **workflow syntax/lint validated; exact-candidate hosted dispatch
+externally blocked**. The current files are configured locally. This task
+prohibits pushing or dispatching them.
 
 ## Workflow inventory
 
 | Workflow | Trigger | Hosted purpose |
 | --- | --- | --- |
-| `credential-free-ci` | push, pull request, manual | Rust 1.88 full verification, acceptance, and packaging on Linux x64, macOS arm64, and Windows x64; production CycloneDX SBOM |
+| `credential-free-ci` | push, pull request, manual | Rust 1.88 full verification, acceptance, framework completeness, and packaging on Linux x64, macOS arm64, and Windows x64; production CycloneDX SBOM |
 | `container-security` | push, pull request, manual | Linux x64 OCI build/runtime acceptance, Trivy 0.72 vulnerability gate, image CycloneDX SBOM |
 | `supply-chain-security` | push, pull request, manual | full-history/tree Gitleaks 8.30.1 scans, synthetic detection proof, cargo-deny 0.20.2, deterministic scan, actionlint 1.7.12 |
-| `rc-release-preparation` | manual | exact-commit three-platform RC verification, acceptance, packaging, and artifact digests |
+| `rc-release-preparation` | manual | exact-commit three-platform RC verification, acceptance, framework completeness, packaging, and artifact digests |
 
 The selected standard runner labels are `ubuntu-24.04` (x64), `macos-14` (arm64), and `windows-2022` (x64). Every external action is pinned to a full commit SHA with a nearby exact-version comment. Workflows grant only `contents: read`.
 
@@ -35,3 +37,20 @@ The optional CA is written to a mode-restricted runner temporary file, mounted i
 - checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings in the current image and generated valid CycloneDX JSON.
 
 These are local results. No GitHub workflow run, Linux x64 package, hosted macOS result, hosted Windows result, hosted artifact digest, or required-check result is claimed yet.
+
+## Exact continuation
+
+The blocking directive is: `Do not push or dispatch hosted CI during this
+task.` No hosted command was attempted.
+
+After that restriction is lifted:
+
+```console
+git push origin feat/framework-completeness
+gh workflow run release-prep.yml --ref feat/framework-completeness
+gh run list --workflow release-prep.yml --branch feat/framework-completeness
+```
+
+Wait for all three matrix jobs and record the run URL plus every uploaded
+package digest. Do not describe the exact candidate as hosted-verified until
+those jobs pass.

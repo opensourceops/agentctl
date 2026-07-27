@@ -35,4 +35,7 @@ Add local mock-protocol tests for request mapping, authentication, headers, redi
 
 ## Documentation claims
 
-Update the provider guide and matrix with the exact level: implemented, mock-protocol tested, retained live evidence, or deferred. Add an example that passes `check` without resolving a secret. Run `cargo xtask generate`, `cargo xtask docs-verify`, and `cargo xtask verify`.
+Update the provider guide and matrix with the exact level: implemented,
+mock-protocol tested, retained live evidence, or outside the current supported
+surface. Add an example that passes `check` without resolving a secret. Run
+`cargo xtask generate`, `cargo xtask docs-verify`, and `cargo xtask verify`.

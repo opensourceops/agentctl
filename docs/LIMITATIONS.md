@@ -1,10 +1,21 @@
-# Limitations and roadmap classification
+# Supported boundaries and operational limits
 
-This classification is part of the product contract. A deferred feature is not a current capability, but its absence is not automatically a release blocker for the local, externally scheduled, and generic OCI-step journeys.
+This classification is part of the product contract. Core runtime limitations
+are closed in the
+[framework limitation burn-down](execution/LIMITATION_BURNDOWN.md).
+Capabilities outside the product thesis are explicit non-goals, and
+environment-specific evidence is labeled separately from implementation.
 
 ## Release blockers
 
-No known P0/P1 implementation defect remains for the stated local, scheduled, and OCI journeys. The local container build now has a secure optional CA secret path, and the current image passed OCI acceptance, Trivy 0.72.0, and CycloneDX validation. The remaining RC gate is external evidence: the new Linux x64, macOS arm64, Windows x64, container, security, package, and SBOM workflows are configured and locally linted but have not been pushed or dispatched. The recommendation is **Ready for hosted RC validation**, not an already validated RC or stable v1.0.
+No known P0/P1 implementation defect remains for the stated local, scheduled,
+and OCI journeys. The local container build now has a secure optional CA
+secret path, and the current image passed OCI acceptance, Trivy 0.72.0, and
+CycloneDX validation. The remaining RC gate is external evidence: Linux x64,
+hosted macOS arm64, Windows x64, container, security, package, and SBOM
+workflows are configured and locally linted but the exact candidate has not
+been pushed or dispatched. The recommendation is **Ready for hosted RC
+validation**, not an already validated RC or stable v1.0.
 
 ## Required hardening completed for this release
 
@@ -28,9 +39,9 @@ No known P0/P1 implementation defect remains for the stated local, scheduled, an
   explicit versioned pricing is configured.
 - Hosted workflows use least privilege, full-SHA action pins with version comments, complete-history/tree Gitleaks, deterministic fake-secret detection, dependency/image scans, and required production/image CycloneDX artifacts with digests.
 
-## Remaining framework-completeness work
+## Optional integration boundaries
 
-These core workstreams are tracked in the framework limitation burn-down and are not represented as current capabilities until their focused evidence passes:
+These are extension points, not incomplete core runtime behavior:
 
 - external secret-manager adapters beyond environment, mounted-file, and policy-gated process references;
 - provider-maintained pricing discovery. Monetary limits require authoritative
@@ -122,6 +133,11 @@ These core workstreams are tracked in the framework limitation burn-down and are
 - Automatic artifact ingestion covers regular files up to 16 MiB reported by successful built-in workspace-mutation results. Larger outputs and artifacts produced only by opaque external effects require an explicit bounded import/export integration. The local CAS must be backed up with SQLite; missing or corrupt blob bytes block repair before run creation and report the expected artifact identity.
 - An applied non-idempotent mutation in a repair closure remains blocked from duplicate execution unless a confirmed compensation is linked. Reconciliation supports immutable `applied`, `not_applied`, and `compensated` records, validated results, policy authorization, and operation-specific verification hooks; it does not provide exactly-once delivery.
 - Terminal retry requires an identical workflow digest and a terminal source. It creates a new source-linked run, reuses only proven compatible successful boundaries, and freshly executes the selected closure. Use repair for a changed definition, resume for a non-terminal run, replay for effect-free reconstruction, and fork for knowingly broad fresh execution.
-- Anthropic, Google, Azure OpenAI, MCP, and A2A are native and mock-tested in this release, not live-tested. Only the OpenAI GPT-5.6 tool path has live end-to-end evidence.
+- Anthropic, Google, Azure OpenAI, MCP, and A2A are native and mock-tested in
+  this release, not live-tested. OpenAI GPT-5.6 has bounded live evidence for
+  basic and tool agents, parallel branches, matrix tasks, structured routing,
+  loops, sub-workflows, typed handoffs, retry, selective repair, artifact CAS
+  reuse, keyless replay, streaming, resource-budget termination, and native
+  Linux arm64 container execution.
 - The current local OCI runtime, vulnerability-scan, and SBOM evidence is Linux arm64. Linux x64 is configured in the unpushed Ubuntu workflow but has not executed.
 - GitHub runner availability, organization action policy, branch protection, and required-check configuration are repository-owner operations and cannot be proven by repository-local lint.

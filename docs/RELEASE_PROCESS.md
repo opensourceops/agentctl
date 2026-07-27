@@ -13,7 +13,11 @@ Push the review branch and open a pull request only after the local gates below 
 - `container-security / container`
 - `supply-chain-security / security`
 
-The three platform jobs run `cargo xtask verify`, `cargo xtask acceptance`, and `cargo xtask package`. The other jobs enforce the Linux container contract, HIGH/CRITICAL image vulnerability policy, production and image CycloneDX SBOMs, complete-history and checked-out-tree secret scans, dependency policy, immutable action pins, and workflow lint.
+The three platform jobs run `cargo xtask verify`, `cargo xtask acceptance`,
+`cargo xtask completeness`, and `cargo xtask package`. The other jobs enforce
+the Linux container contract, HIGH/CRITICAL image vulnerability policy,
+production and image CycloneDX SBOMs, complete-history and checked-out-tree
+secret scans, dependency policy, immutable action pins, and workflow lint.
 
 The repository owner must enable GitHub Actions and required checks after the workflows reach the remote. This repository-local change does not modify remote settings or claim a hosted run.
 
@@ -26,6 +30,8 @@ env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
   -u GOOGLE_API_KEY -u GEMINI_API_KEY cargo xtask verify
 env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
   -u GOOGLE_API_KEY -u GEMINI_API_KEY cargo xtask acceptance
+env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+  -u GOOGLE_API_KEY -u GEMINI_API_KEY cargo xtask completeness
 cargo xtask package
 ```
 
