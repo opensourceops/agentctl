@@ -27,7 +27,7 @@ docker run --rm --read-only --user 65532:65532 \
   --mount type=bind,src="$PWD",dst=/workspace,readonly \
   --mount type=bind,src="$PWD/.agentctl-state",dst=/state \
   --mount type=bind,src="$PWD/artifacts",dst=/artifacts \
-  ghcr.io/OWNER/agentctl:0.2.0 \
+  ghcr.io/OWNER/agentctl:0.3.0 \
   run /config/workflow.yaml --workspace /workspace \
   --db /state/runtime.db --output json --color never
 ```

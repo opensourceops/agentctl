@@ -6544,7 +6544,7 @@ mod tests {
 
     fn fixture() -> (Value, CompiledPlan) {
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: store }
 spec:
@@ -6610,7 +6610,7 @@ spec:
     #[test]
     fn budget_reservations_are_atomic_idempotent_and_reconcile_actual_usage() {
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: budget-store }
 spec:
@@ -7974,7 +7974,7 @@ spec:
                  (run_id, runtime_state_version, workflow_digest, workflow_schema_version,
                   plan_digest, plan_format_version, workflow_json, plan_json, inputs_json,
                   working_memory_json, state, mode, cancellation_requested, created_at, updated_at)
-                 VALUES ('retained', 1, 'workflow', 'agentctl.dev/v1alpha1', 'plan', 1,
+                 VALUES ('retained', 1, 'workflow', 'agentctl.dev/v1', 'plan', 1,
                          '{}', '{}', '{}', '{}', 'running', 'execute', 0, ?1, ?1)",
                 [&now],
             )

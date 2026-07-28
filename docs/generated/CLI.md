@@ -27,7 +27,7 @@ Commands:
   providers   Inspect provider capabilities or run the opt-in OpenAI smoke
   auth        Check configured secret references without revealing values
   schema      Print or write the generated workflow JSON Schema
-  migrate     Translate an unversioned TypeScript-era workflow into v1alpha1
+  migrate     Translate an unversioned TypeScript-era workflow into workflow API v1
   packs       Inspect and verify a local reusable pack
   artifacts   Inspect, verify, export, or collect durable artifacts
   db          Inspect the runtime database
@@ -713,7 +713,7 @@ Options:
 ## `agentctl migrate`
 
 ```text
-Translate an unversioned TypeScript-era workflow into v1alpha1
+Translate an unversioned TypeScript-era workflow into workflow API v1
 
 Usage: agentctl migrate [OPTIONS] <FILE>
 

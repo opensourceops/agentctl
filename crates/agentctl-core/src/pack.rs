@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn validates_manifest_identity_and_compatibility() {
         let manifest: PackManifest = serde_yaml_ng::from_str(
-            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.utility\nversion: 1.0.0\nagentctl: '>=0.2.0, <1.0.0'\n",
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.utility\nversion: 1.0.0\nagentctl: '>=0.3.0, <1.0.0'\n",
         )
         .expect("manifest");
         manifest.validate().expect("valid manifest");
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn rejects_unreasonable_pack_process_output_limit() {
         let manifest: PackManifest = serde_yaml_ng::from_str(
-            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.utility\nversion: 1.0.0\nagentctl: '>=0.2.0, <1.0.0'\nactions:\n  noisy:\n    kind: builtin.shell.exec\n    command: sh\n    stdoutLimitBytes: 16777217\n",
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.utility\nversion: 1.0.0\nagentctl: '>=0.3.0, <1.0.0'\nactions:\n  noisy:\n    kind: builtin.shell.exec\n    command: sh\n    stdoutLimitBytes: 16777217\n",
         )
         .expect("manifest");
         assert!(matches!(manifest.validate(), Err(PackError::Invalid(_))));

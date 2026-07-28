@@ -7,7 +7,7 @@ This guide teaches the YAML model in the order you need it. The generated JSON S
 Every document has a strict versioned envelope:
 
 ```yaml
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: repository-check

@@ -2,7 +2,9 @@
 
 ## Supported line
 
-The current supported development line is the `agentctl.dev/v1alpha1` release-candidate source on the default branch. There is no stable v1 release or long-term support promise yet.
+The current supported release line is agentctl `0.3` with workflow API
+`agentctl.dev/v1`. The workflow API is stable; the CLI and crates remain
+pre-1.0 and do not carry a long-term support promise.
 
 ## Report a vulnerability privately
 

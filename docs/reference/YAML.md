@@ -6,7 +6,7 @@ The generated [workflow JSON Schema](../../schemas/workflow.schema.json) is auth
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `apiVersion` | yes | Must be `agentctl.dev/v1alpha1`. |
+| `apiVersion` | yes | Must be `agentctl.dev/v1`. |
 | `kind` | yes | Must be `Workflow`. |
 | `metadata.name` | yes | Stable human-readable workflow name. |
 | `metadata.description` | no | Short purpose. |

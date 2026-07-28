@@ -11,7 +11,7 @@ readme.workspace = true
 
 [dependencies]
 aes-gcm.workspace = true
-agentctl-core = { version = "0.2.0", path = "../agentctl-core" }
+agentctl-core = { version = "0.3.0", path = "../agentctl-core" }
 base64.workspace = true
 chrono.workspace = true
 fs2.workspace = true

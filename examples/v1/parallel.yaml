@@ -1,4 +1,4 @@
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: deterministic-parallel

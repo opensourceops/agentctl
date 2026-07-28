@@ -104,7 +104,7 @@ docker run --rm --read-only --user 65532:65532 \
   --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
   --mount type=bind,src="$PWD/state",dst=/state \
   --mount type=bind,src="$PWD/openai.key",dst=/run/secrets/openai,readonly \
-  ghcr.io/OWNER/agentctl:0.2.0 \
+  ghcr.io/OWNER/agentctl:0.3.0 \
   run /config/workflow.yaml --workspace /workspace \
   --db /state/runtime.db --output json --color never
 ```

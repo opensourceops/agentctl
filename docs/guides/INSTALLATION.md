@@ -1,6 +1,7 @@
 # Install agentctl
 
-This guide installs the `v1alpha1` Rust CLI from crates.io, reviewed source, or a locally built OCI image.
+This guide installs the agentctl 0.3 Rust CLI with workflow API v1 from
+crates.io, reviewed source, or a locally built OCI image.
 
 ## Prerequisites
 
@@ -70,7 +71,7 @@ Expected evidence includes `valid: hello`, task order `greet`, and `FullyPredict
 
 ## Upgrade safely
 
-The workflow API is `agentctl.dev/v1alpha1`. Pin the CLI or image version, read [compatibility](../COMPATIBILITY.md) and [limitations](../LIMITATIONS.md), back up the SQLite database with its WAL files, then validate workflows before replacing a binary. `agentctl update` explains supported update paths but does not modify the installation.
+The workflow API is `agentctl.dev/v1`. Pin the CLI or image version, read [compatibility](../COMPATIBILITY.md) and [limitations](../LIMITATIONS.md), back up the SQLite database with its WAL files, then validate workflows before replacing a binary. `agentctl update` explains supported update paths but does not modify the installation.
 
 ## Next step
 

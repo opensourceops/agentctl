@@ -16,12 +16,12 @@ name = "agentctl"
 path = "src/main.rs"
 
 [dependencies]
-agentctl-core = { version = "0.2.0", path = "../agentctl-core" }
-agentctl-observability = { version = "0.2.0", path = "../agentctl-observability" }
-agentctl-protocols = { version = "0.2.0", path = "../agentctl-protocols" }
-agentctl-providers = { version = "0.2.0", path = "../agentctl-providers" }
-agentctl-runtime = { version = "0.2.0", path = "../agentctl-runtime" }
-agentctl-store = { version = "0.2.0", path = "../agentctl-store" }
+agentctl-core = { version = "0.3.0", path = "../agentctl-core" }
+agentctl-observability = { version = "0.3.0", path = "../agentctl-observability" }
+agentctl-protocols = { version = "0.3.0", path = "../agentctl-protocols" }
+agentctl-providers = { version = "0.3.0", path = "../agentctl-providers" }
+agentctl-runtime = { version = "0.3.0", path = "../agentctl-runtime" }
+agentctl-store = { version = "0.3.0", path = "../agentctl-store" }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true

@@ -1,6 +1,6 @@
 # Selective repair research
 
-Status: implemented for `agentctl` v1alpha1. Reviewed against primary material on 2026-07-23.
+Status: implemented for `agentctl` workflow API v1. Reviewed against primary material on 2026-07-23.
 
 Selective repair is a new execution from a task boundary, not history replay. The design borrows narrow safety patterns from workflow engines and build systems without adopting their execution models.
 

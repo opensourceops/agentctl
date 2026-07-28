@@ -1244,7 +1244,7 @@ pub fn run(root: &Path) -> Result<()> {
     let secret_workflow = secret_workspace.join("workflow.yaml");
     let binary_path = path(&binary)?;
     let secret_document = serde_json::json!({
-        "apiVersion": "agentctl.dev/v1alpha1",
+        "apiVersion": "agentctl.dev/v1",
         "kind": "Workflow",
         "metadata": {"name": "secret-providers"},
         "spec": {
@@ -2133,7 +2133,7 @@ pub fn run(root: &Path) -> Result<()> {
             r#"apiVersion: agentctl.dev/pack/v1alpha1
 name: example.extension
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 actions:
   transform:
     kind: extension.process
@@ -2158,7 +2158,7 @@ actions:
     let extension_workflow = pack_workspace.join("workflow.yaml");
     let workflow_source = |allow_unsigned_process: bool| {
         format!(
-            r#"apiVersion: agentctl.dev/v1alpha1
+            r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: process-extension-acceptance }}
 spec:
@@ -4964,9 +4964,7 @@ fn collect_openai_workflows(
             Some("yaml" | "yml")
         ) {
             let source = fs::read_to_string(&path)?;
-            if source.contains("apiVersion: agentctl.dev/v1alpha1")
-                && source.contains("kind: openai")
-            {
+            if source.contains("apiVersion: agentctl.dev/v1") && source.contains("kind: openai") {
                 output.insert(
                     path.strip_prefix(root)
                         .context("OpenAI example outside repository")?
@@ -5580,7 +5578,7 @@ fn copy_example(root: &Path, source: &str, destination: &Path) -> Result<()> {
 
 fn deterministic_workflow(name: &str, uses: &str, input: &str) -> String {
     format!(
-        "apiVersion: agentctl.dev/v1alpha1\nkind: Workflow\nmetadata: {{ name: {name} }}\nspec:\n  tasks:\n    - id: task\n      uses: {uses}\n      with: {input}\n"
+        "apiVersion: agentctl.dev/v1\nkind: Workflow\nmetadata: {{ name: {name} }}\nspec:\n  tasks:\n    - id: task\n      uses: {uses}\n      with: {input}\n"
     )
 }
 
@@ -5596,7 +5594,7 @@ fn agent_workflow(name: &str, option: &str, tool: &str, extra_option: &str) -> S
         format!("      providerOptions:\n        {option}\n        {extra_option}\n")
     };
     format!(
-        "apiVersion: agentctl.dev/v1alpha1\nkind: Workflow\nmetadata: {{ name: {name} }}\nspec:\n  providers:\n    fake: {{ kind: fake }}\n{tool}  agents:\n    worker:\n      provider: fake\n      model: scripted\n      instructions: complete the fixture\n{tools}      maxTurns: 2\n      maxToolCalls: 1\n      timeoutSeconds: 1\n{provider_options}  tasks:\n    - id: work\n      uses: agent:worker\n      retry: {{ maxAttempts: 1 }}\n      with: {{ prompt: hello }}\n"
+        "apiVersion: agentctl.dev/v1\nkind: Workflow\nmetadata: {{ name: {name} }}\nspec:\n  providers:\n    fake: {{ kind: fake }}\n{tool}  agents:\n    worker:\n      provider: fake\n      model: scripted\n      instructions: complete the fixture\n{tools}      maxTurns: 2\n      maxToolCalls: 1\n      timeoutSeconds: 1\n{provider_options}  tasks:\n    - id: work\n      uses: agent:worker\n      retry: {{ maxAttempts: 1 }}\n      with: {{ prompt: hello }}\n"
     )
 }
 
@@ -5652,7 +5650,7 @@ fn mismatched_echo_tool() -> &'static str {
 
 fn read_tool_workflow(name: &str, file: &str) -> String {
     format!(
-        r#"apiVersion: agentctl.dev/v1alpha1
+        r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: {name} }}
 spec:
@@ -6055,7 +6053,7 @@ fn container_signal_acceptance(engine: &Path, root: &Path) -> Result<()> {
     Ok(())
 }
 
-const APPROVAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const APPROVAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: approval }
 spec:
@@ -6071,7 +6069,7 @@ spec:
       with: { path: artifacts/approved.txt, content: approved }
 "#;
 
-const CONFIRMED_BEFORE_APPROVAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const CONFIRMED_BEFORE_APPROVAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: confirmed-before-approval }
 spec:
@@ -6098,7 +6096,7 @@ spec:
       with: { path: artifacts/confirmed.txt, content: confirmed }
 "#;
 
-const RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: retry }
 spec:
@@ -6120,7 +6118,7 @@ spec:
 "#;
 
 #[cfg(not(windows))]
-const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: terminal-retry }
 spec:
@@ -6148,7 +6146,7 @@ spec:
 "#;
 
 #[cfg(windows)]
-const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const TERMINAL_RETRY_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: terminal-retry }
 spec:
@@ -6175,7 +6173,7 @@ spec:
       with: { value: recovered }
 "#;
 
-const OPENAI_AUTH_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const OPENAI_AUTH_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: missing-auth }
 spec:
@@ -6194,7 +6192,7 @@ spec:
       with: { prompt: hello }
 "#;
 
-const OPENAI_RESOURCE_BUDGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const OPENAI_RESOURCE_BUDGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: live-resource-budget }
 spec:
@@ -6222,7 +6220,7 @@ spec:
     - { id: second, uses: "agent:worker", needs: [first], with: { prompt: Reply now. } }
 "#;
 
-const OPENAI_STATELESS_TOOL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const OPENAI_STATELESS_TOOL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: stateless-tools }
 spec:
@@ -6258,7 +6256,7 @@ spec:
   tasks: [{ id: work, uses: "agent:worker" }]
 "#;
 
-const INPUTS_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const INPUTS_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: inputs }
 spec:
@@ -6274,7 +6272,7 @@ spec:
       with: { name: "${{ inputs.name }}", count: "${{ inputs.count }}" }
 "#;
 
-const TRAVERSAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const TRAVERSAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: traversal }
 spec:
@@ -6290,7 +6288,7 @@ spec:
       with: { path: ../escaped.txt, content: blocked }
 "#;
 
-const SELECTIVE_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const SELECTIVE_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: selective-repair-acceptance }
 spec:
@@ -6313,7 +6311,7 @@ spec:
       with: { value: repaired }
 "#;
 
-const SELECTIVE_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const SELECTIVE_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: selective-repair-acceptance }
 spec:
@@ -6337,7 +6335,7 @@ spec:
 "#;
 
 #[cfg(unix)]
-const UNCERTAIN_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const UNCERTAIN_REPAIR_SOURCE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: uncertain-repair-acceptance }
 spec:
@@ -6355,7 +6353,7 @@ spec:
 "#;
 
 #[cfg(unix)]
-const UNCERTAIN_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const UNCERTAIN_REPAIR_TARGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: uncertain-repair-acceptance }
 spec:
@@ -6368,7 +6366,7 @@ spec:
     - { id: work, uses: "action:assign", with: { recovered: true } }
 "#;
 
-const COMPENSATION_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const COMPENSATION_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: compensation-acceptance }
 spec:
@@ -6396,7 +6394,7 @@ spec:
       with: { that: false, message: expected acceptance failure }
 "#;
 
-const PROTOCOL_MCP_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const PROTOCOL_MCP_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: mcp-resilience-acceptance }
 spec:
@@ -6426,7 +6424,7 @@ spec:
         arguments: { value: safe }
 "#;
 
-const PROTOCOL_A2A_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const PROTOCOL_A2A_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: a2a-resilience-acceptance }
 spec:
@@ -6469,7 +6467,7 @@ spec:
         value: "${{ tasks.delegate.output.id }}"
 "#;
 
-const NETWORK_PRIVATE_DENIED_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const NETWORK_PRIVATE_DENIED_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: network-private-denied }
 spec:
@@ -6494,7 +6492,7 @@ spec:
         arguments: {}
 "#;
 
-const CONTAINER_ISOLATION_UNAVAILABLE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const CONTAINER_ISOLATION_UNAVAILABLE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: container-isolation-unavailable }
 spec:
@@ -6514,7 +6512,7 @@ spec:
       uses: action:isolated
 "#;
 
-const RESOURCE_BUDGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const RESOURCE_BUDGET_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: resource-budget }
 spec:
@@ -6535,7 +6533,7 @@ spec:
     - { id: second, uses: "agent:worker", needs: [first], with: { prompt: second } }
 "#;
 
-const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const CONTAINER_MOCK_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: container-mock }
 spec:
@@ -6596,7 +6594,7 @@ spec:
       with: { path: "${{ inputs.reportPath }}", content: "${{ tasks.inspect.output.text }}" }
 "#;
 
-const CONTAINER_SIGNAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const CONTAINER_SIGNAL_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: container-signal }
 spec:
@@ -6614,7 +6612,7 @@ spec:
       with: { prompt: wait }
 "#;
 
-const CONTAINER_LIVE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1alpha1
+const CONTAINER_LIVE_WORKFLOW: &str = r#"apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: container-openai-live }
 spec:

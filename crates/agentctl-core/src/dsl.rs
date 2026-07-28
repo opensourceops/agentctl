@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 use crate::pack::{PackSignature, PackSource};
 
-pub const API_VERSION: &str = "agentctl.dev/v1alpha1";
+pub const API_VERSION: &str = "agentctl.dev/v1";
 
 pub type JsonMap = BTreeMap<String, Value>;
 
@@ -2015,7 +2015,7 @@ mod tests {
     use super::*;
 
     const MINIMAL: &str = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: hello
@@ -2035,6 +2035,18 @@ spec:
         let outcome = parse_workflow(MINIMAL, "hello.yaml").expect("valid fixture");
         assert_eq!(outcome.workflow.metadata.name, "hello");
         assert!(!outcome.migrated_legacy);
+    }
+
+    #[test]
+    fn rejects_retired_v1alpha1_workflow() {
+        let source = MINIMAL.replace("agentctl.dev/v1", "agentctl.dev/v1alpha1");
+        let diagnostics = parse_workflow(&source, "old.yaml").expect_err("retired API");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::UnsupportedVersion);
+        assert_eq!(diagnostics[0].path.as_deref(), Some("apiVersion"));
+        assert_eq!(
+            diagnostics[0].help.as_deref(),
+            Some("use `agentctl.dev/v1`")
+        );
     }
 
     #[test]
@@ -2278,7 +2290,7 @@ spec:
         for max_iterations in [0, MAX_LOOP_ITERATIONS + 1] {
             let source = format!(
                 r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: invalid-loop-bound }}
 spec:

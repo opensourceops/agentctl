@@ -10401,7 +10401,7 @@ mod tests {
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: request-budget }
 spec:
@@ -10458,7 +10458,7 @@ spec:
         );
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: token-budget }
 spec:
@@ -10506,7 +10506,7 @@ spec:
     fn custom_pricing_reconciles_token_classes_and_prefers_provider_cost() {
         let (workflow, _) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: custom-pricing }
 spec:
@@ -10557,7 +10557,7 @@ spec:
 
         let (unpriced_workflow, _) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: unpriced }
 spec:
@@ -10594,7 +10594,7 @@ spec:
         );
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: tool-budget }
 spec:
@@ -10660,7 +10660,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: process-budget }
 spec:
@@ -10719,7 +10719,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: artifact-budget }
 spec:
@@ -10779,7 +10779,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: wall-budget }
 spec:
@@ -10847,7 +10847,7 @@ spec:
             .with_ids(Arc::new(SequenceIds::default()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: resumed-wall-budget }
 spec:
@@ -10917,7 +10917,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-overlap }
 spec:
@@ -10970,7 +10970,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-memory }
 spec:
@@ -11021,7 +11021,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-write-declaration }
 spec:
@@ -11068,7 +11068,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-cancellation }
 spec:
@@ -11127,7 +11127,7 @@ spec:
         );
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-failure }
 spec:
@@ -11183,7 +11183,7 @@ spec:
         );
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-continue }
 spec:
@@ -11226,7 +11226,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-approvals }
 spec:
@@ -11294,7 +11294,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-retry }
 spec:
@@ -11359,7 +11359,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_external_actions(handler.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: continued-a2a }
 spec:
@@ -11473,7 +11473,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-repair }
 spec:
@@ -11542,7 +11542,7 @@ spec:
     fn repair_fingerprints_include_tool_definitions_and_resolved_task_variables() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: fingerprint-repair }
 spec:
@@ -11623,7 +11623,7 @@ spec:
         uncertain: bool,
     ) -> EffectRequest {
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: reconciled-resume }
 spec:
@@ -11887,7 +11887,7 @@ spec:
         let directory = tempdir().expect("tempdir");
         let store = SqliteStore::open_memory().expect("store");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: reconciliation-policy }
 spec:
@@ -12028,7 +12028,7 @@ spec:
             .with_ids(Arc::new(SequenceIds::default()))
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: selective-repair }
 spec:
@@ -12268,7 +12268,7 @@ spec:
                     .with_tool("echo", tool.clone()),
             );
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: repair-tool-reuse }
 spec:
@@ -12382,7 +12382,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: branch-repair }
 spec:
@@ -12540,7 +12540,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: effect-repair }
 spec:
@@ -12660,7 +12660,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: reused-effect-repair }
 spec:
@@ -12751,7 +12751,7 @@ spec:
             .with_ids(Arc::new(SequenceIds::default()))
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider));
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: prompt-repair }
 spec:
@@ -12817,7 +12817,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: memory-repair }
 spec:
@@ -12889,7 +12889,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: artifact-repair }
 spec:
@@ -13024,7 +13024,7 @@ spec:
         let store = SqliteStore::open(&database).expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: legacy-upgrade }
 spec:
@@ -13134,7 +13134,7 @@ spec:
         let store = SqliteStore::open(&database).expect("store");
         let runtime = runtime(store, directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: legacy-missing-proof }
 spec:
@@ -13193,7 +13193,7 @@ spec:
             .with_ids(Arc::new(SequenceIds::default()))
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: terminal-retry }
 spec:
@@ -13318,7 +13318,7 @@ spec:
             RuntimeRegistry::default().with_provider("fake", Arc::new(PromptEchoProvider)),
         );
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: retry-plan-diagnostics }
 spec:
@@ -13382,7 +13382,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, compiled) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: foreach-retry }
 spec:
@@ -13524,7 +13524,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: retry-planning }
 spec:
@@ -13653,7 +13653,7 @@ spec:
         let store = SqliteStore::open(&database).expect("store");
         let runtime = runtime(store, directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: corrupt-output-repair }
 spec:
@@ -13749,7 +13749,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: graph-repair }
 spec:
@@ -13764,7 +13764,7 @@ spec:
     - { id: combine, uses: "action:assign", needs: [left, right], with: { value: combined } }
 "#;
         let target_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: graph-repair }
 spec:
@@ -13847,7 +13847,7 @@ spec:
         }));
 
         let successful_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: restart-successful }
 spec:
@@ -13899,7 +13899,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source_yaml = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: effect-safety }
 spec:
@@ -14002,7 +14002,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: dataflow }
 spec:
@@ -14046,7 +14046,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: typed-routing }
 spec:
@@ -14206,7 +14206,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let runtime = runtime(store.clone(), directory.path());
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: bounded-loop }
 spec:
@@ -14372,7 +14372,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (zero_workflow, zero_plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: zero-loop }
 spec:
@@ -14409,7 +14409,7 @@ spec:
 
         let (one_workflow, one_plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: one-loop }
 spec:
@@ -14446,7 +14446,7 @@ spec:
 
         let (bound_workflow, bound_plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: exhausted-loop }
 spec:
@@ -14503,7 +14503,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: loop-effect-cancellation }
 spec:
@@ -14567,7 +14567,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: subworkflow-runtime }
 spec:
@@ -14724,7 +14724,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: subworkflow-artifact }
 spec:
@@ -14778,7 +14778,7 @@ spec:
 
         let (failed_workflow, failed_plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: subworkflow-failure }
 spec:
@@ -14818,7 +14818,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: output-contract }
 spec:
@@ -14868,7 +14868,7 @@ spec:
             RuntimeRegistry::default().with_provider("fake", Arc::new(PromptEchoProvider));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: task-vars }
 spec:
@@ -14930,7 +14930,7 @@ spec:
         .expect("oversized fixture");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: bounded-read }
 spec:
@@ -14970,7 +14970,7 @@ spec:
         let directory = tempdir().expect("tempdir");
         std::fs::create_dir(directory.path().join("out")).expect("out dir");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: write }
 spec:
@@ -15059,7 +15059,7 @@ spec:
         std::fs::create_dir(directory.path().join("out")).expect("out dir");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: ci-safety }
 spec:
@@ -15095,7 +15095,7 @@ spec:
             .with_trace_sink(traces.clone());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: provider }
 spec:
@@ -15154,7 +15154,7 @@ spec:
             .with_stream_event_sink(observer.clone());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: bounded-stream }
 spec:
@@ -15229,7 +15229,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: interrupted-stream }
 spec:
@@ -15275,7 +15275,7 @@ spec:
             .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: cancelled-stream }
 spec:
@@ -15328,7 +15328,7 @@ spec:
     async fn recorded_replay_never_calls_provider_or_tool_executor() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: replay-tools }
 spec:
@@ -15443,7 +15443,7 @@ spec:
     async fn stateless_tool_continuation_survives_pause_resume_and_recorded_replay() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: stateless-resume }
 spec:
@@ -15560,7 +15560,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: paused-replay }
 spec:
@@ -15593,7 +15593,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: cancel }
 spec:
@@ -15626,7 +15626,7 @@ spec:
         let store = SqliteStore::open_memory().expect("store");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: retry-cancel }
 spec:
@@ -15672,7 +15672,7 @@ spec:
     async fn agent_tool_loop_validates_tool_output_before_model_continuation() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: tools }
 spec:
@@ -15748,7 +15748,7 @@ spec:
         let directory = tempdir().expect("tempdir");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: denied-tool }
 spec:
@@ -15801,7 +15801,7 @@ spec:
     async fn tool_timeout_and_cancellation_are_bounded_and_durable() {
         let directory = tempdir().expect("tempdir");
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: tool-bounds }
 spec:
@@ -15930,7 +15930,7 @@ spec:
         let directory = tempdir().expect("tempdir");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: process-timeout }
 spec:
@@ -15984,7 +15984,7 @@ spec:
             .expect("AGENTCTL_TEST_CONTAINER_RUNTIME");
         let (workflow, plan) = compile_fixture(&format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: container-isolation-live }}
 spec:
@@ -16038,7 +16038,7 @@ spec:
         let secret = std::env::var("PATH").expect("PATH");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: process-output-limit }
 spec:
@@ -16111,7 +16111,7 @@ spec:
         .expect("secret file");
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: process-secret-redaction }
 spec:
@@ -16220,7 +16220,7 @@ esac
             .expect("extension permissions");
         let source = format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: process-extension }}
 spec:
@@ -16322,7 +16322,7 @@ fi
             .expect("extension permissions");
         let source = format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: bad-process-extension }}
 spec:
@@ -16404,7 +16404,7 @@ esac
         let source_for = |behavior: &str, timeout: u64| {
             format!(
                 r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: bounded-{behavior} }}
 spec:
@@ -16492,7 +16492,7 @@ spec:
         let directory = tempdir().expect("tempdir");
         let mut workflow = parse_workflow(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: packed-process-output-limit }
 spec:
@@ -16512,7 +16512,7 @@ spec:
             "apiVersion": "agentctl.dev/pack/v1alpha1",
             "name": "example.utility",
             "version": "1.0.0",
-            "agentctl": ">=0.2.0, <1.0.0",
+            "agentctl": ">=0.3.0, <1.0.0",
             "actions": {
                 "noisy": {
                     "kind": "builtin.shell.exec",
@@ -16561,7 +16561,7 @@ spec:
         let marker = directory.path().join("started");
         let source = format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: process-cancellation }}
 spec:
@@ -16624,7 +16624,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: compensation }
 spec:
@@ -16786,7 +16786,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: partial-compensation }
 spec:
@@ -16893,7 +16893,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: uncertain-compensation }
 spec:
@@ -17012,7 +17012,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: cancelled-compensation }
 spec:
@@ -17082,7 +17082,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: automatic-compensation }
 spec:
@@ -17138,7 +17138,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: compensation-approval }
 spec:
@@ -17235,7 +17235,7 @@ spec:
         let runtime = runtime(store.clone(), directory.path());
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: reconciled-compensation }
 spec:
@@ -17339,7 +17339,7 @@ spec:
             .with_ids(Arc::new(SequenceIds::default()));
         let (workflow, plan) = compile_fixture(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: semantic-memory }
 spec:

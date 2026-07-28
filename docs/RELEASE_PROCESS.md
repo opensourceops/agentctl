@@ -1,6 +1,7 @@
 # Release process
 
-This process applies to the `agentctl.dev/v1alpha1` release candidate. A release is not approved from local evidence alone.
+This process applies to agentctl releases carrying workflow API
+`agentctl.dev/v1`. A release is not approved from local evidence alone.
 
 ## Required hosted checks
 
@@ -73,6 +74,6 @@ For the candidate workflow run:
 
 ## Release decision
 
-Promote an exact commit to a framework candidate only after it has all required
-hosted checks and artifacts. Stable `v1.0` remains outside this `v1alpha1`
-gate.
+Promote an exact commit only after it has all required hosted checks and
+artifacts. Shipping workflow API `agentctl.dev/v1` does not imply a 1.0 CLI,
+crate, storage, provider, or long-term-support contract.

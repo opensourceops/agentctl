@@ -43,7 +43,7 @@ SBOM validation without provider credentials.
 
 `agentctl` is a schedulable local runtime, not an external scheduler or
 distributed control plane. The workflow document API is versioned
-`v1alpha1`. One run may execute
+`agentctl.dev/v1`. One run may execute
 bounded independent tasks concurrently with deterministic plan-order commits;
 cross-run and cross-host overlap remains external. Provider, filesystem,
 process, and network policy is not an OS sandbox. At-most-once external work

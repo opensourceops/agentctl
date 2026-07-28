@@ -22,7 +22,8 @@ The path separates pre-run validation from durable runtime failures. An uncertai
 
 **Symptom:** `check`, `plan`, or `run` reports invalid YAML, a missing reference, unsupported capability, or bad template.
 
-**Likely cause:** The strict `v1alpha1` schema rejected a field or the compiler could not prove the graph and capabilities.
+**Likely cause:** The strict workflow API v1 schema rejected a field or the
+compiler could not prove the graph and capabilities.
 
 **Diagnose:**
 
