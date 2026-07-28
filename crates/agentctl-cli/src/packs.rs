@@ -895,7 +895,7 @@ mod tests {
         let path = directory.join("workflow.yaml");
         let source = format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: pack-test }}
 spec:
@@ -925,7 +925,7 @@ spec:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.dependency
 version: 1.2.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 actions:
   assign: { kind: builtin.assign }
 "#,
@@ -936,7 +936,7 @@ actions:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.root
 version: 2.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 dependencies:
   example.dependency:
     version: "^1.0"
@@ -983,7 +983,7 @@ actions:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.a
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 dependencies:
   example.b:
     version: "1"
@@ -998,7 +998,7 @@ actions:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.b
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 dependencies:
   example.a:
     version: "1"
@@ -1019,7 +1019,7 @@ dependencies:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.b
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 dependencies:
   example.shared:
     version: "1"
@@ -1028,11 +1028,11 @@ dependencies:
         );
         write(
             &directory.path().join("shared-one.pack.yaml"),
-            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.shared\nversion: 1.0.0\nagentctl: \">=0.2.0, <1.0.0\"\n",
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.shared\nversion: 1.0.0\nagentctl: \">=0.3.0, <1.0.0\"\n",
         );
         write(
             &directory.path().join("shared-two.pack.yaml"),
-            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.shared\nversion: 2.0.0\nagentctl: \">=0.2.0, <1.0.0\"\n",
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.shared\nversion: 2.0.0\nagentctl: \">=0.3.0, <1.0.0\"\n",
         );
         write(
             &directory.path().join("c.pack.yaml"),
@@ -1040,7 +1040,7 @@ dependencies:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.c
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 dependencies:
   example.shared:
     version: "2"
@@ -1066,7 +1066,7 @@ dependencies:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.root
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 actions:
   assign: { kind: builtin.assign }
 "#,
@@ -1114,7 +1114,7 @@ actions:
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.root
 version: 1.0.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 actions:
   assign:
     kind: builtin.shell.exec
@@ -1144,7 +1144,7 @@ actions:
         git_status(["init", "-q"], &repository).expect("git init");
         write(
             &repository.join("agentctl.pack.yaml"),
-            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.root\nversion: 1.0.0\nagentctl: \">=0.2.0, <1.0.0\"\nactions:\n  assign: { kind: builtin.assign }\n",
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.root\nversion: 1.0.0\nagentctl: \">=0.3.0, <1.0.0\"\nactions:\n  assign: { kind: builtin.assign }\n",
         );
         git_status(["add", "agentctl.pack.yaml"], &repository).expect("git add");
         let status = Command::new("git")
@@ -1263,7 +1263,7 @@ actions:
                 .expect("gzip")
         }
 
-        let manifest = b"apiVersion: agentctl.dev/pack/v1alpha1\nname: example.root\nversion: 1.0.0\nagentctl: \">=0.2.0, <1.0.0\"\nactions:\n  assign: { kind: builtin.assign }\n";
+        let manifest = b"apiVersion: agentctl.dev/pack/v1alpha1\nname: example.root\nversion: 1.0.0\nagentctl: \">=0.3.0, <1.0.0\"\nactions:\n  assign: { kind: builtin.assign }\n";
         let archive = archive_with_manifest(manifest);
         let integrity = digest_bytes(&archive);
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");

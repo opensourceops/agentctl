@@ -1,6 +1,7 @@
 # Architecture diagrams
 
-These diagrams explain implemented `v1alpha1` behavior. Each diagram is paired with text so the relationship is available when Mermaid cannot render.
+These diagrams explain implemented workflow API v1 behavior. Each diagram is
+paired with text so the relationship is available when Mermaid cannot render.
 
 ## High-level system architecture
 

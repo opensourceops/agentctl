@@ -2765,7 +2765,7 @@ mod tests {
             ProtocolActionHandler::new(BTreeMap::new(), BTreeMap::from([("local".into(), client)]));
         let workflow = agentctl_core::dsl::parse_workflow(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: protocol-continuation }
 spec:
@@ -2919,7 +2919,7 @@ spec:
             ProtocolActionHandler::new(BTreeMap::new(), BTreeMap::from([("local".into(), client)]));
         let workflow = agentctl_core::dsl::parse_workflow(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: ambiguous-a2a }
 spec:

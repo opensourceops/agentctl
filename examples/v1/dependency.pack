@@ -1,7 +1,7 @@
 apiVersion: agentctl.dev/pack/v1alpha1
 name: example.base
 version: 1.1.0
-agentctl: ">=0.2.0, <1.0.0"
+agentctl: ">=0.3.0, <1.0.0"
 actions:
   assign:
     kind: builtin.assign

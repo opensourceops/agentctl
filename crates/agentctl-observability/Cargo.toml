@@ -10,7 +10,7 @@ repository.workspace = true
 readme.workspace = true
 
 [dependencies]
-agentctl-core = { version = "0.2.0", path = "../agentctl-core" }
+agentctl-core = { version = "0.3.0", path = "../agentctl-core" }
 chrono.workspace = true
 opentelemetry.workspace = true
 serde.workspace = true

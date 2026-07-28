@@ -28,7 +28,7 @@ For a tool-using credential-free journey, copy `examples/acceptance/mock-tool` t
 ## Workflow
 
 ```yaml
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: hello

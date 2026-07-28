@@ -2893,7 +2893,7 @@ mod tests {
     fn stable_order_uses_declaration_order_for_ready_tasks() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: ordering }
 spec:
@@ -2912,7 +2912,7 @@ spec:
     #[test]
     fn resource_budget_plan_counts_expansion_and_loop_bounds() {
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: budget-plan }
 spec:
@@ -2952,7 +2952,7 @@ spec:
     fn versioned_custom_pricing_enables_cost_limits() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: priced }
 spec:
@@ -2988,7 +2988,7 @@ spec:
         let digest = "0".repeat(64);
         let workflow = parse(&format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: isolation-plan }}
 spec:
@@ -3032,7 +3032,7 @@ spec:
     fn foreach_and_matrix_expand_to_stable_children_and_aggregates() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: expansion }
 spec:
@@ -3103,7 +3103,7 @@ spec:
     fn expansion_bounds_and_binding_collisions_are_rejected() {
         let too_many = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: expansion-bound }
 spec:
@@ -3124,7 +3124,7 @@ spec:
 
         let collision = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: expansion-collision }
 spec:
@@ -3149,7 +3149,7 @@ spec:
     fn bounded_loop_expands_to_stable_sequential_iteration_tasks() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: bounded-loop }
 spec:
@@ -3217,7 +3217,7 @@ spec:
         for (loop_definition, expected) in invalid {
             let source = format!(
                 r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: invalid-loop }}
 spec:
@@ -3241,7 +3241,7 @@ spec:
 
         let collision = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-loop-collision }
 spec:
@@ -3265,7 +3265,7 @@ spec:
 
         let existing_when = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-loop-when }
 spec:
@@ -3288,7 +3288,7 @@ spec:
 
         let binding_collision = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-loop-binding }
 spec:
@@ -3313,7 +3313,7 @@ spec:
     fn subworkflow_compiles_to_typed_namespaced_boundaries() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: subworkflow }
 spec:
@@ -3396,7 +3396,7 @@ spec:
     fn subworkflow_rejects_cycles_and_invalid_versions() {
         let cycle = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: subworkflow-cycle }
 spec:
@@ -3423,7 +3423,7 @@ spec:
 
         let invalid = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-version }
 spec:
@@ -3445,7 +3445,7 @@ spec:
 
         let output_override = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: output-override }
 spec:
@@ -3473,7 +3473,7 @@ spec:
     fn subworkflow_working_memory_is_namespaced_per_invocation() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: isolated-subworkflows }
 spec:
@@ -3505,7 +3505,7 @@ spec:
     fn compensation_is_explicit_effectful_and_part_of_the_plan() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: compensation }
 spec:
@@ -3540,7 +3540,7 @@ spec:
 
         let invalid = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-compensation }
 spec:
@@ -3567,7 +3567,7 @@ spec:
 
         let expanded = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: expanded-compensation }
 spec:
@@ -3598,7 +3598,7 @@ spec:
     fn typed_router_cases_compile_to_explicit_destination_guards() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: typed-router }
 spec:
@@ -3640,7 +3640,7 @@ spec:
     fn router_rejects_ambiguous_cases_and_implicit_dependencies() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-router }
 spec:
@@ -3681,7 +3681,7 @@ spec:
     fn parallel_memory_writes_are_inferred_and_conflicts_are_rejected() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-conflict }
 spec:
@@ -3706,7 +3706,7 @@ spec:
     fn ordered_or_disjoint_parallel_memory_writes_compile() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: parallel-memory }
 spec:
@@ -3728,7 +3728,7 @@ spec:
     #[test]
     fn templated_memory_key_requires_declared_write_set() {
         let source = r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: dynamic-memory-key }
 spec:
@@ -3760,7 +3760,7 @@ spec:
     fn additive_parallel_plan_fields_preserve_old_sequential_plans() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: old-plan }
 spec:
@@ -3788,7 +3788,7 @@ spec:
     fn rejects_cycle() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: cycle }
 spec:
@@ -3807,7 +3807,7 @@ spec:
     fn accepts_stateless_openai_continuation_for_tool_using_agents() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: stateless-tools }
 spec:
@@ -3852,7 +3852,7 @@ spec:
     fn rejects_hidden_team_orchestration_with_migration_guidance() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: hidden-team }
 spec:
@@ -3872,7 +3872,7 @@ spec:
     fn streaming_is_explicit_and_provider_capability_checked() {
         let fake = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: streaming }
 spec:
@@ -3908,7 +3908,7 @@ spec:
     fn rejects_invalid_task_and_agent_output_contracts() {
         let workflow = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: invalid-output-contracts }
 spec:
@@ -3944,7 +3944,7 @@ spec:
     fn semantic_memory_bounds_and_promotion_writes_are_compiled() {
         let valid = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: memory }
 spec:
@@ -3980,7 +3980,7 @@ spec:
 
         let openai_without_model = parse(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: memory }
 spec:
@@ -4018,7 +4018,7 @@ spec:
                 })
                 .collect::<String>();
             let source = format!(
-                "apiVersion: agentctl.dev/v1alpha1\nkind: Workflow\nmetadata: {{ name: property }}\nspec:\n  actions:\n    assign: {{ kind: builtin.assign }}\n  tasks:{tasks}\n"
+                "apiVersion: agentctl.dev/v1\nkind: Workflow\nmetadata: {{ name: property }}\nspec:\n  actions:\n    assign: {{ kind: builtin.assign }}\n  tasks:{tasks}\n"
             );
             let workflow = parse(&source);
             let first = compile(&workflow, "property.yaml").expect("compile");

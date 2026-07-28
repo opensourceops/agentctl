@@ -13,7 +13,8 @@ and OCI journeys. The local container build has a secure optional CA secret
 path, and exact-head pull-request gates execute Linux x64, hosted macOS arm64,
 Windows x64, container, security, package, and SBOM validation without
 provider credentials. Exact run and artifact digests belong to the independent
-candidate report. This is a `v1alpha1` framework candidate, not stable v1.0.
+candidate report. Version 0.3 publishes workflow API `agentctl.dev/v1`; the CLI
+and crates remain pre-1.0 and do not imply long-term support.
 
 ## Required hardening completed for this release
 
@@ -57,7 +58,9 @@ These are extension points, not incomplete core runtime behavior:
 
 ## Current operational limits
 
-- The document API is `v1alpha1`; pin the binary/image version and validate before upgrading.
+- The document API is `agentctl.dev/v1`. Pin the binary or image version and
+  validate before upgrading because runtime, provider, and storage contracts
+  have independent versions.
 - Parallel scheduling is local to one run and process, bounded at 64 tasks, and defaults to sequential execution. Working-memory conflicts fail compilation, but tasks that target the same external resource still require explicit `needs` ordering or that system's concurrency controls. Separate runs also require external overlap controls when effects must not overlap.
 - Run budgets are optional. Provider input tokens and future token classes are
   estimated conservatively before dispatch; actual provider usage is

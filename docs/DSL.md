@@ -1,6 +1,6 @@
 # Workflow DSL
 
-The current document version is `agentctl.dev/v1alpha1`, with `kind: Workflow`. The generated, authoritative JSON Schema is [`schemas/workflow.schema.json`](../schemas/workflow.schema.json). YAML documents are limited to 1 MiB and reject unknown fields.
+The current document version is `agentctl.dev/v1`, with `kind: Workflow`. The generated, authoritative JSON Schema is [`schemas/workflow.schema.json`](../schemas/workflow.schema.json). YAML documents are limited to 1 MiB and reject unknown fields.
 
 `metadata` contains the name, description, and labels. `spec` contains typed inputs/outputs; providers; bounded agents; actions; tool contracts; reusable sub-workflows; compensation policy; ordered tasks; policy; memory; MCP servers; A2A peers; packs; runtime; and output settings. A task `uses` `action:<name>`, `agent:<name>`, `workflow:<name>`, or the pure `router` construct. Tasks declare `needs`, optional bounded `foreach`, `matrix`, or `loop` expansion, optional working-memory `memoryWrites`, an optional `when`, local `vars`, typed `with` input, optional `outputSchema`, retry, timeout, failure behavior, and an optional effectful `compensate` action.
 
@@ -86,4 +86,6 @@ budgets](guides/RESOURCE_BUDGETS.md).
 
 The parser translates a limited unversioned `playbook:` document and emits a migration warning. Use `agentctl migrate old.yaml --write new.yaml`. Legacy pack-backed, MCP, A2A, provider-specific, and broad module configurations need manual migration; see [Migrating from TypeScript](MIGRATING_FROM_TYPESCRIPT.md).
 
-Not implemented in v1alpha1: `finally`, handlers, or event triggers. Parallelism is expressed by independent graph tasks rather than a separate parallel-group construct.
+Not implemented in workflow API v1: `finally`, handlers, or event triggers.
+Parallelism is expressed by independent graph tasks rather than a separate
+parallel-group construct.

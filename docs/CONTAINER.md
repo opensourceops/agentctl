@@ -76,7 +76,7 @@ docker run --rm --read-only --user 65532:65532 \
   --mount type=bind,src="$PWD/state",dst=/state \
   --mount type=bind,src="$PWD/artifacts",dst=/artifacts \
   --env OPENAI_API_KEY \
-  ghcr.io/OWNER/agentctl:0.2.0 \
+  ghcr.io/OWNER/agentctl:0.3.0 \
   run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
   --input reportPath=/artifacts/report.txt --timeout-seconds 600 \
   --output json --color never
@@ -96,7 +96,7 @@ docker run --rm --read-only --user 65532:65532 \
   --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
   --mount type=bind,src="$PWD/state",dst=/state \
   --mount type=bind,src="$PWD/openai.key",dst=/run/secrets/openai,readonly \
-  ghcr.io/OWNER/agentctl:0.2.0 \
+  ghcr.io/OWNER/agentctl:0.3.0 \
   run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
   --output json --color never
 ```
@@ -111,7 +111,7 @@ docker run --rm --read-only --user 65532:65532 --network none \
   --mount type=bind,src="$PWD/config",dst=/config,readonly \
   --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
   --mount type=bind,src="$PWD/state",dst=/state \
-  ghcr.io/OWNER/agentctl:0.2.0 \
+  ghcr.io/OWNER/agentctl:0.3.0 \
   repair /config/repaired.yaml SOURCE_RUN_ID --from failed_task --plan \
   --workspace /workspace --db /state/runtime.db --output json --color never
 ```
@@ -140,7 +140,7 @@ jobs:
             --mount type=bind,src="$GITHUB_WORKSPACE",dst=/workspace,readonly \
             --mount type=bind,src="$GITHUB_WORKSPACE/.agentctl-state",dst=/state \
             --mount type=bind,src="$GITHUB_WORKSPACE/artifacts",dst=/artifacts \
-            --env OPENAI_API_KEY ghcr.io/OWNER/agentctl:0.2.0 \
+            --env OPENAI_API_KEY ghcr.io/OWNER/agentctl:0.3.0 \
             run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
             --input reportPath=/artifacts/report.txt --timeout-seconds 600 \
             --output json --color never
@@ -165,7 +165,7 @@ This syntax assumes a runner configured with Docker CLI access to the host daemo
 agentctl:
   image: docker:27-cli
   variables:
-    AGENTCTL_IMAGE: ghcr.io/OWNER/agentctl:0.2.0
+    AGENTCTL_IMAGE: ghcr.io/OWNER/agentctl:0.3.0
   before_script:
     - mkdir -p .agentctl-state artifacts && chmod 0777 .agentctl-state artifacts
   script:
@@ -208,7 +208,7 @@ pipeline {
               --mount type=bind,src="$WORKSPACE",dst=/workspace,readonly \
               --mount type=bind,src="$WORKSPACE/.agentctl-state",dst=/state \
               --mount type=bind,src="$WORKSPACE/artifacts",dst=/artifacts \
-              --env OPENAI_API_KEY ghcr.io/OWNER/agentctl:0.2.0 \
+              --env OPENAI_API_KEY ghcr.io/OWNER/agentctl:0.3.0 \
               run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
               --input reportPath=/artifacts/report.txt --timeout-seconds 600 \
               --output json --color never
@@ -249,7 +249,7 @@ The runner needs Docker CLI/socket access and four workspace directories. The se
           --mount type=bind,src=/harness,dst=/workspace,readonly \
           --mount type=bind,src=/harness/.agentctl-state,dst=/state \
           --mount type=bind,src=/harness/artifacts,dst=/artifacts \
-          --env OPENAI_API_KEY ghcr.io/OWNER/agentctl:0.2.0 \
+          --env OPENAI_API_KEY ghcr.io/OWNER/agentctl:0.3.0 \
           run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
           --input reportPath=/artifacts/report.txt --timeout-seconds 600 \
           --output json --color never
@@ -288,7 +288,7 @@ spec:
             fsGroup: 65532
           containers:
             - name: agentctl
-              image: ghcr.io/OWNER/agentctl:0.2.0
+              image: ghcr.io/OWNER/agentctl:0.3.0
               args:
                 - run
                 - /config/workflow.yaml

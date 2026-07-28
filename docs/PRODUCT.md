@@ -26,9 +26,18 @@ Workflow and pack authors are trusted to request work, but their requests remain
 
 ## Compatibility and maturity
 
-The current document API is `agentctl.dev/v1alpha1`; breaking changes may occur with explicit diagnostics and migration support. Machine output, plan, effects, runtime state, checkpoints, database schema, audit events, and protocol continuation all carry independent versions. Deprecations are documented for at least one compatibility window; incompatible durable state fails explicitly.
+The current document API is `agentctl.dev/v1`. Additive compatible changes may
+extend it; incompatible workflow changes require a new document API version and
+explicit migration diagnostics. Machine output, plan, effects, runtime state,
+checkpoints, database schema, audit events, and protocol continuation all carry
+independent versions. Deprecations are documented for at least one compatibility
+window; incompatible durable state fails explicitly.
 
-Version 0.2 is a production-oriented alpha with executable evidence for the stated local, scheduled, and generic-container journeys. The workflow schema remains `v1alpha1`, so callers must pin the binary/image version. A stable release requires a frozen v1 workflow schema, accumulated cross-platform CI history, documented long-horizon database upgrade support, expanded compatibility fixtures, and a security review of any newly added executor.
+Version 0.3 freezes the workflow schema as `agentctl.dev/v1` and has executable
+evidence for the stated local, scheduled, and generic-container journeys. The
+CLI and crates remain pre-1.0, so callers must still pin the binary or image
+version for runtime, provider, and storage behavior outside the workflow
+document contract.
 
 ## Differentiation
 

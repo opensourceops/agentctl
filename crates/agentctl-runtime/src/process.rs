@@ -696,7 +696,7 @@ mod tests {
     fn container_action() -> ActionDefinition {
         let source = format!(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: {{ name: container-command }}
 spec:

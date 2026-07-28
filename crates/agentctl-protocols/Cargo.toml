@@ -10,8 +10,8 @@ repository.workspace = true
 readme.workspace = true
 
 [dependencies]
-agentctl-core = { version = "0.2.0", path = "../agentctl-core" }
-agentctl-runtime = { version = "0.2.0", path = "../agentctl-runtime" }
+agentctl-core = { version = "0.3.0", path = "../agentctl-core" }
+agentctl-runtime = { version = "0.3.0", path = "../agentctl-runtime" }
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
@@ -27,7 +27,7 @@ tokio-util.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-agentctl-store = { version = "0.2.0", path = "../agentctl-store" }
+agentctl-store = { version = "0.3.0", path = "../agentctl-store" }
 tempfile.workspace = true
 wiremock.workspace = true
 

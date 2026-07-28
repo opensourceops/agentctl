@@ -18,7 +18,7 @@ RUN --mount=type=secret,id=agentctl_ca,required=false \
     cargo build --release --locked -p agentctl-cli
 
 FROM gcr.io/distroless/cc-debian12:nonroot
-ARG AGENTCTL_VERSION=0.2.0
+ARG AGENTCTL_VERSION=0.3.0
 LABEL org.opencontainers.image.title="agentctl" \
       org.opencontainers.image.description="Deterministic control plane for policy-constrained agentic automation" \
       org.opencontainers.image.version="${AGENTCTL_VERSION}" \

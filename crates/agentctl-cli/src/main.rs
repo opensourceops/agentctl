@@ -131,7 +131,7 @@ enum Command {
     Auth(AuthArgs),
     /// Print or write the generated workflow JSON Schema.
     Schema(SchemaArgs),
-    /// Translate an unversioned TypeScript-era workflow into v1alpha1.
+    /// Translate an unversioned TypeScript-era workflow into workflow API v1.
     Migrate(MigrateArgs),
     /// Inspect and verify a local reusable pack.
     Packs(PackArgs),
@@ -3578,7 +3578,7 @@ mod tests {
             .expect("secret file");
         let reachable = parse_workflow(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: reachable-secret }
 spec:
@@ -3639,7 +3639,7 @@ spec:
 
         let unused = parse_workflow(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: unused-secret }
 spec:
@@ -3669,7 +3669,7 @@ spec:
         .expect("embedding secret");
         let memory_only = parse_workflow(
             r#"
-apiVersion: agentctl.dev/v1alpha1
+apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata: { name: memory-secret }
 spec:
