@@ -353,6 +353,7 @@ markers.
 The exact retained GPT-5.6 live database had previously replayed with no
 credential and no network, identical output and artifact digest, zero fresh
 effects/tool calls/provider sessions, and explicit source-effect audit links.
-GitHub, GitLab, Jenkins, Harness, and Kubernetes examples remain
-documentation-reviewed only; the automatic Ubuntu Linux x64 build, scan, and
-SBOM job is locally linted but has not been dispatched.
+GitLab, Jenkins, Harness, and Kubernetes examples remain
+documentation-reviewed only. The automatic Ubuntu Linux x64 build, scan, and
+SBOM job passed on the exact pull-request head and retained its image SBOM
+artifact and digest.

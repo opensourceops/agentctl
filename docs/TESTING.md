@@ -30,7 +30,14 @@ cargo install cargo-fuzz
 cargo fuzz run workflow_yaml -- -max_total_time=60
 ```
 
-The local hosted-CI configuration runs the canonical suite, credential-free acceptance, and packaging on Rust 1.88 for Linux x64, macOS arm64, and Windows x64. Separate automatic jobs cover the Linux x64 container, current vulnerability scan, two CycloneDX SBOM artifacts, complete-history/tree secret scans, dependency policy, and workflow lint. The workflows are locally linted but have not been pushed or dispatched, so this is configured evidence rather than validated hosted-platform support. Provider/protocol conformance uses local mock HTTP servers. Normal examples are deterministic; MCP/A2A runtime behavior is covered by mocks rather than requiring a background service.
+Hosted CI runs the canonical suite, credential-free acceptance, and packaging
+on Rust 1.88 for Linux x64, macOS arm64, and Windows x64. Separate automatic
+jobs cover the Linux x64 container, current vulnerability scan, two CycloneDX
+SBOM artifacts, complete-history/tree secret scans, dependency policy, and
+workflow lint. Exact-head pull-request and release-preparation runs provide
+validated hosted-platform evidence. Provider/protocol conformance uses local
+mock HTTP servers. Normal examples are deterministic; MCP/A2A runtime behavior
+is covered by mocks rather than requiring a background service.
 
 Live gates are separately invoked and described in [Providers](PROVIDERS.md).
 The original acceptance performs one tool-call/continuation journey locally

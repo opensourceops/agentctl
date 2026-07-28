@@ -143,7 +143,8 @@ workflows rather than the credential-free fixture with unrelated task IDs.
 - Live records retain only scenario, model, request/tool counts, token counts,
   run ID, outcome, and recovery/replay reuse status.
 - Raw model content, databases, and keys stay in ignored local evidence.
-- Configured hosted jobs are not described as executed.
+- Hosted jobs are described as executed only when exact-head run records and
+  retained artifact digests exist.
 - Native and emulated container architecture results are labeled explicitly.
 - Every verified limitation links to focused tests plus at least one public
   product path.

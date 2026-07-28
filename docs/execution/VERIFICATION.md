@@ -94,9 +94,8 @@ Official feature/pricing references used for the audit: [GPT-5.6 model catalog](
 - The OCI image inspection reported `linux arm64`, `nonroot:nonroot`, and version label `0.2.0`. The acceptance invocation used `--read-only` plus only mounted writable state/artifact paths.
 - Trivy 0.72.0 with a freshly updated database found zero fixed
   HIGH/CRITICAL findings in the current image and generated valid CycloneDX
-  JSON with 11 components. The temporary local SBOM was validation evidence,
-  not the still-pending hosted artifact; hosted jobs surface retained artifact
-  and file digests.
+  JSON with 11 components. The local SBOM remains separately labeled; the
+  exact-head hosted job retained its image SBOM artifact and digest.
 - GitHub Actions exact-head platform, container, security, package, and SBOM
   jobs are hosted execution evidence. GitLab CI, Jenkins, Harness CI, and
   Kubernetes examples remain documentation-reviewed and are not claimed as

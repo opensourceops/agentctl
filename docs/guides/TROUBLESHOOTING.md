@@ -174,7 +174,10 @@ and do not weaken TLS to make the probe pass.
 
 **Symptom:** A workspace or database path parses differently from a Unix example.
 
-**Resolve:** Use native absolute paths and quote paths with spaces. Windows cannot express Unix database mode bits, so rely on the user profile ACL. Hosted Windows evidence is configured but still pending for the current candidate.
+**Resolve:** Use native absolute paths and quote paths with spaces. Windows
+cannot express Unix database mode bits, so rely on the user profile ACL. The
+exact-head hosted Windows verification, acceptance, completeness, and package
+gates pass for the current candidate.
 
 ## Safe issue report
 
