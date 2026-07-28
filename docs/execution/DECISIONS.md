@@ -6,8 +6,19 @@
 | [0002](../adr/0002-versioned-strict-workflow-envelope.md) | Versioned strict envelope | accepted | Generated schema, strict fields, explicit migration. |
 | [0003](../adr/0003-sqlite-history-and-conservative-recovery.md) | SQLite history, conservative recovery | accepted | Resume reuses confirmed effects; replay performs none; fork is fresh. |
 | [0004](../adr/0004-native-provider-adapters.md) | Native providers behind neutral contracts | accepted | Native request/response tests and early capability rejection. |
-| [0005](../adr/0005-narrow-v1-scheduling-and-extensions.md) | Sequential v1 and narrow extensions | accepted | Deterministic commits now; parallel/dynamic constructs deferred. |
+| [0005](../adr/0005-narrow-v1-scheduling-and-extensions.md) | Narrow v1 scheduling and extensions | superseded for scheduling | Dynamic constructs remain separate decisions; ADR 0008 replaces the sequential-only rule. |
 | [0006](../adr/0006-schedulable-runtime-and-noninteractive-contract.md) | Schedulable runtime, durable non-interactive pause | accepted | External platforms schedule; CLI never prompts or auto-approves in CI. |
 | [0007](../adr/0007-generic-oci-step-contract.md) | Generic OCI step contract | accepted | Non-root/read-only image; mounted config/workspace/state/artifacts. |
+| [0008](../adr/0008-deterministic-parallel-batches.md) | Deterministic parallel batches | accepted | Bounded overlap, isolated snapshots, declared writes, and atomic plan-order commits. |
+| [0009](../adr/0009-bounded-static-task-expansion.md) | Bounded static task expansion | accepted | Stable child tasks and ordered aggregates prevent model-controlled graph growth. |
+| [0010](../adr/0010-typed-routing-and-durable-decisions.md) | Typed routing and durable decisions | accepted | Pure enumerated routers and hashed condition contexts make branching inspectable and replayable. |
+| [0011](../adr/0011-bounded-loops-as-static-graphs.md) | Bounded loops as static graphs | accepted | Fixed iteration chains reuse ordinary durable task and recovery semantics. |
+| [0012](../adr/0012-subworkflows-as-namespaced-graphs.md) | Sub-workflows as namespaced graphs | accepted | Typed boundaries and flattened children avoid a hidden nested runtime. |
+| [0013](../adr/0013-compensation-as-source-linked-runs.md) | Compensation as source-linked runs | accepted | Immutable source effects gain explicit best-effort inverse lineage without pretending to be transactions. |
+| [0014](../adr/0014-structured-handoffs-as-graph-data.md) | Structured handoffs as graph data | accepted | Bounded roles and typed handoff tasks preserve one explicit durable scheduler. |
+| [0015](../adr/0015-durable-stream-events.md) | Durable stream events | accepted | Awaited bounded persistence separates progress from validated final output. |
+| [0016](../adr/0016-durable-protocol-continuation.md) | Durable protocol continuation | accepted | MCP reconnect is schema/idempotency gated; A2A continues observation only from a persisted task ID. |
+| [0017](../adr/0017-locked-packs-and-process-extensions.md) | Locked packs and process extensions | accepted | Reproducible source graphs and publisher policy replace implicit loading; executable extensions stay out of process. |
+| [0018](../adr/0018-typed-semantic-memory.md) | Typed semantic memory with recorded retrieval | accepted | Provider-neutral bounded retrieval remains explicit, inspectable, repairable, and effect-free on replay. |
 
 These decisions resolve the researched patterns in [LANDSCAPE.md](../research/LANDSCAPE.md). No unsafe code or distributed control plane ADR is required because neither exists.

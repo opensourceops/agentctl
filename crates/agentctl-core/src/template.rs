@@ -42,7 +42,9 @@ pub fn referenced_tasks(template: &str) -> BTreeSet<String> {
                 .trim()
                 .strip_prefix("not ")
                 .unwrap_or(expression.trim());
-            let path = expression.split("==").next().unwrap_or(expression).trim();
+            let path = split_comparison(expression)
+                .map_or(expression, |(left, _, _)| left)
+                .trim();
             let mut parts = path.split('.');
             (parts.next() == Some("tasks"))
                 .then(|| parts.next().map(ToOwned::to_owned))
@@ -77,11 +79,30 @@ pub fn evaluate_when(expression: &str, context: &EvalContext) -> Result<bool, Te
         .unwrap_or(trimmed);
     let negated = inner.starts_with("not ");
     let candidate = inner.strip_prefix("not ").unwrap_or(inner).trim();
-    let result = if let Some((left, right)) = candidate.split_once("==") {
+    let result = if let Some((left, operator, right)) = split_comparison(candidate) {
         let left_value = resolve_path(left.trim(), context)?;
         let right_value: Value = serde_json::from_str(right.trim())
             .unwrap_or_else(|_| Value::String(right.trim().trim_matches(['\'', '"']).to_owned()));
-        left_value == &right_value
+        match operator {
+            "==" => left_value == &right_value,
+            "!=" => left_value != &right_value,
+            "<" | "<=" | ">" | ">=" => {
+                let left_number = left_value
+                    .as_f64()
+                    .ok_or_else(|| TemplateError::Unsupported(candidate.to_owned()))?;
+                let right_number = right_value
+                    .as_f64()
+                    .ok_or_else(|| TemplateError::Unsupported(candidate.to_owned()))?;
+                match operator {
+                    "<" => left_number < right_number,
+                    "<=" => left_number <= right_number,
+                    ">" => left_number > right_number,
+                    ">=" => left_number >= right_number,
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        }
     } else {
         truthy(resolve_path(candidate, context)?)
     };
@@ -94,7 +115,7 @@ fn render_string(text: &str, context: &EvalContext) -> Result<Value, TemplateErr
         return Ok(Value::String(text.to_owned()));
     }
     if found.len() == 1 && found[0].0 == 0 && found[0].1 == text.len() {
-        if found[0].2.contains("==") || found[0].2.trim_start().starts_with("not ") {
+        if split_comparison(found[0].2).is_some() || found[0].2.trim_start().starts_with("not ") {
             return evaluate_when(found[0].2, context).map(Value::Bool);
         }
         return Ok(resolve_path(found[0].2, context)?.clone());
@@ -153,10 +174,21 @@ fn validate_path_or_comparison(expression: &str) -> Result<(), TemplateError> {
         .trim()
         .strip_prefix("not ")
         .unwrap_or(expression.trim());
-    let path = candidate
-        .split_once("==")
-        .map_or(candidate, |(left, _)| left)
-        .trim();
+    let comparison = split_comparison(candidate);
+    let path = comparison.map_or(candidate, |(left, _, _)| left).trim();
+    if let Some((_, operator, right)) = comparison {
+        if right.trim().is_empty() {
+            return Err(TemplateError::Unsupported(expression.to_owned()));
+        }
+        if matches!(operator, "<" | "<=" | ">" | ">=")
+            && serde_json::from_str::<Value>(right.trim())
+                .ok()
+                .and_then(|value| value.as_f64())
+                .is_none()
+        {
+            return Err(TemplateError::Unsupported(expression.to_owned()));
+        }
+    }
     let mut parts = path.split('.');
     match parts.next() {
         Some("inputs" | "vars" | "memory") if parts.next().is_some() => {}
@@ -172,6 +204,15 @@ fn validate_path_or_comparison(expression: &str) -> Result<(), TemplateError> {
         return Err(TemplateError::Unsupported(expression.to_owned()));
     }
     Ok(())
+}
+
+fn split_comparison(expression: &str) -> Option<(&str, &str, &str)> {
+    for operator in ["==", "!=", "<=", ">=", "<", ">"] {
+        if let Some((left, right)) = expression.split_once(operator) {
+            return Some((left, operator, right));
+        }
+    }
+    None
 }
 
 fn resolve_path<'a>(path: &str, context: &'a EvalContext) -> Result<&'a Value, TemplateError> {
@@ -258,20 +299,30 @@ mod tests {
     }
 
     #[test]
-    fn condition_supports_safe_equality_only() {
-        let inputs = BTreeMap::from([("deploy".to_owned(), Value::Bool(true))]);
+    fn condition_supports_typed_comparisons() {
+        let inputs = BTreeMap::from([
+            ("deploy".to_owned(), Value::Bool(true)),
+            ("iteration".to_owned(), Value::from(2)),
+            ("label".to_owned(), Value::String("ready".to_owned())),
+        ]);
         let context = EvalContext {
             inputs,
             ..EvalContext::default()
         };
         assert!(evaluate_when("${{ inputs.deploy == true }}", &context).expect("valid"));
+        assert!(evaluate_when("${{ inputs.label != \"blocked\" }}", &context).expect("valid"));
+        assert!(evaluate_when("${{ inputs.iteration < 3 }}", &context).expect("valid"));
+        assert!(evaluate_when("${{ inputs.iteration <= 2 }}", &context).expect("valid"));
+        assert!(evaluate_when("${{ inputs.iteration >= 2 }}", &context).expect("valid"));
+        assert!(!evaluate_when("${{ inputs.iteration > 2 }}", &context).expect("valid"));
         assert_eq!(
             render(
-                &Value::String("${{ inputs.deploy == true }}".to_owned()),
+                &Value::String("${{ inputs.iteration < 3 }}".to_owned()),
                 &context
             ),
             Ok(Value::Bool(true))
         );
+        assert!(validate_expression("${{ inputs.label < \"z\" }}").is_err());
         assert!(validate_expression("${{ inputs.x + 1 }}").is_err());
     }
 

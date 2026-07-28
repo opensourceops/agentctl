@@ -43,14 +43,51 @@ spec:
         message: hello from agentctl
 ```
 
-Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, and `fork` when fresh effects are intentional.
+Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, `retry` to rerun failed boundaries of an identical terminal workflow, `repair` to reuse compatible successful task boundaries with a corrected workflow, and `fork` when a broader fresh execution is intentional.
+
+Terminal retry and selective repair are planned before execution:
+
+```text
+agentctl retry workflow.yaml SOURCE_RUN_ID --failed --plan
+agentctl retry workflow.yaml SOURCE_RUN_ID --failed
+agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task --plan
+agentctl repair repaired.workflow.yaml SOURCE_RUN_ID --from failed_task
+agentctl compensate SOURCE_RUN_ID --plan
+agentctl compensate SOURCE_RUN_ID
+```
+
+See [Retry a terminal workflow](docs/guides/TERMINAL_RETRY.md), [Repair a failed workflow](docs/guides/repair-a-failed-workflow.md), and [Compensate applied effects](docs/guides/COMPENSATION.md) for compatibility, lineage, state reconstruction, and uncertain-effect handling.
+Use [Structured role handoffs](docs/guides/STRUCTURED_HANDOFFS.md) for bounded multi-role workflows without hidden conversation state.
+For retained pre-schema-5 history, use [Legacy run upgrade](docs/guides/LEGACY_RUN_UPGRADE.md). For ambiguous external outcomes, use [Effect reconciliation](docs/guides/EFFECT_RECONCILIATION.md).
+For confidential workflow history, use [Sensitive-state encryption](docs/guides/SENSITIVE_STATE_ENCRYPTION.md).
+For environment, mounted-file, and policy-gated process credentials, use [Secret references](docs/guides/SECRET_REFERENCES.md).
+For bounded independent branches and working-memory conflict rules, use [Deterministic parallel tasks](docs/guides/PARALLEL_TASKS.md).
+For bounded static task expansion and child-level recovery, use [Matrix and foreach tasks](docs/guides/MATRIX_AND_FOREACH.md).
+For typed branching and durable decisions, use [Conditions and routers](docs/guides/CONDITIONS_AND_ROUTERS.md).
+For iterative work with a hard execution ceiling and iteration-level recovery, use [Bounded loops](docs/guides/BOUNDED_LOOPS.md).
+For typed reusable graphs with namespaced recovery boundaries, use [Reusable sub-workflows](docs/guides/SUB_WORKFLOWS.md).
+For bounded provider progress, JSONL output, and recorded stream replay, use [Durable provider streaming](docs/guides/DURABLE_STREAMING.md).
+For schema-checked MCP reconnect and task-ID-based A2A continuation, use
+[MCP support](docs/MCP.md) and [A2A support](docs/A2A.md).
+For deterministic dependency locking and publisher policy, use
+[Packs](docs/PACKS.md). For reviewed local executables, use the
+[bounded process extension protocol](docs/EXTENSIONS.md).
+For typed cross-run text, vector, and hybrid retrieval with explicit promotion,
+use [State and memory](docs/memory.md).
+For durable run-wide request, token, tool, wall-time, process-output, artifact,
+graph-size, and optional monetary limits, use [Resource and cost
+budgets](docs/guides/RESOURCE_BUDGETS.md).
 
 ## Safety boundary
 
-- Secrets are environment references, never inline values or CLI flags.
+- Secrets are environment, mounted-file, or policy-gated process references, never inline values or CLI flags.
 - Files, processes, providers, MCP servers, and A2A peers require explicit policy grants.
+- Pack sources are locked by digest; optional Sigstore identity verification
+  and explicit unsigned-process policy run before pack actions are loaded.
 - Every non-pure operation is recorded before execution. A crash after an at-most-once effect starts is reported as uncertain and is never silently repeated.
 - Model turns, output tokens, tool calls, retries, and time are bounded.
+  Workflows can also set durable run-wide request, token, tool, wall-time,
+  process-output, artifact, graph-size, and monetary ceilings.
 - Shell stdout/stderr capture is bounded, concurrently drained, and terminated/reaped on output, timeout, or cancellation limits.
 - Check mode predicts deterministic actions; it does not claim to predict models or remote systems.
 - The process policy is an allowlist, not an operating-system sandbox.
@@ -62,7 +99,7 @@ CI uses the scripted fake provider. Native, mock-tested adapters cover OpenAI Re
 ## Repository map
 
 - `crates/agentctl-core`: DSL, compiler, templates, policy, state, effects, provider/tool contracts
-- `crates/agentctl-runtime`: scheduler, actions, agent loop, resume/replay/fork
+- `crates/agentctl-runtime`: scheduler, actions, agent loop, resume/replay/repair/fork
 - `crates/agentctl-store`: versioned SQLite persistence
 - `crates/agentctl-providers`: native HTTP provider adapters
 - `crates/agentctl-protocols`: MCP and A2A clients

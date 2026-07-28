@@ -2,6 +2,15 @@
 
 The repository `Containerfile` builds the Rust CLI in a pinned Rust 1.88 builder and copies only the optimized binary into a maintained distroless Debian runtime. The runtime has CA roots, version/source/license OCI labels, runs as `nonroot`, has a deterministic `agentctl` entrypoint, and contains no Node.js runtime, TypeScript source, credentials, workflows, or fixtures.
 
+This whole-workflow OCI step is distinct from action-level process isolation.
+An action with `isolation: container` asks the host agentctl process to invoke
+a locally available digest-pinned image through Docker or Podman. That action
+receives a read-only working-directory mount, no network, a read-only root,
+non-root UID/GID 65532, dropped capabilities, `no-new-privileges`, a bounded
+temporary filesystem, and explicit memory/CPU/PID/output/time limits. The
+engine and exact image are preflighted and never fall back to host execution.
+See [Process isolation](guides/PROCESS_ISOLATION.md).
+
 ## Optional build-network CA
 
 The default build uses the builder's public CA roots. Networks that intercept TLS may supply a reviewed public CA certificate or bundle through a build secret:
@@ -11,9 +20,29 @@ docker build --secret id=agentctl_ca,src=/protected/path/build-ca.pem \
   --tag agentctl:local --file Containerfile .
 ```
 
-For the repository acceptance wrapper, set `AGENTCTL_BUILD_CA_FILE=/protected/path/build-ca.pem` before `cargo xtask acceptance-container`. Hosted CI accepts the protected secret `AGENTCTL_BUILD_CA_PEM`, materializes it only in the runner's temporary directory, and removes it after the build.
+For the repository acceptance wrapper, set `AGENTCTL_BUILD_CA_FILE=/protected/path/build-ca.pem` before `cargo xtask acceptance-container`. Hosted `main` and manually dispatched runs accept the protected secret `AGENTCTL_BUILD_CA_PEM`, materialize it only in the runner's temporary directory, and remove it after the build. Pull-request runs never receive that secret.
 
 The `Containerfile` combines the secret with public roots on a tmpfs mount for the single Cargo build step. The CA value is not a build argument, image environment value, build-context file, layer, history value, runtime file, or artifact. Never use `--insecure`, `CARGO_HTTP_CHECK_REVOKE=false`, a TLS-verification disable flag, or a committed certificate.
+
+Runtime TLS interception is separate from build TLS. Mount a reviewed
+certificate-only PEM bundle read-only, authorize its parent under
+`secretFileRoots`, and reference it through `policy.network.customCa`:
+
+```yaml
+spec:
+  policy:
+    secretFileRoots: [/run/agentctl-ca]
+    networkAllowlist: [api.internal.example]
+    network:
+      allowedSchemes: [https]
+      allowedPorts: [443]
+      customCa: { file: /run/agentctl-ca/runtime-ca.pem }
+```
+
+The adapter adds the bundle to rustls in memory. The bundle is not copied into
+SQLite, effects, traces, or artifact storage. Invalid, empty, private-key, or
+mixed-object PEM input fails before dispatch. See [Network
+policy](guides/NETWORK_POLICY.md).
 
 ## Mounts and inputs
 
@@ -21,12 +50,21 @@ The `Containerfile` combines the secret with public roots on a tmpfs mount for t
 | --- | --- |
 | `/config` | read-only reviewed workflow and pack configuration |
 | `/workspace` | usually read-only source/fixture workspace |
-| `/state` | writable SQLite database and durable recovery state |
-| `/artifacts` | writable declared workflow artifacts |
+| `/state` | writable SQLite database, CAS blobs, and durable recovery state |
+| `/artifacts` | writable declared workflow output/export surface |
 
-Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or `--inputs` JSON. Prefer files for large or sensitive non-provider inputs. Provider credentials are environment references only; never put a key in CLI arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can write them and the runner's artifact collector can read them. Durable state may contain prompts and outputs; protect it like a sensitive build artifact.
+Pass workflow values with repeated `--input KEY=VALUE`, `--inputs-file`, or
+`--inputs` JSON. Prefer files for large or sensitive non-provider inputs.
+Provider credentials may reference a forwarded environment name or a read-only
+mounted file under an explicit `secretFileRoots` policy. Never put a key in CLI
+arguments, YAML, an image layer, or an ordinary input value. Before a bind-mount
+run, provision `/state` and `/artifacts` host directories so UID/GID 65532 can
+write them. Successful bounded workflow files are copied into
+`/state/artifacts/sha256`; `/artifacts` remains the convenient CI collection
+surface. Durable state may contain prompts, outputs, and artifact bytes;
+protect it like a sensitive build artifact.
 
-The image emits exactly one versioned JSON result on stdout with `--output json`; failures emit one versioned JSON error on stderr. The document includes exit status semantics, run/trace IDs, final state, and declared outputs. Progress is not mixed into stdout. Persist `/state` for later `inspect`, approval resolution, `resume`, or `replay`.
+The image emits exactly one versioned JSON result on stdout with `--output json`; failures emit one versioned JSON error on stderr. The document includes exit status semantics, run/trace IDs, final state, and declared outputs. Progress is not mixed into stdout. Persist `/state` for later `inspect`, approval resolution, `resume`, `replay`, or `repair`.
 
 ## Verified Docker/Podman invocation
 
@@ -45,6 +83,40 @@ docker run --rm --read-only --user 65532:65532 \
 ```
 
 The value form `--env OPENAI_API_KEY` forwards an already protected host variable without placing its value in the command. The credential-free container acceptance uses the same command with the fake provider and without that environment variable.
+
+For a container-native secret file, configure
+`credential: { file: /run/secrets/openai }` and
+`secretFileRoots: [/run/secrets]`, then replace the environment forwarding with
+a read-only mount:
+
+```console
+docker run --rm --read-only --user 65532:65532 \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --mount type=bind,src="$PWD/config",dst=/config,readonly \
+  --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
+  --mount type=bind,src="$PWD/state",dst=/state \
+  --mount type=bind,src="$PWD/openai.key",dst=/run/secrets/openai,readonly \
+  ghcr.io/OWNER/agentctl:0.2.0 \
+  run /config/workflow.yaml --workspace /workspace --db /state/runtime.db \
+  --output json --color never
+```
+
+The file is read at bounded credential preflight and its value is never copied
+to the state mount. See [Secret references](guides/SECRET_REFERENCES.md).
+
+For selective repair, mount the corrected workflow under `/config` and keep the source database plus its `/state/artifacts` CAS under `/state`. The original workspace output can be absent after successful ingestion. Plan without forwarding provider credentials:
+
+```console
+docker run --rm --read-only --user 65532:65532 --network none \
+  --mount type=bind,src="$PWD/config",dst=/config,readonly \
+  --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
+  --mount type=bind,src="$PWD/state",dst=/state \
+  ghcr.io/OWNER/agentctl:0.2.0 \
+  repair /config/repaired.yaml SOURCE_RUN_ID --from failed_task --plan \
+  --workspace /workspace --db /state/runtime.db --output json --color never
+```
+
+The execution invocation may forward only credentials required by tasks in the fresh closure. Reused tasks do not access them. The container acceptance suite executes a credential-free repair under the same non-root, read-only-root, and mounted-state contract.
 
 ## Pipeline examples
 
@@ -187,7 +259,13 @@ The surrounding Harness stage must publish `/harness/.agentctl-state` and `/harn
 
 ### Kubernetes Job or CronJob
 
-Use ConfigMaps for reviewed configuration, a PVC for `/state` when recovery across Pods matters, a PVC or artifact uploader for `/artifacts`, and a Secret environment reference for credentials. The container security context should set `runAsNonRoot`, UID/GID 65532, no privilege escalation, dropped capabilities, and a read-only root filesystem. A CronJob should normally set `concurrencyPolicy: Forbid`; see [Operations](OPERATIONS.md).
+Use ConfigMaps for reviewed configuration, a PVC for `/state` when recovery
+across Pods matters, a PVC or artifact uploader for `/artifacts`, and either a
+Secret environment reference or a projected read-only Secret volume for
+credentials. The container security context should set `runAsNonRoot`, UID/GID
+65532, no privilege escalation, dropped capabilities, and a read-only root
+filesystem. A CronJob should normally set `concurrencyPolicy: Forbid`; see
+[Operations](OPERATIONS.md).
 
 ```yaml
 apiVersion: batch/v1
@@ -262,4 +340,20 @@ For a one-time invocation, use the same Pod template in a `batch/v1` `Job` and o
 
 ## Validation level
 
-The current native-arm image was built through the optional secret-mounted CA path and executed with Podman as non-root with a read-only root. The suite exercised a mock tool workflow, artifact and durable inspection, missing-secret and invalid-workflow exit propagation, SIGTERM, and recorded replay under `--network none`. Checksum-verified Trivy 0.72.0 found zero fixed HIGH/CRITICAL findings and generated valid CycloneDX JSON. The exact retained GPT-5.6 live database had previously replayed with no credential and no network, identical output and artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect audit links. GitHub, GitLab, Jenkins, Harness, and Kubernetes examples remain documentation-reviewed only; the automatic Ubuntu Linux x64 build, scan, and SBOM job is locally linted but has not been dispatched.
+On 2026-07-27, the current native-arm image built and passed the complete
+credential-free Podman gate as non-root with a read-only root. The suite
+exercised a real digest-pinned action container, a mock tool workflow, artifact
+export and durable inspection, parallel ordered commit, selective repair,
+missing-secret and invalid-workflow exits, SIGTERM, and recorded replay under
+`--network none`. Trivy 0.72.0 with a freshly updated database found zero fixed
+HIGH/CRITICAL findings and generated valid CycloneDX JSON with 11 components.
+Image configuration and history scans found no credential or authorization
+markers.
+
+The exact retained GPT-5.6 live database had previously replayed with no
+credential and no network, identical output and artifact digest, zero fresh
+effects/tool calls/provider sessions, and explicit source-effect audit links.
+GitLab, Jenkins, Harness, and Kubernetes examples remain
+documentation-reviewed only. The automatic Ubuntu Linux x64 build, scan, and
+SBOM job passed on the exact pull-request head and retained its image SBOM
+artifact and digest.

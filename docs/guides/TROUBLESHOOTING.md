@@ -12,7 +12,7 @@ flowchart TD
   D --> E{Pending approval?}
   E -->|Yes| F[Review and resolve approval, then resume]
   E -->|No| G{Uncertain effect?}
-  G -->|Yes| H[Reconcile the external system before any fork]
+  G -->|Yes| H[Reconcile the external system before repair or fork]
   G -->|No| I[Use task, effect, provider, and audit evidence]
 ```
 
@@ -37,9 +37,11 @@ agentctl schema --write /tmp/workflow.schema.json --output json --color never
 
 ## Provider authentication failure
 
-**Symptom:** Exit `6` reports a missing environment reference or authentication response.
+**Symptom:** Exit `6` reports an unavailable secret reference or authentication response.
 
-**Likely cause:** The workflow names a credential environment variable that is absent or the provider rejected it.
+**Likely cause:** The workflow names an absent environment value, unavailable
+or denied file/process source, or the provider rejected the resolved
+credential.
 
 **Diagnose:**
 
@@ -48,9 +50,13 @@ agentctl auth check workflow.yaml --output json --color never
 agentctl providers inspect workflow.yaml --output json --color never
 ```
 
-**Expected evidence:** The environment variable name and provider capability, never the secret value.
+**Expected evidence:** The safe source description and provider capability,
+never the secret value. Process references report `unchecked` and are not
+executed by diagnostics.
 
-**Resolve:** Inject the named secret through the shell, scheduler, or CI secret facility. Do not add a key to YAML or a command argument.
+**Resolve:** Inject the named environment value, mount the file under an allowed
+root, or repair the process policy/helper. Do not add a key to YAML or a command
+argument.
 
 ## Provider capability mismatch
 
@@ -109,6 +115,22 @@ ls -ld /state /state/runtime.db
 
 **Resolve:** Resume only a safe non-terminal run. Replay only a terminal run. Reconcile uncertain external state before an explicit fork.
 
+## Repair plan blocked
+
+**Symptom:** `repair --plan` emits a valid `RepairPlan` with `compatible: false` and exits `3`.
+
+**Diagnose:**
+
+```text
+agentctl repair target.yaml SOURCE_RUN_ID --from TASK --plan \
+  --db .agentctl/runtime.db --output json --color never
+agentctl effects --db .agentctl/runtime.db inspect SOURCE_RUN_ID --task TASK
+```
+
+**Expected evidence:** Each `blockedReuse` item names the task, compatibility rule, safe source/target fingerprints, suggested root, and whether a full fork is required.
+
+**Resolve:** Choose the earliest changed/incompatible producer as another repair root, restore the exact verified artifact, add a structured output contract and create a fresh source result, or reconcile an uncertain effect only after checking external reality. Do not edit task rows or use fork as a generic force option. See [Repair a failed workflow](repair-a-failed-workflow.md).
+
 ## Container permission or read-only failure
 
 **Symptom:** The image cannot create `/state/runtime.db` or write `/artifacts`.
@@ -116,6 +138,31 @@ ls -ld /state /state/runtime.db
 **Likely cause:** Host directories are not writable by UID/GID 65532 or the writable mounts are missing.
 
 **Resolve:** Provision and mount `/state` and `/artifacts` with appropriate ownership. Keep the root filesystem read-only and use `/tmp` as a small `noexec,nosuid` tmpfs.
+
+## Podman machine or forwarding unavailable
+
+**Symptom:** `podman info` reports connection refused even though Podman is
+installed, or `cargo xtask acceptance-container` cannot reach the engine.
+
+**Diagnose:**
+
+```text
+podman machine list
+podman system connection list
+podman machine start podman-machine-default
+podman info
+```
+
+**Expected evidence:** The existing machine is running and the configured
+forwarded socket answers `podman info`.
+
+**Resolve:** Start the existing machine without deleting or recreating it. Some
+macOS command harnesses terminate libkrun and `gvproxy` children when the
+starting shell exits; keep that terminal open and probe from another terminal.
+If `machine stop` reports a stale `gvproxy` PID, first prove the recorded PID
+does not exist, move only that temporary PID file aside, stop cleanly, and
+start again. Do not delete the machine, images, or connection configuration
+and do not weaken TLS to make the probe pass.
 
 ## Corporate CA failure
 
@@ -127,7 +174,10 @@ ls -ld /state /state/runtime.db
 
 **Symptom:** A workspace or database path parses differently from a Unix example.
 
-**Resolve:** Use native absolute paths and quote paths with spaces. Windows cannot express Unix database mode bits, so rely on the user profile ACL. Hosted Windows evidence is configured but still pending for the current candidate.
+**Resolve:** Use native absolute paths and quote paths with spaces. Windows
+cannot express Unix database mode bits, so rely on the user profile ACL. The
+exact-head hosted Windows verification, acceptance, completeness, and package
+gates pass for the current candidate.
 
 ## Safe issue report
 

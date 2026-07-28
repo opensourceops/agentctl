@@ -1,0 +1,117 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: selective-repair-openai
+spec:
+  outputs:
+    upstream: "${{ tasks.analyze.output.marker }}"
+    repaired: "${{ tasks.publish.output.confirmed }}"
+    artifact: artifacts/selective-repair-result.txt
+  providers:
+    openai:
+      kind: openai
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    networkAllowlist: [api.openai.com]
+    approval: never
+  tools:
+    read_fixture:
+      kind: builtin.workspace.read
+      description: Read the selective-repair UTF-8 fixture.
+      inputSchema:
+        type: object
+        properties:
+          path: { type: string }
+        required: [path]
+        additionalProperties: false
+      outputSchema:
+        type: object
+        properties:
+          path: { type: string }
+          content: { type: string }
+          bytes: { type: integer }
+          sha256: { type: string }
+        required: [path, content, bytes, sha256]
+        additionalProperties: false
+      capability: filesystem.read
+      risk: low
+      effectClass: observe
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    analyzer:
+      provider: openai
+      model: gpt-5.6
+      instructions: |
+        Call read_fixture exactly once with {"path":"fixture/service.txt"}.
+        Return JSON matching the schema. Set marker to the value after "marker="
+        and fixtureSha256 to the tool result's sha256. Do not invent values.
+      tools: [read_fixture]
+      maxTurns: 3
+      maxToolCalls: 1
+      maxOutputTokens: 128
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        properties:
+          marker: { type: string }
+          fixtureSha256: { type: string }
+        required: [marker, fixtureSha256]
+        additionalProperties: false
+      providerOptions:
+        store: true
+        reasoningContext: current_turn
+        parallelToolCalls: false
+    publisher:
+      provider: openai
+      model: gpt-5.6
+      instructions: |
+        Call read_fixture exactly once with {"path":"fixture/service.txt"}.
+        After the tool result, return JSON matching the schema. Set confirmed to true
+        only when the fixture marker equals the upstreamMarker supplied in the prompt.
+      tools: [read_fixture]
+      maxTurns: 1
+      maxToolCalls: 1
+      maxOutputTokens: 128
+      timeoutSeconds: 45
+      reasoning: { effort: low }
+      structuredOutput:
+        type: object
+        properties:
+          confirmed: { type: boolean }
+          upstreamMarker: { type: string }
+        required: [confirmed, upstreamMarker]
+        additionalProperties: false
+      providerOptions:
+        store: true
+        reasoningContext: current_turn
+        parallelToolCalls: false
+  actions:
+    assert: { kind: builtin.assert }
+    write: { kind: builtin.write }
+  tasks:
+    - id: analyze
+      uses: agent:analyzer
+      with:
+        prompt: Analyze the fixture and produce the required durable structured output.
+    - id: publish
+      uses: agent:publisher
+      needs: [analyze]
+      with:
+        prompt: "Verify upstreamMarker=${{ tasks.analyze.output.marker }} against the fixture."
+    - id: verify
+      uses: action:assert
+      needs: [analyze, publish]
+      with:
+        that: "${{ tasks.publish.output.confirmed == true }}"
+        message: repaired publisher did not confirm the upstream marker
+    - id: artifact
+      uses: action:write
+      needs: [analyze, verify]
+      with:
+        path: artifacts/selective-repair-result.txt
+        content: "${{ tasks.analyze.output.marker }}"

@@ -39,6 +39,13 @@ fn typescript_assign_fixture_translates_to_the_language_neutral_contract() {
             assert_eq!(expected.task.use_kind, "action");
             assert_eq!(reference, &expected.task.reference);
         }
-        TaskUse::Agent(_) => panic!("expected action task"),
+        TaskUse::Agent(_)
+        | TaskUse::Aggregate(_)
+        | TaskUse::Router(_)
+        | TaskUse::LoopAggregate(_)
+        | TaskUse::SubworkflowInput(_)
+        | TaskUse::SubworkflowAggregate(_) => {
+            panic!("expected action task")
+        }
     }
 }

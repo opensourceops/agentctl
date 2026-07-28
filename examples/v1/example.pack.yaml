@@ -2,8 +2,37 @@ apiVersion: agentctl.dev/pack/v1alpha1
 name: example.utility
 version: 1.0.0
 agentctl: ">=0.2.0, <1.0.0"
+dependencies:
+  example.base:
+    version: "^1.0"
+    source:
+      path: dependency.pack
 capabilities: [internal]
 providers: []
 actions:
   assign:
     kind: builtin.assign
+workflows:
+  echo:
+    version: 1.0.0
+    inputSchema:
+      type: object
+      required: [value]
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+    outputSchema:
+      type: object
+      required: [value]
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+    outputs:
+      value: "${{ tasks.assign.output.output.value }}"
+    tasks:
+      - id: assign
+        uses: action:assign
+        with:
+          value: "${{ inputs.value }}"

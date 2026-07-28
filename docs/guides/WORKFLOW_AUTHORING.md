@@ -85,6 +85,8 @@ agents:
 
 The model does not own the graph, policy, or persistence.
 
+When an agent result feeds another task, declare `structuredOutput` as a JSON Schema. It becomes the task's durable output contract and lets selective repair verify and reuse the result. A task-level `outputSchema` is available when the complete task contract must differ from the agent or action default.
+
 ## 7. Define tool contracts
 
 A model sees only tools listed on its agent. Each tool requires strict input and output schema, capability, risk, effect class, idempotency, retry safety, timeout, and approval requirement. Runtime policy makes the final authorization decision.
@@ -108,7 +110,7 @@ Start with the minimum grant. Add a host, writable root, executable, or secret n
 
 ## 10. Plan for state and recovery
 
-Choose an explicit database path for scheduled or CI runs. A confirmed effect can be reused during resume. An effect that started without a confirmed result becomes uncertain and stops automatic recovery. Recorded replay calls no executor. Fork intentionally permits fresh effects.
+Choose an explicit database path for scheduled or CI runs. A confirmed effect can be reused during resume. An effect that started without a confirmed result becomes uncertain and stops automatic recovery. Recorded replay calls no executor. Repair can reuse compatible successful task boundaries and execute a corrected suffix. Fork intentionally permits a broader fresh execution.
 
 ## Validate your workflow
 

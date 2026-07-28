@@ -26,7 +26,20 @@ The TypeScript oracle is commit `be9d0ae`; the detailed public policy is [docs/C
 ## Removed
 
 - Direct API-key flags, YAML machine output, legacy profiles, placeholder provider/memory support, optimistic replay, implicit full environment inheritance, and obsolete provider/cache fields.
+- Non-executable tool-level `compensation` metadata. Declare the inverse action
+  on an effectful task with `compensate`.
 
-## Manual migration/deferred
+## Manual migration
 
-Legacy pack-backed workflows, custom TypeScript executors, MongoDB/vector memory, and old MCP/A2A shapes require manual conversion. Parallel/dynamic workflows, sub-workflows, teams/handoffs, compensation execution, registry resolution, and automatic remote resubmission are deferred product decisions.
+Legacy custom TypeScript executors, MongoDB memory, and old MCP/A2A shapes
+require manual conversion. Bounded parallel and dynamic tasks, sub-workflows,
+and source-linked compensation are additive. A public registry is an explicit
+non-goal. Free-form teams migrate to explicit bounded role tasks and typed
+handoff tasks. MCP actions may add an explicit idempotency declaration for
+bounded schema-checked reconnect. A2A peers may add polling bounds. Existing
+documents retain conservative defaults, and ambiguous remote submission is
+never repeated.
+
+Bounded provider streaming is additive. Existing agents default to
+`stream: false`, final JSON remains one document, and JSONL uses the existing
+versioned envelope. Stream transport loss never weakens at-most-once recovery.

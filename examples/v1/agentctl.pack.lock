@@ -1,0 +1,22 @@
+apiVersion: agentctl.dev/pack-lock/v1
+agentctl: 0.2.0
+packs:
+- name: example.base
+  version: 1.1.0
+  source:
+    path: dependency.pack
+  integrity: sha256:5ccb960b223cf554d98e6b7b0188c3093745fc2336fb99f45d2c9b1585cdf310
+  compatibility: '>=0.2.0, <1.0.0'
+  dependencies: {}
+  trust:
+    status: unsigned
+- name: example.utility
+  version: 1.0.0
+  source:
+    path: example.pack.yaml
+  integrity: sha256:365a88e8a0e9aceec06b51c1b1a3af49aa59bd7f82bd5cc9e5088d51ae4e1afe
+  compatibility: '>=0.2.0, <1.0.0'
+  dependencies:
+    example.base: 1.1.0
+  trust:
+    status: unsigned

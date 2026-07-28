@@ -25,9 +25,14 @@ Harden bounded process execution and enable hosted `v1alpha1` RC gates
 
 All credential-free gates were run with provider credential variables removed. No live provider call was made. `.release-evidence` was not read, modified, staged, scanned as tree content, or uploaded.
 
-## Hosted validation required
+## Hosted validation evidence
 
-This PR configures hosted validation but does not claim it has run. Before RC promotion, require the three platform gates, production SBOM, container, and supply-chain checks; verify every uploaded package/SBOM digest; then manually dispatch `rc-release-preparation` for the exact candidate commit.
+The exact-head three-platform, production SBOM, container, and supply-chain
+checks have run successfully. The manual `rc-release-preparation` workflow
+also passed on the same candidate and retained all three package artifacts.
+The independent candidate report records immutable run IDs and artifact
+digests. Any later source change invalidates that evidence and requires the
+applicable exact-head gates to run again.
 
 ## Risk and review focus
 

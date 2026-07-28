@@ -1,44 +1,86 @@
 # Execution status
 
-Last updated: 2026-07-22
+Last updated: 2026-07-27
 
 ## Current phase
 
-Ready for hosted RC validation
+Framework completeness and exact-commit hosted validation verified
 
-The independent release-candidate review found and remediated one P0, five P1s, and scoped journey P2s. The final local hardening adds bounded subprocess capture, durable limit/cancellation regressions, full-SHA hosted workflows, complete-history/tree secret scanning, production/image SBOM gates, and a secure optional build CA path. Local deterministic verification, public CLI acceptance, packaging, current-source OCI acceptance, current Trivy/SBOM validation, and keyless replay evidence pass. The exact recommendation is **Ready for hosted RC validation** because the workflows have not yet run on GitHub.
+The limitation burn-down closed every core framework item through
+implementation, redesign, or removal from the supported surface. Local
+deterministic verification, all public examples, packaging, native Linux arm64
+OCI acceptance, current Trivy/SBOM validation, bounded GPT-5.6 verification,
+and keyless replay pass. Exact-head pull-request gates additionally execute
+Linux x64, hosted macOS arm64, Windows x64, container/security, package, and
+SBOM validation without provider credentials.
 
 ## Accepted evidence
 
-- The independently audited Rust implementation passes all 12 `cargo xtask verify` gates and the 25-scenario credential-free public-CLI acceptance suite.
-- A packaged GPT-5.6 workflow made one real model-selected read-only tool call and continued through stored-response function output; the final run used two provider requests, 530 input tokens, and 33 output tokens.
-- The exact completed live database is retained locally and replays in the native-arm64 image with no credential and `--network none`. Replay has a distinct run/trace ID, identical output, unchanged artifact digest, zero fresh effects/tool calls/provider sessions, and explicit source-effect audit links.
+- The independently reviewed Rust implementation passes all 12 `cargo xtask
+  verify` gates, the 46-scenario credential-free public CLI suite, and all
+  three packaged framework-completeness composites.
+- The retained GPT-5.6 matrix used 27 requests, 3,939 input tokens, 560 output
+  tokens, 20 reasoning tokens, and 8 tool calls across basic agents, tools,
+  parallel/matrix/route/loop/sub-workflow/handoff composition, retry,
+  selective repair, CAS reuse, replay, streaming, budgets, and OCI execution.
+- The completed live runs replay without credentials. Replay has distinct
+  run/trace IDs, identical outputs and artifacts, zero fresh effects/tool
+  calls/provider sessions, and explicit source lineage.
 - The deterministic replay regression uses provider and tool executors that panic if called.
 - Confirmed effects survive resume; fork is distinct and fresh; timeout/transport uncertainty blocks unsafe repetition.
 - Clean copied/source-installed/package layouts, empty-environment cron invocation, concurrency, SIGTERM, approvals, machine output, and recovery paths passed.
-- A current-source Linux arm64 binary built offline and passed mock-tool, failure-exit, SIGTERM, and offline-replay cases in the production distroless image as non-root with a read-only root and mounted durable state/artifacts.
-- The current image built through a secret-mounted CA/tmpfs trust path, passed the full OCI suite, had zero fixed HIGH/CRITICAL findings under checksum-verified Trivy 0.72.0, and produced valid CycloneDX JSON.
+- The native Linux arm64 production image passed mock-tool, approval, durable
+  parallel/matrix recovery, retry, repair, CAS export, compensation,
+  reconciliation, failure-exit, SIGTERM, and offline-replay cases as non-root
+  with a read-only root and mounted durable state/artifacts.
+- Image
+  `sha256:ddcf174ab2b1ce2481395380d482292a41d79ee5f4620fd52cbd3733e712127c`
+  had zero fixed HIGH/CRITICAL findings under Trivy 0.72.0 and produced a valid
+  CycloneDX SBOM.
 - actionlint 1.7.12 accepted every workflow; Gitleaks 8.30.1 found no complete-history or tracked-tree leaks and rejected the generated synthetic credential.
 
 ## Product boundary
 
-`agentctl` is a schedulable local runtime, not a scheduler or distributed control plane. The workflow API remains alpha and scheduling is sequential. Provider, filesystem, process, and network policy is not an OS sandbox. At-most-once external work can require manual reconciliation. See [Limitations](../LIMITATIONS.md) for the complete release-blocker/hardening/post-v1/non-goal classification.
+`agentctl` is a schedulable local runtime, not an external scheduler or
+distributed control plane. The workflow document API is versioned
+`v1alpha1`. One run may execute
+bounded independent tasks concurrently with deterministic plan-order commits;
+cross-run and cross-host overlap remains external. Provider, filesystem,
+process, and network policy is not an OS sandbox. At-most-once external work
+can require explicit reconciliation. See [Limitations](../LIMITATIONS.md) for
+the complete supported-boundary and non-goal classification.
 
-## External evidence not claimed
+## Evidence scope
 
-The local environment executed macOS arm64 packaging and Linux arm64 OCI runtime/security tests. The configured GitHub Linux x64, macOS arm64, Windows x64, Trivy, Gitleaks, package, and SBOM jobs do not exist on the remote default branch and were not dispatched. No hosted artifact digest or branch-protection result is claimed. Anthropic, Google, Azure OpenAI, MCP, and A2A remain native mock-tested rather than live-tested.
+The local environment executed macOS arm64 packaging and native Linux arm64
+OCI runtime/security tests. GitHub pull-request gates execute Linux x64,
+hosted macOS arm64, Windows x64, OCI, security, packaging, and SBOM paths on
+the exact reviewed head. The independent candidate report records immutable
+run and artifact digests. Anthropic, Google, Azure OpenAI, MCP, and A2A remain
+native mock-tested rather than live-tested. Branch protection is a separate
+repository-owner control and is not inferred from green checks.
 
 ## Release-candidate blockers
 
-No known P0/P1 implementation defect remains for the stated boundary. The remaining gate is hosted execution and artifact evidence for the exact candidate commit. See [HOSTED_CI_PREPARATION.md](HOSTED_CI_PREPARATION.md), [BLOCKERS.md](BLOCKERS.md), and [Release process](../RELEASE_PROCESS.md).
+No known P0/P1 implementation defect or framework limitation remains for the
+stated boundary. Publication, tagging, merging, and repository governance are
+owner-controlled release actions. See
+[HOSTED_CI_PREPARATION.md](HOSTED_CI_PREPARATION.md),
+[BLOCKERS.md](BLOCKERS.md), and
+[Release process](../RELEASE_PROCESS.md).
 
 ## Exact commands
 
 ```console
 cargo xtask verify
 cargo xtask acceptance
+cargo xtask examples-verify
+cargo xtask completeness
 cargo xtask acceptance-container
 cargo xtask package
+cargo xtask secret-scan
 ```
 
-The final live journey used the packaged CLI directly to stay within the four-request authorization; normal repository verification remains credential-free.
+The final live journeys used the packaged CLI and bounded native Linux arm64
+container continuation. Normal repository verification remains
+credential-free.

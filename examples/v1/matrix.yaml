@@ -1,0 +1,26 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: bounded-matrix
+spec:
+  runtime:
+    maxConcurrency: 2
+  policy:
+    approval: never
+  outputs:
+    results: "${{ tasks.verify.output.items }}"
+  actions:
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: verify
+      uses: action:assign
+      matrix:
+        axes:
+          platform: [linux, macos]
+          profile: [debug, release]
+        maxItems: 4
+      with:
+        platform: "${{ vars.matrix.platform }}"
+        profile: "${{ vars.matrix.profile }}"
+        index: "${{ vars.matrixIndex }}"

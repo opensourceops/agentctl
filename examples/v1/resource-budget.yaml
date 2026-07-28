@@ -1,0 +1,37 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: resource-budget
+  description: Stop before a second provider request exceeds the run budget.
+spec:
+  runtime:
+    budgets:
+      maxProviderRequests: 1
+      maxTurns: 1
+      maxInputTokens: 1024
+      maxOutputTokens: 32
+      maxTotalTokens: 1056
+      maxWallTimeSeconds: 30
+      maxTasks: 2
+  policy:
+    approval: never
+  providers:
+    fake:
+      kind: fake
+  agents:
+    worker:
+      provider: fake
+      model: scripted
+      instructions: Return the prompt.
+      maxTurns: 1
+      maxOutputTokens: 32
+  tasks:
+    - id: first
+      uses: agent:worker
+      with:
+        prompt: first
+    - id: second
+      uses: agent:worker
+      needs: [first]
+      with:
+        prompt: second

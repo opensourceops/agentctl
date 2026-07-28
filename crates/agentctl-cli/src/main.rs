@@ -1,31 +1,45 @@
-use std::collections::BTreeMap;
+mod packs;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentctl_core::compiler::provider_capabilities;
-use agentctl_core::diagnostic::Diagnostic;
+use agentctl_core::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 use agentctl_core::dsl::{ProviderKind, SecretReference, Workflow, parse_workflow, schema_json};
+use agentctl_core::memory::{MemoryEntry, MemoryQuery, MemorySearchMode, local_hash_embedding};
+use agentctl_core::network::HttpTransportSecurity;
 use agentctl_core::pack::{PackManifest, verify_pack};
 use agentctl_core::policy::PolicyEngine;
 use agentctl_core::provider::{ContentBlock, Message, ModelProvider, ProviderRequest};
+use agentctl_core::secret::SecretValue;
 use agentctl_core::{MACHINE_OUTPUT_VERSION, compile};
 use agentctl_protocols::{A2aClient, McpClient, ProtocolActionHandler, ProtocolHttpConfig};
 use agentctl_providers::{
-    AnthropicProvider, FakeProvider, GoogleProvider, HttpProviderConfig, OpenAiProvider,
+    AnthropicProvider, FakeEmbeddingProvider, FakeProvider, GoogleProvider, HttpProviderConfig,
+    OpenAiEmbeddingProvider, OpenAiProvider,
 };
-use agentctl_runtime::{BuiltinToolExecutor, RunOptions, Runtime, RuntimeRegistry};
-use agentctl_store::{ApprovalResolution, SqliteStore, StoreError};
+use agentctl_runtime::secret::{SecretResolutionError, SecretResolver};
+use agentctl_runtime::{
+    BuiltinToolExecutor, EffectReconciliationInput, RunOptions, Runtime, RuntimeRegistry,
+    StreamEventSink,
+};
+use agentctl_store::{
+    ApprovalResolution, ReconciliationStatus, RunMode, SqliteStore, StoreError, StreamEventRecord,
+    TaskDisposition,
+};
 use chrono::{Duration as ChronoDuration, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
-use url::Url;
+use url::{Host, Url};
 
 const EXIT_OK: u8 = 0;
 const EXIT_VALIDATION: u8 = 2;
@@ -35,8 +49,13 @@ const EXIT_PERSISTENCE: u8 = 5;
 const EXIT_REMOTE: u8 = 6;
 const EXIT_CANCELLED: u8 = 130;
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
+#[cfg(windows)]
+const WINDOWS_CLI_STACK_BYTES: usize = 8 * 1024 * 1024;
 static VERBOSE_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COLOR_OUTPUT: AtomicBool = AtomicBool::new(false);
+static STREAM_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
+static PACK_OFFLINE: AtomicBool = AtomicBool::new(false);
+static PACK_LOCKED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -52,6 +71,12 @@ struct Cli {
     color: ColorMode,
     #[arg(long, global = true)]
     verbose: bool,
+    /// Forbid pack network access and require cached Git/archive sources.
+    #[arg(long, global = true)]
+    offline: bool,
+    /// Require agentctl.pack.lock and reject all source or graph drift.
+    #[arg(long, global = true)]
+    locked: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -60,6 +85,7 @@ struct Cli {
 enum OutputFormat {
     Human,
     Json,
+    Jsonl,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -83,10 +109,20 @@ enum Command {
     Replay(RunIdArgs),
     /// Create a new run from a prior workflow with fresh effects.
     Fork(ForkArgs),
+    /// Create a new run that reuses compatible upstream results and executes a repaired suffix.
+    Repair(RepairArgs),
+    /// Retry failed or selected boundaries of an identical terminal workflow.
+    Retry(RetryArgs),
+    /// Execute explicitly declared best-effort compensation for a terminal run.
+    Compensate(CompensateArgs),
+    /// Analyze or upgrade retained legacy run records for selective reuse.
+    Runs(RunsArgs),
     /// Durably request cancellation.
     Cancel(RunIdArgs),
     /// Inspect durable run, task, and audit state.
     Inspect(RunIdArgs),
+    /// Inspect or narrowly reconcile uncertain effects.
+    Effects(EffectArgs),
     /// List or resolve durable approval requests.
     Approvals(ApprovalArgs),
     /// Inspect provider capabilities or run the opt-in OpenAI smoke.
@@ -99,6 +135,8 @@ enum Command {
     Migrate(MigrateArgs),
     /// Inspect and verify a local reusable pack.
     Packs(PackArgs),
+    /// Inspect, verify, export, or collect durable artifacts.
+    Artifacts(ArtifactArgs),
     /// Inspect the runtime database.
     Db(DbArgs),
     /// Read or write namespaced long-term memory.
@@ -179,11 +217,162 @@ struct ForkArgs {
 }
 
 #[derive(Debug, Args)]
+struct RepairArgs {
+    file: PathBuf,
+    source_run_id: String,
+    #[arg(long = "from", required = true)]
+    from: Vec<String>,
+    #[arg(long)]
+    plan: bool,
+    #[arg(long)]
+    restart_successful: bool,
+    #[arg(long)]
+    reason: Option<String>,
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct RetryArgs {
+    file: PathBuf,
+    source_run_id: String,
+    #[arg(long, conflicts_with = "from", required_unless_present = "from")]
+    failed: bool,
+    #[arg(
+        long = "from",
+        conflicts_with = "failed",
+        required_unless_present = "failed"
+    )]
+    from: Vec<String>,
+    #[arg(long)]
+    plan: bool,
+    #[arg(long)]
+    restart_successful: bool,
+    #[arg(long)]
+    reason: Option<String>,
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct CompensateArgs {
+    source_run_id: String,
+    #[arg(long = "task")]
+    task: Vec<String>,
+    #[arg(long)]
+    plan: bool,
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct RunsArgs {
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[command(subcommand)]
+    command: RunsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RunsCommand {
+    /// Prove reusable legacy metadata without changing the source run.
+    Analyze { run_id: String },
+    /// Transactionally persist every legacy field that can be proven.
+    Upgrade {
+        run_id: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Args)]
 struct ApprovalArgs {
     #[arg(long, default_value = ".agentctl/runtime.db")]
     db: PathBuf,
     #[command(subcommand)]
     command: ApprovalCommand,
+}
+
+#[derive(Debug, Args)]
+struct EffectArgs {
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[command(subcommand)]
+    command: EffectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum EffectCommand {
+    List {
+        run_id: String,
+        #[arg(long)]
+        task: Option<String>,
+    },
+    Inspect {
+        effect_id: String,
+    },
+    /// Resume observation of a persisted remote task without resubmitting it.
+    ContinueRemote {
+        effect_id: String,
+        #[arg(long, default_value = "cli-user")]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        approved: bool,
+        #[arg(long)]
+        timeout_seconds: Option<u64>,
+    },
+    Reconcile {
+        effect_id: String,
+        #[arg(long, value_enum)]
+        status: ReconciledOutcome,
+        #[arg(long, default_value = "cli-user")]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        evidence_file: Option<PathBuf>,
+        #[arg(long)]
+        result_file: Option<PathBuf>,
+        #[arg(long)]
+        result_schema_file: Option<PathBuf>,
+        #[arg(long)]
+        compensation_effect: Option<String>,
+        #[arg(long)]
+        approved: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReconciledOutcome {
+    Applied,
+    NotApplied,
+    Compensated,
 }
 
 #[derive(Debug, Subcommand)]
@@ -260,6 +449,58 @@ enum PackCommand {
         #[arg(long)]
         integrity: String,
     },
+    /// Resolve the complete graph and write agentctl.pack.lock.
+    Lock {
+        workflow: PathBuf,
+    },
+    /// Refresh the locked graph from immutable sources.
+    Update {
+        workflow: PathBuf,
+        #[arg(long)]
+        pack: Option<String>,
+    },
+    /// Verify a lockfile, source digests, signatures, and trust policy.
+    VerifyLock {
+        workflow: PathBuf,
+    },
+}
+
+#[derive(Debug, Args)]
+struct ArtifactArgs {
+    #[arg(long, default_value = ".agentctl/runtime.db")]
+    db: PathBuf,
+    #[command(subcommand)]
+    command: ArtifactCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ArtifactCommand {
+    List {
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long, requires = "run")]
+        task: Option<String>,
+    },
+    Inspect {
+        digest: String,
+    },
+    Verify {
+        digest: Option<String>,
+        #[arg(long, conflicts_with = "digest")]
+        all: bool,
+    },
+    Export {
+        digest: String,
+        destination: PathBuf,
+        #[arg(long)]
+        overwrite: bool,
+    },
+    Gc {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: i64,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -274,6 +515,36 @@ struct DbArgs {
 enum DbCommand {
     Stats,
     Migrate,
+    Encryption {
+        #[command(subcommand)]
+        command: DbEncryptionCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DbEncryptionCommand {
+    /// Inventory protected fields without exposing their values.
+    Inventory,
+    /// Transactionally encrypt every identified sensitive field.
+    Enable {
+        #[arg(long)]
+        key_id: String,
+        /// Environment variable containing a base64-encoded 32-byte key.
+        #[arg(long)]
+        key_env: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Transactionally decrypt and re-encrypt every protected field with a new key.
+    Rotate {
+        #[arg(long)]
+        key_id: String,
+        /// Environment variable containing a base64-encoded 32-byte key.
+        #[arg(long)]
+        key_env: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -295,8 +566,32 @@ enum MemoryCommand {
         key: String,
         value: String,
         #[arg(long)]
+        text: Option<String>,
+        #[arg(long)]
+        metadata: Option<String>,
+        #[arg(long)]
         retention_days: Option<i64>,
     },
+    Search {
+        namespace: String,
+        query: String,
+        #[arg(long, value_enum, default_value_t = CliMemorySearchMode::Text)]
+        mode: CliMemorySearchMode,
+        #[arg(long, default_value_t = 10)]
+        limit: u16,
+        #[arg(long = "filter", value_name = "KEY=JSON")]
+        filters: Vec<String>,
+    },
+    Reindex {
+        namespace: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliMemorySearchMode {
+    Text,
+    Vector,
+    Hybrid,
 }
 
 #[derive(Debug, Args)]
@@ -354,28 +649,49 @@ impl CliError {
     }
 }
 
+fn main() {
+    #[cfg(windows)]
+    {
+        let thread = std::thread::Builder::new()
+            .name("agentctl-main".to_owned())
+            .stack_size(WINDOWS_CLI_STACK_BYTES)
+            .spawn(run_cli)
+            .unwrap_or_else(|error| {
+                eprintln!("failed to start agentctl runtime thread: {error}");
+                std::process::exit(i32::from(EXIT_REMOTE));
+            });
+        if let Err(payload) = thread.join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+    #[cfg(not(windows))]
+    run_cli();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_cli() {
     let mut args = std::env::args_os().collect::<Vec<_>>();
     normalize_binary_name(&mut args);
     let requested_output = requested_output(&args);
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error)
-            if requested_output == OutputFormat::Json
+            if requested_output != OutputFormat::Human
                 && !matches!(
                     error.kind(),
                     clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
                 ) =>
         {
             let error = CliError::validation(error.to_string());
-            render_error(OutputFormat::Json, &error);
+            render_error(requested_output, &error);
             std::process::exit(i32::from(error.code));
         }
         Err(error) => error.exit(),
     };
     let output = cli.output;
     VERBOSE_OUTPUT.store(cli.verbose, Ordering::Relaxed);
+    PACK_OFFLINE.store(cli.offline, Ordering::Relaxed);
+    PACK_LOCKED.store(cli.locked, Ordering::Relaxed);
     COLOR_OUTPUT.store(
         color_enabled(cli.color, io::stdout().is_terminal()),
         Ordering::Relaxed,
@@ -407,8 +723,11 @@ fn requested_output(args: &[OsString]) -> OutputFormat {
             args.iter()
                 .find_map(|arg| arg.to_str().and_then(|arg| arg.strip_prefix("--output=")))
         })
-        .filter(|value| *value == "json")
-        .map_or(OutputFormat::Human, |_| OutputFormat::Json)
+        .map_or(OutputFormat::Human, |value| match value {
+            "json" => OutputFormat::Json,
+            "jsonl" => OutputFormat::Jsonl,
+            _ => OutputFormat::Human,
+        })
 }
 
 async fn execute(cli: Cli) -> Result<u8, CliError> {
@@ -443,9 +762,10 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 &plan,
                 diagnostics,
                 format!(
-                    "plan {}\norder: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}",
+                    "plan {}\norder: {}\nmax concurrency: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}\nprocess isolation: {}",
                     plan.plan_digest,
                     plan.order.join(" -> "),
+                    plan.max_concurrency,
                     plan.predictability,
                     plan.requirements
                         .providers
@@ -460,6 +780,14 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                         .collect::<Vec<_>>()
                         .join(", "),
                     plan.requirements.effects.len(),
+                    plan.requirements
+                        .processes
+                        .iter()
+                        .map(|process| {
+                            format!("{}:{}", process.action, process.isolation.as_str())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 ),
             )?;
             Ok(EXIT_OK)
@@ -468,7 +796,7 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Resume(args) => resume_run(output, args).await,
         Command::Replay(args) => {
             let store = open_store(&args.db)?;
-            let runtime = Runtime::new(store, current_dir()?);
+            let runtime = runtime_for_output(output, store, current_dir()?);
             let outcome = runtime
                 .replay(&args.run_id)
                 .await
@@ -498,9 +826,9 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                     .as_deref()
                     .or_else(|| source.base_path.as_deref().map(Path::new)),
             )?;
-            let registry = build_registry(&workflow, &base)?;
-            let runtime = Runtime::new(store, &base).with_registry(registry);
             let cancellation = cancellation_token(args.timeout_seconds);
+            let registry = build_registry(&workflow, &base, &cancellation, None).await?;
+            let runtime = runtime_for_output(output, store, &base).with_registry(registry);
             let outcome = runtime
                 .fork(
                     &args.run_id,
@@ -515,6 +843,10 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                 .map_err(map_runtime_error)?;
             print_outcome(output, &outcome)
         }
+        Command::Repair(args) => repair_workflow(output, args).await,
+        Command::Retry(args) => retry_workflow(output, args).await,
+        Command::Compensate(args) => compensate_workflow(output, args).await,
+        Command::Runs(args) => runs_command(output, args),
         Command::Cancel(args) => {
             let store = open_store(&args.db)?;
             store
@@ -543,6 +875,9 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let effects = store
                 .list_effects(&args.run_id)
                 .map_err(CliError::persistence)?;
+            let effect_reconciliations = store
+                .run_effect_reconciliations(&args.run_id)
+                .map_err(CliError::persistence)?;
             let approvals = store
                 .pending_approvals(&args.run_id)
                 .map_err(CliError::persistence)?;
@@ -555,39 +890,91 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             let tool_calls = store
                 .tool_calls(&args.run_id)
                 .map_err(CliError::persistence)?;
+            let stream_events = store
+                .stream_events(&args.run_id)
+                .map_err(CliError::persistence)?;
+            let protocol_sessions = store
+                .protocol_sessions(&args.run_id)
+                .map_err(CliError::persistence)?;
+            let protocol_calls = store
+                .protocol_calls(&args.run_id)
+                .map_err(CliError::persistence)?;
             let traces = store
                 .trace_events(&args.run_id)
                 .map_err(CliError::persistence)?;
-            let human = format!(
-                "{} {:?}; {} tasks; {} effects; {} checkpoints; {} audit events; {} traces",
+            let artifacts = store
+                .artifact_references(Some(&args.run_id), None)
+                .map_err(CliError::persistence)?;
+            let budget = store
+                .budget_snapshot(&args.run_id)
+                .map_err(CliError::persistence)?;
+            let summary = format!(
+                "{} {:?}; {} tasks; {} effects; {} protocol calls; {} stream events; {} artifacts; {} checkpoints; {} audit events; {} traces; {} provider requests; {} total tokens; {} tool calls",
                 args.run_id,
                 run.state,
                 tasks.len(),
                 effects.len(),
+                protocol_calls.len(),
+                stream_events.len(),
+                artifacts.len(),
                 checkpoints.len(),
                 audit.len(),
                 traces.len(),
+                budget.usage.provider_requests,
+                budget.usage.total_tokens(),
+                budget.usage.tool_calls,
             );
+            let human = if matches!(
+                run.mode,
+                RunMode::Repair | RunMode::Retry | RunMode::Compensation
+            ) {
+                let reused = tasks
+                    .iter()
+                    .filter(|task| task.disposition == TaskDisposition::Reused)
+                    .map(|task| task.task_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let executed = tasks
+                    .iter()
+                    .filter(|task| task.disposition == TaskDisposition::Executed)
+                    .map(|task| task.task_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{summary}; source={}; reused={reused}; executed={executed}",
+                    run.source_run_id.as_deref().unwrap_or("unknown")
+                )
+            } else {
+                summary
+            };
             let value = serde_json::json!({
                 "run": run,
                 "tasks": tasks,
                 "effects": effects,
+                "effectReconciliations": effect_reconciliations,
                 "approvals": approvals,
                 "checkpoints": checkpoints,
                 "providerSessions": provider_sessions,
+                "streamEvents": stream_events,
+                "protocolSessions": protocol_sessions,
+                "protocolCalls": protocol_calls,
                 "toolCalls": tool_calls,
+                "artifacts": artifacts,
+                "budget": budget,
                 "audit": audit,
                 "traces": traces,
             });
             print_value(output, "RunInspection", &value, Vec::new(), human)?;
             Ok(EXIT_OK)
         }
+        Command::Effects(args) => effect_command(output, args).await,
         Command::Approvals(args) => approval_command(output, args),
         Command::Providers(args) => provider_command(output, args).await,
         Command::Auth(args) => auth_command(output, args),
         Command::Schema(args) => schema_command(output, args),
         Command::Migrate(args) => migrate_command(output, args),
         Command::Packs(args) => pack_command(output, args),
+        Command::Artifacts(args) => artifact_command(output, args),
         Command::Db(args) => db_command(output, args),
         Command::Memory(args) => memory_command(output, args),
         Command::Gc(args) => gc_command(output, args),
@@ -655,10 +1042,10 @@ async fn run_workflow(output: OutputFormat, args: RunArgs) -> Result<u8, CliErro
         .parent()
         .filter(|path| !path.as_os_str().is_empty());
     let base = resolve_base_path(args.workspace.as_deref().or(default_base))?;
-    let registry = build_registry(&workflow, &base)?;
-    let store = open_store(&args.db)?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
     let cancellation = cancellation_token(args.timeout_seconds);
+    let registry = build_registry(&workflow, &base, &cancellation, None).await?;
+    let store = open_store(&args.db)?;
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .start(
             &workflow,
@@ -695,9 +1082,22 @@ async fn resume_run(output: OutputFormat, args: ResumeArgs) -> Result<u8, CliErr
             .as_deref()
             .or_else(|| run.base_path.as_deref().map(Path::new)),
     )?;
-    let registry = build_registry(&workflow, &base)?;
-    let runtime = Runtime::new(store, &base).with_registry(registry);
     let cancellation = cancellation_token(args.timeout_seconds);
+    let resume_tasks = store
+        .list_tasks(&args.run_id)
+        .map_err(CliError::persistence)?
+        .into_iter()
+        .filter(|task| {
+            !matches!(
+                task.state,
+                agentctl_core::state::TaskState::Succeeded
+                    | agentctl_core::state::TaskState::Skipped
+            )
+        })
+        .map(|task| task.task_id)
+        .collect::<BTreeSet<_>>();
+    let registry = build_registry(&workflow, &base, &cancellation, Some(&resume_tasks)).await?;
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
     let outcome = runtime
         .resume(
             &args.run_id,
@@ -711,6 +1111,286 @@ async fn resume_run(output: OutputFormat, args: ResumeArgs) -> Result<u8, CliErr
         .await
         .map_err(map_runtime_error)?;
     print_outcome(output, &outcome)
+}
+
+async fn repair_workflow(output: OutputFormat, args: RepairArgs) -> Result<u8, CliError> {
+    if !args.plan {
+        validate_interactive(args.interactive)?;
+    }
+    let (workflow, compiled, diagnostics) = load_and_compile(&args.file)?;
+    let default_base = args
+        .file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    let base = resolve_base_path(args.workspace.as_deref().or(default_base))?;
+    let store = open_store(&args.db)?;
+    let planner = Runtime::new(store.clone(), &base);
+    let plan = planner
+        .plan_repair(
+            &args.source_run_id,
+            &workflow,
+            &compiled,
+            &args.from,
+            args.restart_successful,
+        )
+        .map_err(map_runtime_error)?;
+    if args.plan || !plan.compatible {
+        let human = format!(
+            "repair plan: {}\nsource: {}\nreuse: {}\nexecute: {}\nblocked: {}",
+            if plan.compatible {
+                "compatible"
+            } else {
+                "blocked"
+            },
+            plan.source_run_id,
+            plan.reused_tasks.join(", "),
+            plan.rerun_tasks.join(", "),
+            plan.blocked_reuse
+                .iter()
+                .map(|block| format!("{}: {}", block.task_id, block.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        print_value(output, "RepairPlan", &plan, diagnostics, human)?;
+        return Ok(if plan.compatible {
+            EXIT_OK
+        } else {
+            EXIT_POLICY
+        });
+    }
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let repair_tasks = plan.rerun_tasks.iter().cloned().collect::<BTreeSet<_>>();
+    let registry = build_registry(&workflow, &base, &cancellation, Some(&repair_tasks)).await?;
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
+    let outcome = runtime
+        .repair(
+            &workflow,
+            &compiled,
+            plan,
+            args.reason.as_deref(),
+            RunOptions {
+                check: false,
+                diff: args.diff,
+                interactive: args.interactive,
+            },
+            &cancellation,
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    print_value(
+        output,
+        "RepairOutcome",
+        &outcome,
+        diagnostics,
+        format!(
+            "{} {:?} source={} reused={} executed={} artifacts={} trace={}",
+            outcome.run_id,
+            outcome.state,
+            outcome.source_run_id,
+            outcome.reused_tasks.join(","),
+            outcome.executed_tasks.join(","),
+            outcome
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.path.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            outcome.trace_id,
+        ),
+    )?;
+    Ok(outcome_exit_code(outcome.state))
+}
+
+async fn retry_workflow(output: OutputFormat, args: RetryArgs) -> Result<u8, CliError> {
+    if !args.plan {
+        validate_interactive(args.interactive)?;
+    }
+    let (workflow, compiled, diagnostics) = load_and_compile(&args.file)?;
+    let default_base = args
+        .file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    let base = resolve_base_path(args.workspace.as_deref().or(default_base))?;
+    let store = open_store(&args.db)?;
+    let planner = Runtime::new(store.clone(), &base);
+    let plan = planner
+        .plan_retry(
+            &args.source_run_id,
+            &workflow,
+            &compiled,
+            &args.from,
+            args.failed,
+            args.restart_successful,
+        )
+        .map_err(map_runtime_error)?;
+    if args.plan || !plan.compatible {
+        let human = format!(
+            "retry plan: {}\nsource: {}\nselection: {}\nreuse: {}\nexecute: {}\nblocked: {}",
+            if plan.compatible {
+                "compatible"
+            } else {
+                "blocked"
+            },
+            plan.source_run_id,
+            if plan.failed_only {
+                "failed tasks".to_owned()
+            } else {
+                plan.retry_roots.join(", ")
+            },
+            plan.reused_tasks.join(", "),
+            plan.rerun_tasks.join(", "),
+            plan.blocked_reuse
+                .iter()
+                .map(|block| format!("{}: {}", block.task_id, block.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        print_value(output, "RetryPlan", &plan, diagnostics, human)?;
+        return Ok(if plan.compatible {
+            EXIT_OK
+        } else {
+            EXIT_POLICY
+        });
+    }
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let retry_tasks = plan.rerun_tasks.iter().cloned().collect::<BTreeSet<_>>();
+    let registry = build_registry(&workflow, &base, &cancellation, Some(&retry_tasks)).await?;
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
+    let outcome = runtime
+        .retry(
+            &workflow,
+            &compiled,
+            plan,
+            args.reason.as_deref(),
+            RunOptions {
+                check: false,
+                diff: args.diff,
+                interactive: args.interactive,
+            },
+            &cancellation,
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    print_value(
+        output,
+        "RetryOutcome",
+        &outcome,
+        diagnostics,
+        format!(
+            "{} {:?} source={} roots={} reused={} executed={} artifacts={} trace={}",
+            outcome.run_id,
+            outcome.state,
+            outcome.source_run_id,
+            outcome.retry_roots.join(","),
+            outcome.reused_tasks.join(","),
+            outcome.executed_tasks.join(","),
+            outcome
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.path.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            outcome.trace_id,
+        ),
+    )?;
+    Ok(outcome_exit_code(outcome.state))
+}
+
+async fn compensate_workflow(output: OutputFormat, args: CompensateArgs) -> Result<u8, CliError> {
+    if !args.plan {
+        validate_interactive(args.interactive)?;
+    }
+    let store = open_store(&args.db)?;
+    let source = store
+        .load_run(&args.source_run_id)
+        .map_err(CliError::persistence)?;
+    let workflow: Workflow = serde_json::from_value(source.workflow.clone())
+        .map_err(|error| CliError::persistence(error.to_string()))?;
+    let base = resolve_base_path(
+        args.workspace
+            .as_deref()
+            .or_else(|| source.base_path.as_deref().map(Path::new)),
+    )?;
+    let planner = Runtime::new(store.clone(), &base);
+    let plan = planner
+        .plan_compensation(&args.source_run_id, &args.task)
+        .map_err(map_runtime_error)?;
+    if args.plan || !plan.executable {
+        let human = format!(
+            "compensation plan: {}\nsource: {}\nexecute: {}\nalready compensated: {}\nblocked: {}",
+            if plan.complete {
+                "complete"
+            } else if plan.executable {
+                "partial"
+            } else {
+                "blocked"
+            },
+            plan.source_run_id,
+            plan.tasks
+                .iter()
+                .map(|task| format!("{}->{}", task.source_task_id, task.compensation_task_id))
+                .collect::<Vec<_>>()
+                .join(", "),
+            plan.already_compensated_effects.join(", "),
+            plan.blocked
+                .iter()
+                .map(|block| format!("{}: {}", block.task_id, block.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        let complete = plan.complete;
+        let executable = plan.executable;
+        print_value(output, "CompensationPlan", &plan, Vec::new(), human)?;
+        return Ok(if complete || (!executable && plan.blocked.is_empty()) {
+            EXIT_OK
+        } else {
+            EXIT_POLICY
+        });
+    }
+    let cancellation = cancellation_token(args.timeout_seconds);
+    let registry = build_registry(&workflow, &base, &cancellation, None).await?;
+    let runtime = runtime_for_output(output, store, &base).with_registry(registry);
+    let outcome = runtime
+        .compensate(
+            plan,
+            RunOptions {
+                check: false,
+                diff: args.diff,
+                interactive: args.interactive,
+            },
+            &cancellation,
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    let human = format!(
+        "compensation {} source={} state={} compensated={} failed={} blocked={}",
+        outcome.run_id.as_deref().unwrap_or("not-created"),
+        outcome.source_run_id,
+        outcome
+            .state
+            .map_or_else(|| "not-run".to_owned(), |state| format!("{state:?}")),
+        outcome.compensated_tasks.join(","),
+        outcome.failed_tasks.join(","),
+        outcome
+            .blocked
+            .iter()
+            .map(|block| block.task_id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    print_value(output, "CompensationOutcome", &outcome, Vec::new(), human)?;
+    Ok(match outcome.state {
+        Some(state) => {
+            let code = outcome_exit_code(state);
+            if code == EXIT_OK && !outcome.blocked.is_empty() {
+                EXIT_POLICY
+            } else {
+                code
+            }
+        }
+        None if outcome.blocked.is_empty() => EXIT_OK,
+        None => EXIT_POLICY,
+    })
 }
 
 fn print_outcome(
@@ -796,15 +1476,202 @@ fn approval_command(output: OutputFormat, args: ApprovalArgs) -> Result<u8, CliE
     Ok(EXIT_OK)
 }
 
+async fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, CliError> {
+    let store = open_store(&args.db)?;
+    match args.command {
+        EffectCommand::List { run_id, task } => {
+            let effects = store
+                .list_effects(&run_id)
+                .map_err(CliError::persistence)?
+                .into_iter()
+                .filter(|effect| {
+                    task.as_ref()
+                        .is_none_or(|task| effect.request.task_id == *task)
+                })
+                .collect::<Vec<_>>();
+            let reconciliations = store
+                .run_effect_reconciliations(&run_id)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "EffectList",
+                &serde_json::json!({
+                    "runId": run_id,
+                    "taskId": task,
+                    "effects": effects,
+                    "reconciliations": reconciliations,
+                }),
+                Vec::new(),
+                format!(
+                    "{} effect(s), {} reconciliation record(s)",
+                    effects.len(),
+                    reconciliations.len()
+                ),
+            )?;
+        }
+        EffectCommand::Inspect { effect_id } => {
+            let effect = store
+                .load_effect(&effect_id)
+                .map_err(CliError::persistence)?;
+            let reconciliations = store
+                .effect_reconciliations(&effect_id)
+                .map_err(CliError::persistence)?;
+            let protocol_call = store
+                .protocol_call(&effect_id)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "EffectInspection",
+                &serde_json::json!({
+                    "effect": effect,
+                    "reconciliations": reconciliations,
+                    "effectiveReconciliation": reconciliations.last(),
+                    "protocolCall": protocol_call,
+                }),
+                Vec::new(),
+                format!(
+                    "{} {:?}; {} reconciliation record(s)",
+                    effect.request.id,
+                    effect.status,
+                    reconciliations.len()
+                ),
+            )?;
+        }
+        EffectCommand::ContinueRemote {
+            effect_id,
+            actor,
+            reason,
+            approved,
+            timeout_seconds,
+        } => {
+            let effect = store
+                .load_effect(&effect_id)
+                .map_err(CliError::persistence)?;
+            let run = store
+                .load_run(&effect.request.run_id)
+                .map_err(CliError::persistence)?;
+            let workflow: Workflow = serde_json::from_value(run.workflow)
+                .map_err(|error| CliError::persistence(error.to_string()))?;
+            let base = resolve_base_path(run.base_path.as_deref().map(Path::new))?;
+            let cancellation = cancellation_token(timeout_seconds);
+            let execution_tasks = BTreeSet::from([effect.request.task_id.clone()]);
+            let registry =
+                build_registry(&workflow, &base, &cancellation, Some(&execution_tasks)).await?;
+            let runtime = runtime_for_output(output, store, &base).with_registry(registry);
+            let reconciliation = runtime
+                .continue_external_effect(&effect_id, &actor, &reason, approved, &cancellation)
+                .await
+                .map_err(map_runtime_error)?;
+            print_value(
+                output,
+                "EffectReconciliation",
+                &reconciliation,
+                Vec::new(),
+                format!(
+                    "{} safely continued and reconciled as applied",
+                    reconciliation.effect_id
+                ),
+            )?;
+        }
+        EffectCommand::Reconcile {
+            effect_id,
+            status,
+            actor,
+            reason,
+            evidence_file,
+            result_file,
+            result_schema_file,
+            compensation_effect,
+            approved,
+        } => {
+            let effect = store
+                .load_effect(&effect_id)
+                .map_err(CliError::persistence)?;
+            let run = store
+                .load_run(&effect.request.run_id)
+                .map_err(CliError::persistence)?;
+            let workflow: Workflow = serde_json::from_value(run.workflow)
+                .map_err(|error| CliError::persistence(error.to_string()))?;
+            let base = resolve_base_path(run.base_path.as_deref().map(Path::new))?;
+            let cancellation = cancellation_token(None);
+            let no_execution_tasks = BTreeSet::new();
+            let registry =
+                build_registry(&workflow, &base, &cancellation, Some(&no_execution_tasks)).await?;
+            let evidence = evidence_file
+                .as_deref()
+                .map(read_json)
+                .transpose()?
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "kind": "operator_statement",
+                        "statement": reason,
+                    })
+                });
+            let result = result_file.as_deref().map(read_json).transpose()?;
+            let result_schema = result_schema_file.as_deref().map(read_json).transpose()?;
+            let status = match status {
+                ReconciledOutcome::Applied => ReconciliationStatus::Applied,
+                ReconciledOutcome::NotApplied => ReconciliationStatus::NotApplied,
+                ReconciledOutcome::Compensated => ReconciliationStatus::Compensated,
+            };
+            let runtime = Runtime::new(store, base).with_registry(registry);
+            let reconciliation = runtime
+                .reconcile_effect(EffectReconciliationInput {
+                    effect_id,
+                    status,
+                    actor,
+                    reason,
+                    evidence,
+                    result,
+                    result_schema,
+                    compensation_effect_id: compensation_effect,
+                    approved,
+                })
+                .map_err(map_runtime_error)?;
+            print_value(
+                output,
+                "EffectReconciliation",
+                &reconciliation,
+                Vec::new(),
+                format!(
+                    "{} reconciled as {:?} by {}",
+                    reconciliation.effect_id, reconciliation.status, reconciliation.actor
+                ),
+            )?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
 async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8, CliError> {
     match args.command {
         ProviderCommand::Inspect(args) => {
             let (workflow, _, diagnostics) = load_and_compile(&args.file)?;
+            let base = resolve_base_path(
+                args.file
+                    .parent()
+                    .filter(|path| !path.as_os_str().is_empty()),
+            )?;
+            let policy =
+                PolicyEngine::new(workflow.spec.policy.clone(), &base).map_err(|error| {
+                    CliError {
+                        code: EXIT_POLICY,
+                        message: error.to_string(),
+                        diagnostics: Vec::new(),
+                        run_id: None,
+                        trace_id: None,
+                    }
+                })?;
             let data = workflow
                 .spec
                 .providers
                 .iter()
                 .map(|(name, definition)| {
+                    let credential = definition.credential.clone().unwrap_or_else(|| {
+                        SecretReference::environment(default_credential_env(
+                            definition.kind.clone(),
+                        ))
+                    });
                     serde_json::json!({
                         "name": name,
                         "kind": definition.kind,
@@ -812,7 +1679,7 @@ async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8
                             .into_iter()
                             .map(agentctl_core::compiler::ProviderCapability::as_str)
                             .collect::<Vec<_>>(),
-                        "credentialConfigured": definition.credential.as_ref().is_some_and(|secret| std::env::var_os(&secret.env).is_some()),
+                        "credential": secret_reference_status(&credential, &policy),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -909,17 +1776,31 @@ async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8
 fn auth_command(output: OutputFormat, args: AuthArgs) -> Result<u8, CliError> {
     let AuthCommand::Check(args) = args.command;
     let (workflow, _, diagnostics) = load_and_compile(&args.file)?;
+    let base = resolve_base_path(
+        args.file
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty()),
+    )?;
+    let policy =
+        PolicyEngine::new(workflow.spec.policy.clone(), &base).map_err(|error| CliError {
+            code: EXIT_POLICY,
+            message: error.to_string(),
+            diagnostics: Vec::new(),
+            run_id: None,
+            trace_id: None,
+        })?;
     let status = workflow
         .spec
         .providers
         .iter()
         .map(|(name, definition)| {
-            let env = definition
-                .credential
-                .as_ref()
-                .map(|secret| secret.env.clone())
-                .unwrap_or_else(|| default_credential_env(definition.kind.clone()).to_owned());
-            serde_json::json!({"provider": name, "environment": env, "present": std::env::var_os(&env).is_some()})
+            let reference = definition.credential.clone().unwrap_or_else(|| {
+                SecretReference::environment(default_credential_env(definition.kind.clone()))
+            });
+            serde_json::json!({
+                "provider": name,
+                "credential": secret_reference_status(&reference, &policy),
+            })
         })
         .collect::<Vec<_>>();
     print_value(
@@ -928,11 +1809,31 @@ fn auth_command(output: OutputFormat, args: AuthArgs) -> Result<u8, CliError> {
         &status,
         diagnostics,
         format!(
-            "checked {} credential reference(s); values were not read",
+            "checked {} credential reference(s); values and secret processes were not read",
             status.len()
         ),
     )?;
     Ok(EXIT_OK)
+}
+
+fn secret_reference_status(reference: &SecretReference, policy: &PolicyEngine) -> Value {
+    match reference {
+        SecretReference::Environment { env } => serde_json::json!({
+            "kind": "environment",
+            "reference": env,
+            "availability": if std::env::var_os(env).is_some() { "present" } else { "missing" },
+        }),
+        SecretReference::File { file } => serde_json::json!({
+            "kind": "file",
+            "reference": file,
+            "availability": if policy.resolve_secret_file(file).is_ok() { "present" } else { "missing_or_denied" },
+        }),
+        SecretReference::Process { process } => serde_json::json!({
+            "kind": "process",
+            "reference": process.command,
+            "availability": "unchecked",
+        }),
+    }
 }
 
 fn schema_command(output: OutputFormat, args: SchemaArgs) -> Result<u8, CliError> {
@@ -1020,6 +1921,140 @@ fn pack_command(output: OutputFormat, args: PackArgs) -> Result<u8, CliError> {
                 "pack integrity verified".to_owned(),
             )?;
         }
+        PackCommand::Lock { workflow } => {
+            let source = read_text(&workflow)?;
+            let parsed = parse_workflow(&source, &workflow.display().to_string())
+                .map_err(diagnostics_error)?;
+            let lock = packs::generate_lock(
+                &parsed.workflow,
+                &workflow,
+                PACK_OFFLINE.load(Ordering::Relaxed),
+            )
+            .map_err(CliError::validation)?;
+            let path = packs::write_lock(&workflow, &lock).map_err(CliError::validation)?;
+            print_value(
+                output,
+                "PackLock",
+                &serde_json::json!({"path": path, "lock": lock}),
+                parsed.diagnostics,
+                format!("locked {} pack(s) at {}", lock.packs.len(), path.display()),
+            )?;
+        }
+        PackCommand::Update { workflow, pack } => {
+            let source = read_text(&workflow)?;
+            let parsed = parse_workflow(&source, &workflow.display().to_string())
+                .map_err(diagnostics_error)?;
+            if let Some(name) = &pack
+                && !parsed
+                    .workflow
+                    .spec
+                    .packs
+                    .iter()
+                    .any(|reference| reference.name == *name)
+            {
+                return Err(CliError::validation(format!(
+                    "workflow does not declare root pack `{name}`"
+                )));
+            }
+            let lock = packs::generate_lock(
+                &parsed.workflow,
+                &workflow,
+                PACK_OFFLINE.load(Ordering::Relaxed),
+            )
+            .map_err(CliError::validation)?;
+            let path = packs::write_lock(&workflow, &lock).map_err(CliError::validation)?;
+            print_value(
+                output,
+                "PackLockUpdate",
+                &serde_json::json!({"path": path, "updated": pack, "lock": lock}),
+                parsed.diagnostics,
+                format!("updated {} pack(s) at {}", lock.packs.len(), path.display()),
+            )?;
+        }
+        PackCommand::VerifyLock { workflow } => {
+            let source = read_text(&workflow)?;
+            let parsed = parse_workflow(&source, &workflow.display().to_string())
+                .map_err(diagnostics_error)?;
+            let loaded = packs::load_for_workflow(
+                &parsed.workflow,
+                &workflow,
+                packs::PackOptions {
+                    offline: PACK_OFFLINE.load(Ordering::Relaxed),
+                    locked: true,
+                },
+            )
+            .map_err(CliError::validation)?;
+            print_value(
+                output,
+                "PackLockVerification",
+                &serde_json::json!({
+                    "path": packs::lock_path(&workflow),
+                    "valid": true,
+                    "packs": loaded.packs.iter().map(|(entry, _)| entry).collect::<Vec<_>>(),
+                    "warnings": loaded.warnings,
+                }),
+                parsed.diagnostics,
+                format!("verified {} locked pack(s)", loaded.packs.len()),
+            )?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn runs_command(output: OutputFormat, args: RunsArgs) -> Result<u8, CliError> {
+    let store = open_store(&args.db)?;
+    let runtime = Runtime::new(store, current_dir()?);
+    match args.command {
+        RunsCommand::Analyze { run_id }
+        | RunsCommand::Upgrade {
+            run_id,
+            dry_run: true,
+        } => {
+            let analysis = runtime
+                .analyze_legacy_run(&run_id)
+                .map_err(map_runtime_error)?;
+            let roots = if analysis.recommended_repair_roots.is_empty() {
+                "none".to_owned()
+            } else {
+                analysis.recommended_repair_roots.join(",")
+            };
+            print_value(
+                output,
+                "LegacyRunUpgradeAnalysis",
+                &analysis,
+                Vec::new(),
+                format!(
+                    "{}: {} upgradeable, {} unavailable; safe repair roots: {roots}",
+                    analysis.run_id,
+                    analysis.upgradeable_tasks.len(),
+                    analysis.unavailable_tasks.len(),
+                ),
+            )?;
+        }
+        RunsCommand::Upgrade {
+            run_id,
+            dry_run: false,
+        } => {
+            let result = runtime
+                .upgrade_legacy_run(&run_id)
+                .map_err(map_runtime_error)?;
+            let roots = if result.analysis_after.recommended_repair_roots.is_empty() {
+                "none".to_owned()
+            } else {
+                result.analysis_after.recommended_repair_roots.join(",")
+            };
+            print_value(
+                output,
+                "LegacyRunUpgrade",
+                &result,
+                Vec::new(),
+                format!(
+                    "{}: upgraded {} task(s); safe repair roots: {roots}",
+                    result.run_id,
+                    result.upgraded_tasks.len(),
+                ),
+            )?;
+        }
     }
     Ok(EXIT_OK)
 }
@@ -1069,8 +2104,14 @@ fn db_command(output: OutputFormat, args: DbArgs) -> Result<u8, CliError> {
                 &stats,
                 Vec::new(),
                 format!(
-                    "schema {}: {} runs, {} effects",
-                    stats.schema_version, stats.runs, stats.effects
+                    "schema {}: {} runs, {} effects, {} reconciliations, {} run upgrades, {} artifact blobs, {} artifact references",
+                    stats.schema_version,
+                    stats.runs,
+                    stats.effects,
+                    stats.effect_reconciliations,
+                    stats.run_upgrades,
+                    stats.artifact_blobs,
+                    stats.artifact_references
                 ),
             )?;
         }
@@ -1083,6 +2124,214 @@ fn db_command(output: OutputFormat, args: DbArgs) -> Result<u8, CliError> {
                 format!("database schema is at version {}", store.schema_version()),
             )?;
         }
+        DbCommand::Encryption { command } => match command {
+            DbEncryptionCommand::Inventory => {
+                let inventory = store
+                    .encryption_inventory()
+                    .map_err(CliError::persistence)?;
+                print_value(
+                    output,
+                    "EncryptionInventory",
+                    &inventory,
+                    Vec::new(),
+                    format!(
+                        "state encryption: {}; protected={}, encrypted={}, plaintext={}, invalid={}",
+                        if inventory.enabled {
+                            format!(
+                                "enabled key={} reference={}",
+                                inventory.key_id.as_deref().unwrap_or("unknown"),
+                                inventory.key_reference.as_deref().unwrap_or("unknown")
+                            )
+                        } else {
+                            "disabled".to_owned()
+                        },
+                        inventory.protected_values,
+                        inventory.encrypted_values,
+                        inventory.plaintext_values,
+                        inventory.invalid_envelopes,
+                    ),
+                )?;
+            }
+            DbEncryptionCommand::Enable {
+                key_id,
+                key_env,
+                dry_run,
+            } => {
+                let report = store
+                    .enable_encryption(&key_id, &key_env, dry_run, Utc::now())
+                    .map_err(CliError::persistence)?;
+                print_value(
+                    output,
+                    "EncryptionMigration",
+                    &report,
+                    Vec::new(),
+                    format!(
+                        "{} state encryption with key {}: scanned {}, rewrote {}",
+                        if dry_run { "planned" } else { "enabled" },
+                        key_id,
+                        report.values_scanned,
+                        report.values_rewritten,
+                    ),
+                )?;
+            }
+            DbEncryptionCommand::Rotate {
+                key_id,
+                key_env,
+                dry_run,
+            } => {
+                let report = store
+                    .rotate_encryption_key(&key_id, &key_env, dry_run, Utc::now())
+                    .map_err(CliError::persistence)?;
+                print_value(
+                    output,
+                    "EncryptionMigration",
+                    &report,
+                    Vec::new(),
+                    format!(
+                        "{} state-encryption rotation to key {}: scanned {}, rewrote {}",
+                        if dry_run { "planned" } else { "completed" },
+                        key_id,
+                        report.values_scanned,
+                        report.values_rewritten,
+                    ),
+                )?;
+            }
+        },
+    }
+    Ok(EXIT_OK)
+}
+
+fn artifact_command(output: OutputFormat, args: ArtifactArgs) -> Result<u8, CliError> {
+    let store = open_store(&args.db)?;
+    match args.command {
+        ArtifactCommand::List { run, task } => {
+            let references = store
+                .artifact_references(run.as_deref(), task.as_deref())
+                .map_err(CliError::persistence)?;
+            let blobs = store.artifact_blobs().map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactList",
+                &serde_json::json!({"references": references, "blobs": blobs}),
+                Vec::new(),
+                format!(
+                    "{} artifact reference(s), {} content-addressed blob(s)",
+                    references.len(),
+                    blobs.len()
+                ),
+            )?;
+        }
+        ArtifactCommand::Inspect { digest } => {
+            let blob = store
+                .artifact_blob(&digest)
+                .map_err(CliError::persistence)?;
+            let references = store
+                .artifact_references(None, None)
+                .map_err(CliError::persistence)?
+                .into_iter()
+                .filter(|reference| reference.digest == digest)
+                .collect::<Vec<_>>();
+            print_value(
+                output,
+                "ArtifactInspection",
+                &serde_json::json!({"blob": blob, "references": references}),
+                Vec::new(),
+                format!(
+                    "{}: {} bytes, {} reference(s)",
+                    blob.digest,
+                    blob.size_bytes,
+                    references.len()
+                ),
+            )?;
+        }
+        ArtifactCommand::Verify { digest, all } => {
+            if digest.is_none() && !all {
+                return Err(CliError::validation(
+                    "provide an artifact digest or use --all".to_owned(),
+                ));
+            }
+            let digests = if let Some(digest) = digest {
+                vec![digest]
+            } else {
+                store
+                    .artifact_blobs()
+                    .map_err(CliError::persistence)?
+                    .into_iter()
+                    .map(|blob| blob.digest)
+                    .collect()
+            };
+            let verifications = digests
+                .iter()
+                .map(|digest| store.verify_artifact(digest, Utc::now()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactVerification",
+                &serde_json::json!({"valid": true, "artifacts": verifications}),
+                Vec::new(),
+                format!("verified {} artifact blob(s)", verifications.len()),
+            )?;
+        }
+        ArtifactCommand::Export {
+            digest,
+            destination,
+            overwrite,
+        } => {
+            store
+                .export_artifact(&digest, &destination, overwrite)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactExport",
+                &serde_json::json!({
+                    "digest": digest,
+                    "destination": destination,
+                    "overwritten": overwrite,
+                }),
+                Vec::new(),
+                format!("exported {} to {}", digest, destination.display()),
+            )?;
+        }
+        ArtifactCommand::Gc {
+            older_than_days,
+            dry_run,
+        } => {
+            if older_than_days < 0 {
+                return Err(CliError::validation(
+                    "--older-than-days must be zero or greater".to_owned(),
+                ));
+            }
+            let before = Utc::now() - ChronoDuration::days(older_than_days);
+            let report = store
+                .garbage_collect_artifacts(before, dry_run)
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "ArtifactGarbageCollection",
+                &serde_json::json!({
+                    "dryRun": dry_run,
+                    "before": before,
+                    "report": report,
+                }),
+                Vec::new(),
+                format!(
+                    "{} {} artifact blob(s) and {} temporary file(s), {} reclaimable byte(s)",
+                    if dry_run { "considered" } else { "removed" },
+                    if dry_run {
+                        report.considered
+                    } else {
+                        u64::try_from(report.removed.len()).unwrap_or(u64::MAX)
+                    },
+                    if dry_run {
+                        report.temporary_files_considered
+                    } else {
+                        report.temporary_files_removed
+                    },
+                    report.reclaimed_bytes
+                ),
+            )?;
+        }
     }
     Ok(EXIT_OK)
 }
@@ -1091,15 +2340,20 @@ fn memory_command(output: OutputFormat, args: MemoryArgs) -> Result<u8, CliError
     let store = open_store(&args.db)?;
     match args.command {
         MemoryCommand::Get { namespace, key } => {
-            let value = store
-                .get_long_term_memory(&namespace, &key, Utc::now())
+            let record = store
+                .get_memory_entry(&namespace, &key, Utc::now())
                 .map_err(CliError::persistence)?;
             print_value(
                 output,
                 "MemoryValue",
-                &serde_json::json!({"namespace": namespace, "key": key, "value": value}),
+                &serde_json::json!({
+                    "namespace": namespace,
+                    "key": key,
+                    "value": record.as_ref().map(|record| record.entry.value()),
+                    "record": record,
+                }),
                 Vec::new(),
-                if value.is_some() {
+                if record.is_some() {
                     "memory found"
                 } else {
                     "memory not found"
@@ -1111,20 +2365,166 @@ fn memory_command(output: OutputFormat, args: MemoryArgs) -> Result<u8, CliError
             namespace,
             key,
             value,
+            text,
+            metadata,
             retention_days,
         } => {
             let value: Value = serde_json::from_str(&value)
                 .map_err(|error| CliError::validation(format!("value must be JSON: {error}")))?;
+            let metadata = metadata
+                .map(|value| {
+                    serde_json::from_str(&value).map_err(|error| {
+                        CliError::validation(format!("--metadata must be a JSON object: {error}"))
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let text = text.or_else(|| match &value {
+                Value::String(value) => Some(value.clone()),
+                value => serde_json::to_string(value).ok(),
+            });
+            let entry = MemoryEntry::json(value, text, metadata);
+            entry
+                .validate()
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            let embedding = local_hash_embedding(
+                entry
+                    .searchable_text()
+                    .ok_or_else(|| CliError::validation("memory entry has no searchable text"))?,
+                64,
+            )
+            .map_err(|error| CliError::validation(error.to_string()))?;
+            if retention_days.is_some_and(|days| days <= 0 || days > 36_500) {
+                return Err(CliError::validation(
+                    "--retention-days must be between 1 and 36500",
+                ));
+            }
             let expires = retention_days.map(|days| Utc::now() + ChronoDuration::days(days));
             store
-                .put_long_term_memory(&namespace, &key, &value, expires, Utc::now())
+                .put_memory_entry(
+                    &namespace,
+                    &key,
+                    &entry,
+                    Some("local_hash"),
+                    Some(&embedding),
+                    expires,
+                    Utc::now(),
+                )
                 .map_err(CliError::persistence)?;
             print_value(
                 output,
                 "MemoryWrite",
-                &serde_json::json!({"namespace": namespace, "key": key, "written": true, "expiresAt": expires}),
+                &serde_json::json!({
+                    "namespace": namespace,
+                    "key": key,
+                    "written": true,
+                    "entry": entry,
+                    "embeddingProvider": "local_hash",
+                    "embeddingDimensions": embedding.len(),
+                    "expiresAt": expires,
+                }),
                 Vec::new(),
                 "memory written".to_owned(),
+            )?;
+        }
+        MemoryCommand::Search {
+            namespace,
+            query,
+            mode,
+            limit,
+            filters,
+        } => {
+            let mut parsed_filters = BTreeMap::new();
+            for filter in filters {
+                let (key, raw) = filter
+                    .split_once('=')
+                    .ok_or_else(|| CliError::validation("--filter must use KEY=JSON syntax"))?;
+                if key.is_empty() {
+                    return Err(CliError::validation("--filter key cannot be empty"));
+                }
+                let value = serde_json::from_str(raw).map_err(|error| {
+                    CliError::validation(format!("--filter value must be JSON: {error}"))
+                })?;
+                if parsed_filters.insert(key.to_owned(), value).is_some() {
+                    return Err(CliError::validation(format!(
+                        "duplicate --filter key `{key}`"
+                    )));
+                }
+            }
+            let mode = match mode {
+                CliMemorySearchMode::Text => MemorySearchMode::Text,
+                CliMemorySearchMode::Vector => MemorySearchMode::Vector,
+                CliMemorySearchMode::Hybrid => MemorySearchMode::Hybrid,
+            };
+            let query = MemoryQuery {
+                namespace,
+                text: query,
+                mode,
+                limit,
+                filters: parsed_filters,
+            };
+            query
+                .validate()
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            let embedding = if matches!(
+                query.mode,
+                MemorySearchMode::Vector | MemorySearchMode::Hybrid
+            ) {
+                Some(
+                    local_hash_embedding(&query.text, 64)
+                        .map_err(|error| CliError::validation(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            let results = store
+                .search_memory(&query, embedding.as_deref(), Utc::now())
+                .map_err(CliError::persistence)?;
+            print_value(
+                output,
+                "MemorySearch",
+                &serde_json::json!({"query": query, "results": results}),
+                Vec::new(),
+                format!("{} memory result(s)", results.len()),
+            )?;
+        }
+        MemoryCommand::Reindex { namespace } => {
+            let now = Utc::now();
+            let records = store
+                .list_memory_entries(&namespace, now)
+                .map_err(CliError::persistence)?;
+            for record in &records {
+                let text = record.entry.searchable_text().ok_or_else(|| {
+                    CliError::validation(format!(
+                        "memory `{}/{}` has no searchable text",
+                        record.namespace, record.key
+                    ))
+                })?;
+                let embedding = local_hash_embedding(text, 64)
+                    .map_err(|error| CliError::validation(error.to_string()))?;
+                store
+                    .put_memory_entry(
+                        &record.namespace,
+                        &record.key,
+                        &record.entry,
+                        Some("local_hash"),
+                        Some(&embedding),
+                        record.expires_at,
+                        now,
+                    )
+                    .map_err(CliError::persistence)?;
+            }
+            print_value(
+                output,
+                "MemoryReindex",
+                &serde_json::json!({
+                    "namespace": namespace,
+                    "provider": "local_hash",
+                    "dimensions": 64,
+                    "entriesReindexed": records.len(),
+                }),
+                Vec::new(),
+                format!("reindexed {} memory entry(s)", records.len()),
             )?;
         }
     }
@@ -1158,55 +2558,55 @@ fn load_and_compile(
     let source = read_text(path)?;
     let parsed = parse_workflow(&source, &path.display().to_string()).map_err(diagnostics_error)?;
     let mut workflow = parsed.workflow;
-    load_packs(&mut workflow, path)?;
+    let loaded = packs::load_for_workflow(
+        &workflow,
+        path,
+        packs::PackOptions {
+            offline: PACK_OFFLINE.load(Ordering::Relaxed),
+            locked: PACK_LOCKED.load(Ordering::Relaxed),
+        },
+    )
+    .map_err(CliError::validation)?;
+    let mut diagnostics = parsed.diagnostics;
+    diagnostics.extend(loaded.warnings.into_iter().map(|message| {
+        Diagnostic {
+        code: DiagnosticCode::PolicyDenied,
+        severity: Severity::Warning,
+        message,
+        file: path.display().to_string(),
+        line: None,
+        column: None,
+        path: Some("$.spec.packs".to_owned()),
+        help: Some(
+            "sign the pack with a trusted Sigstore identity or choose an explicit unsigned policy"
+                .to_owned(),
+        ),
+    }
+    }));
+    load_packs(&mut workflow, loaded.packs)?;
     let plan = compile(&workflow, &path.display().to_string()).map_err(diagnostics_error)?;
-    Ok((workflow, plan, parsed.diagnostics))
+    Ok((workflow, plan, diagnostics))
 }
 
-fn load_packs(workflow: &mut Workflow, workflow_path: &Path) -> Result<(), CliError> {
-    let base = workflow_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let canonical_base = std::fs::canonicalize(base)
-        .map_err(|error| CliError::validation(format!("{}: {error}", base.display())))?;
-    for reference in workflow.spec.packs.clone() {
-        let relative = Path::new(&reference.path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-        {
+fn load_packs(
+    workflow: &mut Workflow,
+    packs: Vec<(agentctl_core::pack::PackLockEntry, PackManifest)>,
+) -> Result<(), CliError> {
+    for (entry, mut pack) in packs {
+        if pack.name != entry.name || pack.version != entry.version {
             return Err(CliError::validation(format!(
-                "pack `{}` path must remain under the workflow directory",
-                reference.name
-            )));
-        }
-        let path = base.join(relative);
-        let canonical = std::fs::canonicalize(&path)
-            .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))?;
-        if !canonical.starts_with(&canonical_base) {
-            return Err(CliError::validation(format!(
-                "pack `{}` resolves outside the workflow directory",
-                reference.name
-            )));
-        }
-        verify_pack(&canonical, &reference.integrity)
-            .map_err(|error| CliError::validation(error.to_string()))?;
-        let source = read_text(&canonical)?;
-        let mut pack: PackManifest = serde_yaml_ng::from_str(&source)
-            .map_err(|error| CliError::validation(format!("{}: {error}", canonical.display())))?;
-        pack.validate()
-            .map_err(|error| CliError::validation(error.to_string()))?;
-        if pack.name != reference.name || pack.version != reference.version {
-            return Err(CliError::validation(format!(
-                "pack reference `{}@{}` does not match manifest `{}@{}`",
-                reference.name, reference.version, pack.name, pack.version
+                "locked pack `{}@{}` does not match manifest `{}@{}`",
+                entry.name, entry.version, pack.name, pack.version
             )));
         }
         let qualify = |name: &str| format!("{}.{}", pack.name, name);
         for agent in pack.agents.values_mut() {
             agent.tools = agent.tools.iter().map(|name| qualify(name)).collect();
+        }
+        for definition in pack.workflows.values_mut() {
+            for task in &mut definition.tasks {
+                qualify_pack_task(task, &qualify);
+            }
         }
         for (name, action) in pack.actions {
             insert_pack_item(
@@ -1222,8 +2622,33 @@ fn load_packs(workflow: &mut Workflow, workflow_path: &Path) -> Result<(), CliEr
         for (name, agent) in pack.agents {
             insert_pack_item(&mut workflow.spec.agents, qualify(&name), agent, &pack.name)?;
         }
+        for (name, definition) in pack.workflows {
+            insert_pack_item(
+                &mut workflow.spec.subworkflows,
+                qualify(&name),
+                definition,
+                &pack.name,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn qualify_pack_task(
+    task: &mut agentctl_core::dsl::TaskDefinition,
+    qualify: &impl Fn(&str) -> String,
+) {
+    for prefix in ["action:", "agent:", "workflow:"] {
+        if let Some(name) = task.uses.strip_prefix(prefix) {
+            task.uses = format!("{prefix}{}", qualify(name));
+            break;
+        }
+    }
+    if let Some(compensate) = &mut task.compensate
+        && let Some(name) = compensate.uses.strip_prefix("action:")
+    {
+        compensate.uses = format!("action:{}", qualify(name));
+    }
 }
 
 fn insert_pack_item<T>(
@@ -1241,36 +2666,138 @@ fn insert_pack_item<T>(
     }
 }
 
-fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, CliError> {
+async fn build_registry(
+    workflow: &Workflow,
+    base: &Path,
+    cancellation: &CancellationToken,
+    execution_tasks: Option<&BTreeSet<String>>,
+) -> Result<RuntimeRegistry, CliError> {
     let mut registry = RuntimeRegistry::default();
+    let tool_policy =
+        PolicyEngine::new(workflow.spec.policy.clone(), base).map_err(|error| CliError {
+            code: EXIT_POLICY,
+            message: error.to_string(),
+            diagnostics: Vec::new(),
+            run_id: None,
+            trace_id: None,
+        })?;
+    let provider_secrets = SecretResolver::provider_credentials(tool_policy.clone());
+    let restricted_secrets = SecretResolver::restricted(tool_policy.clone());
+    let mut required_providers = workflow
+        .spec
+        .tasks
+        .iter()
+        .filter(|task| execution_tasks.is_none_or(|selected| selected.contains(&task.id)))
+        .filter_map(|task| task.uses.strip_prefix("agent:"))
+        .filter_map(|agent| workflow.spec.agents.get(agent))
+        .map(|agent| agent.provider.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut selected_action_kinds = workflow
+        .spec
+        .tasks
+        .iter()
+        .filter(|task| execution_tasks.is_none_or(|selected| selected.contains(&task.id)))
+        .filter_map(|task| task.uses.strip_prefix("action:"))
+        .filter_map(|action| workflow.spec.actions.get(action))
+        .map(|action| action.kind)
+        .collect::<Vec<_>>();
+    selected_action_kinds.extend(
+        workflow
+            .spec
+            .tasks
+            .iter()
+            .filter_map(|task| task.compensate.as_ref())
+            .filter_map(|compensate| compensate.uses.strip_prefix("action:"))
+            .filter_map(|action| workflow.spec.actions.get(action))
+            .map(|action| action.kind),
+    );
+    selected_action_kinds.extend(
+        workflow
+            .spec
+            .subworkflows
+            .values()
+            .flat_map(|definition| definition.tasks.iter())
+            .filter_map(|task| task.compensate.as_ref())
+            .filter_map(|compensate| compensate.uses.strip_prefix("action:"))
+            .filter_map(|action| workflow.spec.actions.get(action))
+            .map(|action| action.kind),
+    );
+    let memory_embedding = workflow.spec.memory.long_term.as_ref().and_then(|memory| {
+        let uses_embeddings = selected_action_kinds.iter().any(|kind| {
+            matches!(
+                kind,
+                agentctl_core::dsl::ActionKind::LongTermMemorySearch
+                    | agentctl_core::dsl::ActionKind::LongTermMemoryWrite
+            )
+        });
+        uses_embeddings.then_some(&memory.embedding)
+    });
+    if let Some(embedding) = memory_embedding
+        && embedding.provider != "local_hash"
+    {
+        required_providers.insert(embedding.provider.as_str());
+    }
     for (name, definition) in &workflow.spec.providers {
-        let credential = definition
-            .credential
-            .clone()
-            .unwrap_or_else(|| SecretReference {
-                env: default_credential_env(definition.kind.clone()).to_owned(),
-            });
-        if definition.kind != ProviderKind::Fake && std::env::var_os(&credential.env).is_none() {
-            return Err(CliError {
-                code: EXIT_REMOTE,
-                message: format!(
-                    "provider `{name}` requires environment variable `{}`; configure it or run `agentctl auth check`",
-                    credential.env
-                ),
-                diagnostics: Vec::new(),
-                run_id: None,
-                trace_id: None,
-            });
-        }
+        let credential = definition.credential.clone().unwrap_or_else(|| {
+            SecretReference::environment(default_credential_env(definition.kind.clone()))
+        });
         match definition.kind {
             ProviderKind::Fake => {
                 registry = registry.with_provider(name, Arc::new(FakeProvider::default()));
+                if memory_embedding.is_some_and(|embedding| embedding.provider == *name) {
+                    registry =
+                        registry.with_embedding_provider(name, Arc::new(FakeEmbeddingProvider));
+                }
             }
             ProviderKind::Openai => {
-                let mut config = HttpProviderConfig::openai(credential.env);
-                config.headers = resolve_protocol_headers(&definition.headers, workflow)?;
+                let mut config =
+                    HttpProviderConfig::openai(default_credential_env(ProviderKind::Openai));
+                config.credential = credential.clone();
+                config.resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                config.credential_resolver = Some(Arc::new(provider_secrets.clone()));
+                if required_providers.contains(name.as_str()) {
+                    config.headers = resolve_protocol_headers(
+                        &definition.headers,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
+                }
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
+                if let Some(embedding) =
+                    memory_embedding.filter(|embedding| embedding.provider == *name)
+                {
+                    registry = registry.with_embedding_provider(
+                        name,
+                        Arc::new(
+                            OpenAiEmbeddingProvider::new(
+                                config.clone(),
+                                embedding.model.as_deref().unwrap_or_default(),
+                            )
+                            .map_err(remote_error)?,
+                        ),
+                    );
                 }
                 registry = registry.with_provider(
                     name,
@@ -1278,10 +2805,40 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
                 );
             }
             ProviderKind::Anthropic => {
-                let mut config = HttpProviderConfig::anthropic(credential.env);
-                config.headers = resolve_protocol_headers(&definition.headers, workflow)?;
+                let mut config =
+                    HttpProviderConfig::anthropic(default_credential_env(ProviderKind::Anthropic));
+                config.credential = credential.clone();
+                config.resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                config.credential_resolver = Some(Arc::new(provider_secrets.clone()));
+                if required_providers.contains(name.as_str()) {
+                    config.headers = resolve_protocol_headers(
+                        &definition.headers,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
+                }
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
                 }
                 registry = registry.with_provider(
                     name,
@@ -1289,10 +2846,40 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
                 );
             }
             ProviderKind::Google => {
-                let mut config = HttpProviderConfig::google(credential.env);
-                config.headers = resolve_protocol_headers(&definition.headers, workflow)?;
+                let mut config =
+                    HttpProviderConfig::google(default_credential_env(ProviderKind::Google));
+                config.credential = credential.clone();
+                config.resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                config.credential_resolver = Some(Arc::new(provider_secrets.clone()));
+                if required_providers.contains(name.as_str()) {
+                    config.headers = resolve_protocol_headers(
+                        &definition.headers,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 if let Some(endpoint) = &definition.endpoint {
                     config.endpoint = endpoint.clone();
+                }
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
                 }
                 registry = registry.with_provider(
                     name,
@@ -1305,17 +2892,49 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
                         "Azure OpenAI provider `{name}` requires endpoint"
                     ))
                 })?;
-                let config = HttpProviderConfig {
+                let resolved_credential = preflight_provider_credential(
+                    name,
+                    &credential,
+                    &required_providers,
+                    &provider_secrets,
+                    cancellation,
+                )
+                .await?;
+                let mut config = HttpProviderConfig {
                     endpoint,
                     credential,
+                    resolved_credential,
+                    credential_resolver: Some(Arc::new(provider_secrets.clone())),
                     organization: None,
                     project: None,
                     api_version: definition
                         .api_version
                         .clone()
                         .or_else(|| Some("v1".to_owned())),
-                    headers: resolve_protocol_headers(&definition.headers, workflow)?,
+                    headers: if required_providers.contains(name.as_str()) {
+                        resolve_protocol_headers(
+                            &definition.headers,
+                            &restricted_secrets,
+                            cancellation,
+                        )
+                        .await?
+                    } else {
+                        BTreeMap::new()
+                    },
+                    transport: HttpTransportSecurity::default(),
                 };
+                if required_providers.contains(name.as_str()) {
+                    let endpoint = Url::parse(&config.endpoint).map_err(|error| {
+                        CliError::validation(format!("provider `{name}` endpoint: {error}"))
+                    })?;
+                    config.transport = prepare_http_transport(
+                        &tool_policy,
+                        &endpoint,
+                        &restricted_secrets,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 registry = registry.with_provider(
                     name,
                     Arc::new(OpenAiProvider::azure(config).map_err(remote_error)?),
@@ -1324,14 +2943,6 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
         }
     }
 
-    let tool_policy =
-        PolicyEngine::new(workflow.spec.policy.clone(), base).map_err(|error| CliError {
-            code: EXIT_POLICY,
-            message: error.to_string(),
-            diagnostics: Vec::new(),
-            run_id: None,
-            trace_id: None,
-        })?;
     for (name, definition) in &workflow.spec.tools {
         registry = registry.with_tool(
             name,
@@ -1344,30 +2955,56 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
     }
 
     let mut mcp = BTreeMap::new();
-    for (name, definition) in &workflow.spec.mcp_servers {
-        let headers = resolve_protocol_headers(&definition.headers, workflow)?;
-        let client = McpClient::new(ProtocolHttpConfig {
-            url: Url::parse(&definition.url).map_err(|error| {
+    if selected_action_kinds.contains(&agentctl_core::dsl::ActionKind::McpCall) {
+        for (name, definition) in &workflow.spec.mcp_servers {
+            let headers =
+                resolve_protocol_headers(&definition.headers, &restricted_secrets, cancellation)
+                    .await?;
+            let url = Url::parse(&definition.url).map_err(|error| {
                 CliError::validation(format!("MCP server `{name}` URL: {error}"))
-            })?,
-            headers,
-            timeout: Duration::from_secs(definition.timeout_seconds),
-        })
-        .map_err(remote_error)?;
-        mcp.insert(name.clone(), Arc::new(client));
+            })?;
+            let transport =
+                prepare_http_transport(&tool_policy, &url, &restricted_secrets, cancellation)
+                    .await?;
+            let client = McpClient::new(ProtocolHttpConfig {
+                url,
+                headers,
+                header_references: definition.headers.clone(),
+                header_resolver: Some(Arc::new(restricted_secrets.clone())),
+                timeout: Duration::from_secs(definition.timeout_seconds),
+                transport,
+            })
+            .map_err(remote_error)?;
+            mcp.insert(name.clone(), Arc::new(client));
+        }
     }
     let mut a2a = BTreeMap::new();
-    for (name, definition) in &workflow.spec.a2a_peers {
-        let headers = resolve_protocol_headers(&definition.headers, workflow)?;
-        let client = A2aClient::new(ProtocolHttpConfig {
-            url: Url::parse(&definition.card_url).map_err(|error| {
+    if selected_action_kinds.contains(&agentctl_core::dsl::ActionKind::A2aDelegate) {
+        for (name, definition) in &workflow.spec.a2a_peers {
+            let headers =
+                resolve_protocol_headers(&definition.headers, &restricted_secrets, cancellation)
+                    .await?;
+            let url = Url::parse(&definition.card_url).map_err(|error| {
                 CliError::validation(format!("A2A peer `{name}` card URL: {error}"))
-            })?,
-            headers,
-            timeout: Duration::from_secs(definition.timeout_seconds),
-        })
-        .map_err(remote_error)?;
-        a2a.insert(name.clone(), Arc::new(client));
+            })?;
+            let transport =
+                prepare_http_transport(&tool_policy, &url, &restricted_secrets, cancellation)
+                    .await?;
+            let client = A2aClient::new(ProtocolHttpConfig {
+                url,
+                headers,
+                header_references: definition.headers.clone(),
+                header_resolver: Some(Arc::new(restricted_secrets.clone())),
+                timeout: Duration::from_secs(definition.timeout_seconds),
+                transport,
+            })
+            .map_err(remote_error)?
+            .with_poll_bounds(
+                definition.max_polls,
+                Duration::from_millis(definition.poll_interval_ms),
+            );
+            a2a.insert(name.clone(), Arc::new(client));
+        }
     }
     if !mcp.is_empty() || !a2a.is_empty() {
         registry = registry.with_external_actions(Arc::new(ProtocolActionHandler::new(mcp, a2a)));
@@ -1375,35 +3012,160 @@ fn build_registry(workflow: &Workflow, base: &Path) -> Result<RuntimeRegistry, C
     Ok(registry)
 }
 
-fn resolve_protocol_headers(
-    headers: &BTreeMap<String, SecretReference>,
-    workflow: &Workflow,
-) -> Result<BTreeMap<String, String>, CliError> {
-    headers
-        .iter()
-        .map(|(name, reference)| {
-            if !workflow.spec.policy.environment_allowlist.contains(&reference.env) {
+async fn preflight_provider_credential(
+    name: &str,
+    reference: &SecretReference,
+    required_providers: &BTreeSet<&str>,
+    resolver: &SecretResolver,
+    cancellation: &CancellationToken,
+) -> Result<Option<SecretValue>, CliError> {
+    if !required_providers.contains(name) {
+        return Ok(None);
+    }
+    resolver
+        .resolve(reference, cancellation)
+        .await
+        .map(Some)
+        .map_err(|error| secret_cli_error(name, error, EXIT_REMOTE))
+}
+
+async fn prepare_http_transport(
+    policy: &PolicyEngine,
+    target: &Url,
+    resolver: &SecretResolver,
+    cancellation: &CancellationToken,
+) -> Result<HttpTransportSecurity, CliError> {
+    policy
+        .authorize_network(target)
+        .map_err(network_policy_error)?;
+    let parsed_ip = match target.host() {
+        Some(Host::Ipv4(address)) => Some(IpAddr::V4(address)),
+        Some(Host::Ipv6(address)) => Some(IpAddr::V6(address)),
+        Some(Host::Domain(_)) => None,
+        None => return Err(CliError::validation("network URL requires a host")),
+    };
+    let host = parsed_ip.map_or_else(
+        || target.host_str().unwrap_or_default().to_owned(),
+        |address| address.to_string(),
+    );
+    let port = target
+        .port_or_known_default()
+        .ok_or_else(|| CliError::validation("network URL requires a known port"))?;
+    let network = policy.network_policy();
+    let connect_timeout = Duration::from_secs(network.connect_timeout_seconds);
+    let mut resolved_addresses = if let Some(address) = parsed_ip {
+        vec![SocketAddr::new(address, port)]
+    } else {
+        let lookup = tokio::time::timeout(
+            connect_timeout,
+            tokio::net::lookup_host((host.as_str(), port)),
+        );
+        tokio::select! {
+            _ = cancellation.cancelled() => {
                 return Err(CliError {
-                    code: EXIT_POLICY,
-                    message: format!(
-                        "header `{name}` secret environment `{}` is not in policy.environmentAllowlist",
-                        reference.env
-                    ),
+                    code: EXIT_CANCELLED,
+                    message: "network resolution was cancelled".to_owned(),
                     diagnostics: Vec::new(),
                     run_id: None,
                     trace_id: None,
                 });
             }
-            let value = std::env::var(&reference.env).map_err(|_| CliError {
-                code: EXIT_POLICY,
-                message: format!("required environment variable `{}` is unavailable", reference.env),
-                diagnostics: Vec::new(),
-                run_id: None,
-                trace_id: None,
-            })?;
-            Ok((name.clone(), value))
-        })
-        .collect()
+            result = lookup => {
+                match result {
+                    Ok(Ok(addresses)) => addresses.collect::<Vec<_>>(),
+                    Ok(Err(_)) => {
+                        return Err(network_resolution_error(
+                            &host,
+                            "DNS resolution failed",
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(network_resolution_error(
+                            &host,
+                            "DNS resolution timed out",
+                        ));
+                    }
+                }
+            }
+        }
+    };
+    resolved_addresses.sort_unstable();
+    resolved_addresses.dedup();
+    policy
+        .authorize_resolved_addresses(&resolved_addresses)
+        .map_err(network_policy_error)?;
+
+    let custom_ca_pem = if let Some(reference) = &network.custom_ca {
+        Some(
+            resolver
+                .resolve(reference, cancellation)
+                .await
+                .map_err(|error| secret_cli_error("network custom CA", error, EXIT_POLICY))?,
+        )
+    } else {
+        None
+    };
+    let max_response_bytes = usize::try_from(network.max_response_bytes)
+        .map_err(|_| CliError::validation("network response limit exceeds platform capacity"))?;
+    Ok(HttpTransportSecurity {
+        resolved_host: parsed_ip.is_none().then_some(host),
+        resolved_addresses,
+        allow_proxy: network.allow_proxy,
+        connect_timeout,
+        max_response_bytes,
+        custom_ca_pem,
+    })
+}
+
+fn network_policy_error(error: impl ToString) -> CliError {
+    CliError {
+        code: EXIT_POLICY,
+        message: error.to_string(),
+        diagnostics: Vec::new(),
+        run_id: None,
+        trace_id: None,
+    }
+}
+
+fn network_resolution_error(host: &str, reason: &str) -> CliError {
+    CliError {
+        code: EXIT_REMOTE,
+        message: format!("{reason} for authorized host `{host}`"),
+        diagnostics: Vec::new(),
+        run_id: None,
+        trace_id: None,
+    }
+}
+
+async fn resolve_protocol_headers(
+    headers: &BTreeMap<String, SecretReference>,
+    resolver: &SecretResolver,
+    cancellation: &CancellationToken,
+) -> Result<BTreeMap<String, SecretValue>, CliError> {
+    let mut resolved = BTreeMap::new();
+    for (name, reference) in headers {
+        let value = resolver
+            .resolve(reference, cancellation)
+            .await
+            .map_err(|error| secret_cli_error(name, error, EXIT_POLICY))?;
+        resolved.insert(name.clone(), value);
+    }
+    Ok(resolved)
+}
+
+fn secret_cli_error(owner: &str, error: SecretResolutionError, fallback_code: u8) -> CliError {
+    let code = if matches!(error, SecretResolutionError::Policy(_)) {
+        EXIT_POLICY
+    } else {
+        fallback_code
+    };
+    CliError {
+        code,
+        message: format!("secret for `{owner}` could not be resolved: {error}"),
+        diagnostics: Vec::new(),
+        run_id: None,
+        trace_id: None,
+    }
 }
 
 fn default_credential_env(kind: ProviderKind) -> &'static str {
@@ -1472,6 +3234,11 @@ fn read_text(path: &Path) -> Result<String, CliError> {
     Ok(content)
 }
 
+fn read_json(path: &Path) -> Result<Value, CliError> {
+    serde_json::from_str(&read_text(path)?)
+        .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))
+}
+
 fn write_text(path: &Path, content: &str) -> Result<(), CliError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -1481,6 +3248,60 @@ fn write_text(path: &Path, content: &str) -> Result<(), CliError> {
     }
     std::fs::write(path, content)
         .map_err(|error| CliError::validation(format!("{}: {error}", path.display())))
+}
+
+fn runtime_for_output(
+    output: OutputFormat,
+    store: SqliteStore,
+    base_path: impl Into<PathBuf>,
+) -> Runtime {
+    let runtime = Runtime::new(store, base_path);
+    match output {
+        OutputFormat::Human | OutputFormat::Jsonl => {
+            runtime.with_stream_event_sink(Arc::new(CliStreamEventSink { output }))
+        }
+        OutputFormat::Json => runtime,
+    }
+}
+
+struct CliStreamEventSink {
+    output: OutputFormat,
+}
+
+impl StreamEventSink for CliStreamEventSink {
+    fn record(&self, event: &StreamEventRecord) {
+        let _guard = STREAM_OUTPUT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match self.output {
+            OutputFormat::Human => {
+                if let Some(delta) = event.payload.get("delta").and_then(Value::as_str) {
+                    eprintln!(
+                        "[{} stream {}] {}",
+                        event.task_id,
+                        event.sequence,
+                        delta.escape_debug()
+                    );
+                } else {
+                    eprintln!(
+                        "[{} stream {}] {}",
+                        event.task_id, event.sequence, event.event_type
+                    );
+                }
+            }
+            OutputFormat::Jsonl => {
+                let value = serde_json::json!({
+                    "apiVersion": MACHINE_OUTPUT_VERSION,
+                    "kind": "StreamEvent",
+                    "ok": true,
+                    "data": event,
+                    "diagnostics": [],
+                });
+                println!("{value}");
+            }
+            OutputFormat::Json => {}
+        }
+    }
 }
 
 fn print_value<T: Serialize>(
@@ -1505,7 +3326,7 @@ fn print_value<T: Serialize>(
                 );
             }
         }
-        OutputFormat::Json => println!(
+        OutputFormat::Json | OutputFormat::Jsonl => println!(
             "{}",
             serde_json::to_string(&Envelope {
                 api_version: MACHINE_OUTPUT_VERSION,
@@ -1545,7 +3366,7 @@ fn render_error(output: OutputFormat, error: &CliError) {
                 eprintln!("  trace: {trace_id}");
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Jsonl => {
             let value = serde_json::json!({
                 "apiVersion": MACHINE_OUTPUT_VERSION,
                 "kind": "Error",
@@ -1609,6 +3430,8 @@ fn map_runtime_error(error: agentctl_runtime::RuntimeError) -> CliError {
         agentctl_runtime::RuntimeError::Provider(_) => EXIT_REMOTE,
         agentctl_runtime::RuntimeError::Cancelled => EXIT_CANCELLED,
         agentctl_runtime::RuntimeError::UncertainEffect { .. } => EXIT_POLICY,
+        agentctl_runtime::RuntimeError::RepairBlocked { .. }
+        | agentctl_runtime::RuntimeError::RetryBlocked { .. } => EXIT_POLICY,
         _ => EXIT_RUN_FAILED,
     };
     CliError {
@@ -1640,14 +3463,19 @@ mod tests {
             "resume",
             "replay",
             "fork",
+            "repair",
+            "retry",
+            "runs",
             "cancel",
             "inspect",
+            "effects",
             "approvals",
             "providers",
             "auth",
             "schema",
             "migrate",
             "packs",
+            "artifacts",
             "db",
             "memory",
             "gc",
@@ -1695,6 +3523,14 @@ mod tests {
             ]),
             OutputFormat::Json
         );
+        assert_eq!(
+            requested_output(&[
+                OsString::from("agentctl"),
+                OsString::from("--output=jsonl"),
+                OsString::from("run"),
+            ]),
+            OutputFormat::Jsonl
+        );
     }
 
     #[test]
@@ -1732,5 +3568,156 @@ mod tests {
         let error = read_text(&path).expect_err("oversized input must fail");
         assert_eq!(error.code, EXIT_VALIDATION);
         assert!(error.message.contains("exceeds 1048576 bytes"));
+    }
+
+    #[tokio::test]
+    async fn registry_preflights_only_reachable_provider_file_credentials() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(directory.path().join("secrets")).expect("secret directory");
+        std::fs::write(directory.path().join("secrets/openai"), "file-secret\n")
+            .expect("secret file");
+        let reachable = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: reachable-secret }
+spec:
+  policy:
+    secretFileRoots: [secrets]
+    networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
+  providers:
+    openai:
+      kind: openai
+      endpoint: http://127.0.0.1:9/v1/responses
+      credential: { file: secrets/openai }
+  agents:
+    answer:
+      provider: openai
+      model: gpt-5.6
+      instructions: answer
+  tasks:
+    - id: answer
+      uses: agent:answer
+      with: { prompt: hello }
+"#,
+            "reachable.yaml",
+        )
+        .expect("reachable workflow")
+        .workflow;
+        build_registry(
+            &reachable,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("file credential preflight");
+
+        std::fs::remove_file(directory.path().join("secrets/openai")).expect("remove secret");
+        let error = build_registry(
+            &reachable,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .err()
+        .expect("reachable provider requires its credential");
+        assert_eq!(error.code, EXIT_POLICY);
+        assert!(error.message.contains("secret file"));
+
+        let no_tasks = BTreeSet::new();
+        build_registry(
+            &reachable,
+            directory.path(),
+            &CancellationToken::new(),
+            Some(&no_tasks),
+        )
+        .await
+        .expect("reused provider task does not require its credential");
+
+        let unused = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: unused-secret }
+spec:
+  providers:
+    unused:
+      kind: openai
+      credential: { env: AGENTCTL_INTENTIONALLY_MISSING_UNUSED_KEY }
+  actions:
+    assign: { kind: builtin.assign }
+  tasks:
+    - id: local
+      uses: action:assign
+      with: { value: local }
+"#,
+            "unused.yaml",
+        )
+        .expect("unused workflow")
+        .workflow;
+        build_registry(&unused, directory.path(), &CancellationToken::new(), None)
+            .await
+            .expect("unused provider does not require a credential");
+
+        std::fs::write(
+            directory.path().join("secrets/openai"),
+            "embedding-secret\n",
+        )
+        .expect("embedding secret");
+        let memory_only = parse_workflow(
+            r#"
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata: { name: memory-secret }
+spec:
+  policy:
+    secretFileRoots: [secrets]
+    networkAllowlist: [127.0.0.1]
+    network: { allowPrivate: true }
+  providers:
+    embeddings:
+      kind: openai
+      endpoint: http://127.0.0.1:9/v1/responses
+      credential: { file: secrets/openai }
+  memory:
+    longTerm:
+      embedding:
+        provider: embeddings
+        model: text-embedding-3-small
+        dimensions: 256
+  actions:
+    search: { kind: builtin.long_term_memory.search }
+  tasks:
+    - id: search
+      uses: action:search
+      with: { query: durable, mode: vector }
+"#,
+            "memory.yaml",
+        )
+        .expect("memory workflow")
+        .workflow;
+        build_registry(
+            &memory_only,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("memory embedding credential preflight");
+        std::fs::remove_file(directory.path().join("secrets/openai"))
+            .expect("remove embedding secret");
+        let error = build_registry(
+            &memory_only,
+            directory.path(),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .err()
+        .expect("reachable memory embedding requires its credential");
+        assert_eq!(error.code, EXIT_POLICY);
     }
 }

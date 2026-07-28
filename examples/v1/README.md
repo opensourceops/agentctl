@@ -5,14 +5,24 @@ The deterministic examples are exercised by `cargo xtask verify` and never requi
 - `hello.yaml`: deterministic hello world and declared output.
 - `dataflow.yaml`: typed scalar/object templates.
 - `condition.yaml`: safe `when` equality and skipping.
+- `router.yaml`: typed route selection, explicit destinations, and durable skip decisions.
 - `check-diff.yaml`: predictable file diff without mutation under `run --check --diff`.
 - `approval.yaml`: durable approval-gated workspace mutation.
 - `policy-denial.yaml`: an explicit tool-policy denial.
 - `crash-resume.yaml`: effect-ledger write followed by observation; crash behavior is injected in runtime tests.
+- `parallel.yaml`: bounded parallel batches with disjoint working-memory writes and stable commits.
+- `process-isolation.yaml`: explicit host-process mode and a digest-pinned container-mode contract; container execution requires the referenced local image.
+- `resource-budget.yaml`: durable run-wide accounting and expected termination before a second provider dispatch.
+- `matrix.yaml`: bounded static matrix expansion, stable child identities, and ordered aggregation.
+- `loop.yaml`: bounded sequential iteration, stable boundaries, aggregation, and fail-closed exhaustion.
+- `subworkflow.yaml`: typed reusable graph expansion and namespaced recovery boundaries.
+- `compensation.yaml`: expected downstream failure followed by explicit source-linked compensation.
+- `structured-handoff.yaml`: two bounded agent roles connected by a typed durable handoff task.
+- `streaming.yaml`: bounded durable provider progress with isolated final JSON output.
 - `working-memory.yaml` and `long-term-memory.yaml`: separate memory lifecycles.
 - `fake-provider.yaml`: deterministic model-provider path.
 - `mcp.yaml` and `a2a.yaml`: local protocol fixtures, backed by the protocol crate's mock-server tests.
-- `example.pack.yaml` and `reusable-pack.yaml`: integrity-pinned local pack and executed packed action.
+- `example.pack.yaml` and `reusable-pack.yaml`: integrity-pinned local pack with an executed packed action and sub-workflow.
 - `secret-reference.yaml`: environment reference without inline secret material.
 - `capability-failure.yaml`: a workflow expected to fail during compilation.
 

@@ -25,7 +25,9 @@ The default exits `0` with verdict `pass`. Run with `--input checksPassed=false`
 
 ## State and security
 
-Use ordinary typed inputs for non-secret gate evidence. Inject provider secrets only by environment reference. Archive the database on failure only when its potentially confidential content is protected.
+Use ordinary typed inputs for non-secret gate evidence. Inject provider secrets
+only through typed environment or mounted-file references. Archive the database
+on failure only when its potentially confidential content is protected.
 
 ## Current limitation
 

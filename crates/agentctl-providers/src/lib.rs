@@ -1,30 +1,164 @@
 //! Native provider adapters for agentctl.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use agentctl_core::dsl::{ReasoningEffort, SecretReference};
+use agentctl_core::network::{HttpTransportSecurity, custom_ca_pem_is_valid};
 use agentctl_core::provider::{
-    ContentBlock, ContinuationState, FinishReason, Message, ModelProvider, ProviderError,
-    ProviderRequest, ProviderResponse, ToolCall, Usage,
+    ContentBlock, ContinuationState, EmbeddingProvider, FinishReason, Message, ModelProvider,
+    ProviderError, ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderStreamSink,
+    ToolCall, Usage,
 };
+use agentctl_core::secret::{SecretSourceResolver, SecretValue};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PROVIDER_STREAM_BYTES: usize = 8 * 1024 * 1024;
+const MAX_OPENAI_STATELESS_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub struct LocalHashEmbeddingProvider;
+
+#[async_trait]
+impl EmbeddingProvider for LocalHashEmbeddingProvider {
+    fn name(&self) -> &'static str {
+        "local_hash"
+    }
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError> {
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        agentctl_core::memory::local_hash_embedding(text, dimensions)
+            .map_err(|error| ProviderError::Malformed(error.to_string()))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FakeEmbeddingProvider;
+
+#[async_trait]
+impl EmbeddingProvider for FakeEmbeddingProvider {
+    fn name(&self) -> &'static str {
+        "fake"
+    }
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError> {
+        LocalHashEmbeddingProvider
+            .embed(text, dimensions, cancellation)
+            .await
+    }
+}
+
+#[derive(Clone)]
+pub struct OpenAiEmbeddingProvider {
+    client: Client,
+    config: HttpProviderConfig,
+    endpoint: Url,
+    model: String,
+}
+
+impl OpenAiEmbeddingProvider {
+    pub fn new(
+        config: HttpProviderConfig,
+        model: impl Into<String>,
+    ) -> Result<Self, ProviderError> {
+        let model = model.into();
+        if model.is_empty() {
+            return Err(ProviderError::Malformed(
+                "OpenAI embedding model must not be empty".to_owned(),
+            ));
+        }
+        let endpoint = openai_embeddings_endpoint(&config.endpoint)?;
+        Ok(Self {
+            client: secure_client(&config)?,
+            config,
+            endpoint,
+            model,
+        })
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiEmbeddingProvider {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    async fn embed(
+        &self,
+        text: &str,
+        dimensions: u16,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, ProviderError> {
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if text.is_empty() {
+            return Err(ProviderError::Malformed(
+                "OpenAI embedding input must not be empty".to_owned(),
+            ));
+        }
+        let credential = load_credential(&self.config, cancellation).await?;
+        let mut http = self
+            .client
+            .post(self.endpoint.clone())
+            .bearer_auth(credential.expose())
+            .json(&serde_json::json!({
+                "model": self.model,
+                "input": text,
+                "dimensions": dimensions,
+                "encoding_format": "float",
+            }));
+        for (name, value) in &self.config.headers {
+            http = http.header(name, value.expose());
+        }
+        if let Some(organization) = &self.config.organization {
+            http = http.header("OpenAI-Organization", organization);
+        }
+        if let Some(project) = &self.config.project {
+            http = http.header("OpenAI-Project", project);
+        }
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
+        parse_openai_embedding(&response, dimensions)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HttpProviderConfig {
     pub endpoint: String,
     pub credential: SecretReference,
+    pub resolved_credential: Option<SecretValue>,
+    pub credential_resolver: Option<Arc<dyn SecretSourceResolver>>,
     pub organization: Option<String>,
     pub project: Option<String>,
     pub api_version: Option<String>,
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, SecretValue>,
+    pub transport: HttpTransportSecurity,
 }
 
 impl HttpProviderConfig {
@@ -32,13 +166,14 @@ impl HttpProviderConfig {
     pub fn openai(credential_env: impl Into<String>) -> Self {
         Self {
             endpoint: "https://api.openai.com/v1/responses".to_owned(),
-            credential: SecretReference {
-                env: credential_env.into(),
-            },
+            credential: SecretReference::environment(credential_env),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: None,
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         }
     }
 
@@ -46,13 +181,14 @@ impl HttpProviderConfig {
     pub fn anthropic(credential_env: impl Into<String>) -> Self {
         Self {
             endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
-            credential: SecretReference {
-                env: credential_env.into(),
-            },
+            credential: SecretReference::environment(credential_env),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: None,
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         }
     }
 
@@ -60,23 +196,107 @@ impl HttpProviderConfig {
     pub fn google(credential_env: impl Into<String>) -> Self {
         Self {
             endpoint: "https://generativelanguage.googleapis.com/v1beta/models".to_owned(),
-            credential: SecretReference {
-                env: credential_env.into(),
-            },
+            credential: SecretReference::environment(credential_env),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: None,
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         }
     }
 }
 
-fn secure_client() -> Result<Client, ProviderError> {
-    Client::builder()
+fn secure_client(config: &HttpProviderConfig) -> Result<Client, ProviderError> {
+    let mut builder = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("agentctl/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(config.transport.connect_timeout);
+    if !config.transport.allow_proxy {
+        builder = builder.no_proxy();
+    }
+    if let Some(host) = &config.transport.resolved_host
+        && !config.transport.resolved_addresses.is_empty()
+    {
+        builder = builder.resolve_to_addrs(host, &config.transport.resolved_addresses);
+    }
+    if let Some(pem) = &config.transport.custom_ca_pem {
+        if !custom_ca_pem_is_valid(pem.expose()) {
+            return Err(ProviderError::Malformed(
+                "network custom CA PEM is invalid".to_owned(),
+            ));
+        }
+        let certificate = reqwest::Certificate::from_pem(pem.expose().as_bytes())
+            .map_err(|_| ProviderError::Malformed("network custom CA PEM is invalid".to_owned()))?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    builder
         .build()
         .map_err(|error| ProviderError::Malformed(error.to_string()))
+}
+
+fn openai_embeddings_endpoint(endpoint: &str) -> Result<Url, ProviderError> {
+    let mut endpoint = Url::parse(endpoint)
+        .map_err(|error| ProviderError::Malformed(format!("OpenAI endpoint: {error}")))?;
+    if endpoint.query().is_some() || endpoint.fragment().is_some() {
+        return Err(ProviderError::Malformed(
+            "OpenAI Responses endpoint must not contain a query or fragment".to_owned(),
+        ));
+    }
+    if endpoint.path_segments().and_then(Iterator::last) != Some("responses") {
+        return Err(ProviderError::Malformed(
+            "OpenAI endpoint path must end in `/responses`".to_owned(),
+        ));
+    }
+    {
+        let mut segments = endpoint.path_segments_mut().map_err(|()| {
+            ProviderError::Malformed("OpenAI endpoint cannot be a base URL".to_owned())
+        })?;
+        segments.pop_if_empty().pop();
+        segments.push("embeddings");
+    }
+    Ok(endpoint)
+}
+
+fn parse_openai_embedding(value: &Value, dimensions: u16) -> Result<Vec<f32>, ProviderError> {
+    let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
+        ProviderError::Malformed("embedding response is missing `data`".to_owned())
+    })?;
+    if data.len() != 1 || data[0].get("index").and_then(Value::as_u64) != Some(0) {
+        return Err(ProviderError::Malformed(
+            "embedding response must contain exactly one item at index 0".to_owned(),
+        ));
+    }
+    let values = data[0]
+        .get("embedding")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ProviderError::Malformed("embedding response is missing `embedding`".to_owned())
+        })?;
+    if values.len() != usize::from(dimensions) {
+        return Err(ProviderError::Malformed(format!(
+            "embedding response has {} dimensions, expected {dimensions}",
+            values.len()
+        )));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let value = value.as_f64().ok_or_else(|| {
+                ProviderError::Malformed(
+                    "embedding response contains a non-numeric value".to_owned(),
+                )
+            })? as f32;
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(ProviderError::Malformed(
+                    "embedding response contains a non-finite value".to_owned(),
+                ))
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -89,7 +309,7 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     pub fn new(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
             azure: false,
         })
@@ -97,7 +317,7 @@ impl OpenAiProvider {
 
     pub fn azure(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
             azure: true,
         })
@@ -115,7 +335,7 @@ impl ModelProvider for OpenAiProvider {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError> {
-        let credential = load_credential(&self.config.credential)?;
+        let credential = load_credential(&self.config, cancellation).await?;
         let endpoint = if self.azure {
             let separator = if self.config.endpoint.contains('?') {
                 '&'
@@ -132,12 +352,12 @@ impl ModelProvider for OpenAiProvider {
         };
         let mut http = self.client.post(endpoint).json(&openai_request(request)?);
         for (name, value) in &self.config.headers {
-            http = http.header(name, value);
+            http = http.header(name, value.expose());
         }
         http = if self.azure {
-            http.header("api-key", &credential)
+            http.header("api-key", credential.expose())
         } else {
-            http.bearer_auth(&credential)
+            http.bearer_auth(credential.expose())
         };
         if let Some(organization) = &self.config.organization {
             http = http.header("OpenAI-Organization", organization);
@@ -146,12 +366,75 @@ impl ModelProvider for OpenAiProvider {
             http = http.header("OpenAI-Project", project);
         }
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
-        parse_openai(response)
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
+        parse_openai(response, request)
+    }
+
+    async fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        sink: &dyn ProviderStreamSink,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let credential = load_credential(&self.config, cancellation).await?;
+        let endpoint = if self.azure {
+            let separator = if self.config.endpoint.contains('?') {
+                '&'
+            } else {
+                '?'
+            };
+            format!(
+                "{}{separator}api-version={}",
+                self.config.endpoint.trim_end_matches('/'),
+                self.config.api_version.as_deref().unwrap_or("v1")
+            )
+        } else {
+            self.config.endpoint.clone()
+        };
+        let mut body = openai_request(request)?;
+        body.as_object_mut()
+            .expect("OpenAI request is always an object")
+            .insert("stream".to_owned(), Value::Bool(true));
+        let mut http = self
+            .client
+            .post(endpoint)
+            .header("Accept", "text/event-stream")
+            .json(&body);
+        for (name, value) in &self.config.headers {
+            http = http.header(name, value.expose());
+        }
+        http = if self.azure {
+            http.header("api-key", credential.expose())
+        } else {
+            http.bearer_auth(credential.expose())
+        };
+        if let Some(organization) = &self.config.organization {
+            http = http.header("OpenAI-Organization", organization);
+        }
+        if let Some(project) = &self.config.project {
+            http = http.header("OpenAI-Project", project);
+        }
+        let secrets = configured_secrets(&credential, &self.config.headers);
+        let response = send_openai_stream(
+            http,
+            sink,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
+        parse_openai(response, request)
     }
 }
 
 fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
+    let store = openai_store_enabled(request);
     let mut body = Map::from_iter([
         ("model".to_owned(), Value::String(request.model.clone())),
         (
@@ -162,18 +445,15 @@ fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
             "max_output_tokens".to_owned(),
             Value::from(request.max_output_tokens),
         ),
-        (
-            "store".to_owned(),
-            Value::Bool(
-                request
-                    .provider_options
-                    .get("store")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
-            ),
-        ),
+        ("store".to_owned(), Value::Bool(store)),
         ("input".to_owned(), Value::Array(openai_input(request)?)),
     ]);
+    if !store {
+        body.insert(
+            "include".to_owned(),
+            serde_json::json!(["reasoning.encrypted_content"]),
+        );
+    }
     if !request.tools.is_empty() {
         body.insert(
             "tools".to_owned(),
@@ -262,7 +542,26 @@ fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
             Value::String(identifier.to_owned()),
         );
     }
-    Ok(Value::Object(body))
+    let body = Value::Object(body);
+    if !store {
+        let size = serde_json::to_vec(&body)
+            .map_err(|error| ProviderError::Malformed(error.to_string()))?
+            .len();
+        if size > MAX_OPENAI_STATELESS_INPUT_BYTES {
+            return Err(ProviderError::Malformed(format!(
+                "stateless OpenAI input exceeds {MAX_OPENAI_STATELESS_INPUT_BYTES} bytes"
+            )));
+        }
+    }
+    Ok(body)
+}
+
+fn openai_store_enabled(request: &ProviderRequest) -> bool {
+    request
+        .provider_options
+        .get("store")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> {
@@ -286,19 +585,20 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
                             "type": "input_text",
                             "text": value
                         })),
-                        ContentBlock::ToolResult { id, output: value, .. } => output.push(
-                            serde_json::json!({
+                        ContentBlock::ToolResult {
+                            id, output: value, ..
+                        } => {
+                            flush_openai_text(&mut output, "user", &mut text);
+                            output.push(serde_json::json!({
                                 "type": "function_call_output",
                                 "call_id": id,
                                 "output": serde_json::to_string(value).map_err(|error| ProviderError::Malformed(error.to_string()))?
-                            }),
-                        ),
+                            }));
+                        }
                         ContentBlock::ToolCall { .. } | ContentBlock::OpaqueReasoning { .. } => {}
                     }
                 }
-                if !text.is_empty() {
-                    output.push(serde_json::json!({"role": "user", "content": text}));
-                }
+                flush_openai_text(&mut output, "user", &mut text);
             }
             Message::Assistant(blocks) if !only_latest_tool_results => {
                 let mut text = Vec::new();
@@ -310,19 +610,23 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
                         })),
                         ContentBlock::ToolCall {
                             id, name, input, ..
-                        } => output.push(serde_json::json!({
-                            "type": "function_call",
-                            "call_id": id,
-                            "name": name,
-                            "arguments": serde_json::to_string(input).map_err(|error| ProviderError::Malformed(error.to_string()))?
-                        })),
-                        ContentBlock::OpaqueReasoning { value } => output.push(value.clone()),
+                        } => {
+                            flush_openai_text(&mut output, "assistant", &mut text);
+                            output.push(serde_json::json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": name,
+                                "arguments": serde_json::to_string(input).map_err(|error| ProviderError::Malformed(error.to_string()))?
+                            }));
+                        }
+                        ContentBlock::OpaqueReasoning { value } => {
+                            flush_openai_text(&mut output, "assistant", &mut text);
+                            output.push(value.clone());
+                        }
                         ContentBlock::ToolResult { .. } => {}
                     }
                 }
-                if !text.is_empty() {
-                    output.push(serde_json::json!({"role": "assistant", "content": text}));
-                }
+                flush_openai_text(&mut output, "assistant", &mut text);
             }
             Message::Assistant(_) => {}
         }
@@ -330,7 +634,16 @@ fn openai_input(request: &ProviderRequest) -> Result<Vec<Value>, ProviderError> 
     Ok(output)
 }
 
-fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
+fn flush_openai_text(output: &mut Vec<Value>, role: &str, text: &mut Vec<Value>) {
+    if !text.is_empty() {
+        output.push(serde_json::json!({"role": role, "content": std::mem::take(text)}));
+    }
+}
+
+fn parse_openai(
+    value: Value,
+    request: &ProviderRequest,
+) -> Result<ProviderResponse, ProviderError> {
     let response_id = value
         .get("id")
         .and_then(Value::as_str)
@@ -392,9 +705,21 @@ fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
                     provider_metadata: None,
                 });
             }
-            Some("reasoning") => assistant_content.push(ContentBlock::OpaqueReasoning {
-                value: item.clone(),
-            }),
+            Some("reasoning") => {
+                if !openai_store_enabled(request)
+                    && item
+                        .get("encrypted_content")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
+                    return Err(ProviderError::Malformed(
+                        "stateless reasoning item missing encrypted_content".to_owned(),
+                    ));
+                }
+                assistant_content.push(ContentBlock::OpaqueReasoning {
+                    value: item.clone(),
+                });
+            }
             _ => {}
         }
     }
@@ -408,10 +733,17 @@ fn parse_openai(value: Value) -> Result<ProviderResponse, ProviderError> {
         FinishReason::Complete
     };
     let usage = value.get("usage").cloned().unwrap_or(Value::Null);
-    Ok(ProviderResponse {
-        continuation: response_id
+    let continuation = if openai_store_enabled(request) {
+        response_id
             .clone()
-            .map(ContinuationState::OpenaiPreviousResponse),
+            .map(ContinuationState::OpenaiPreviousResponse)
+    } else {
+        let mut history = request.messages.clone();
+        history.push(Message::Assistant(assistant_content.clone()));
+        Some(ContinuationState::Conversation(history))
+    };
+    Ok(ProviderResponse {
+        continuation,
         response_id,
         text,
         tool_calls,
@@ -441,7 +773,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
         })
     }
@@ -458,7 +790,7 @@ impl ModelProvider for AnthropicProvider {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError> {
-        let credential = load_credential(&self.config.credential)?;
+        let credential = load_credential(&self.config, cancellation).await?;
         let http = self
             .client
             .post(&self.config.endpoint)
@@ -467,12 +799,20 @@ impl ModelProvider for AnthropicProvider {
             .config
             .headers
             .iter()
-            .fold(http, |request, (name, value)| request.header(name, value));
+            .fold(http, |request, (name, value)| {
+                request.header(name, value.expose())
+            });
         let http = http
-            .header("x-api-key", &credential)
+            .header("x-api-key", credential.expose())
             .header("anthropic-version", ANTHROPIC_VERSION);
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_anthropic(response, request)
     }
 }
@@ -647,7 +987,7 @@ pub struct GoogleProvider {
 impl GoogleProvider {
     pub fn new(config: HttpProviderConfig) -> Result<Self, ProviderError> {
         Ok(Self {
-            client: secure_client()?,
+            client: secure_client(&config)?,
             config,
         })
     }
@@ -664,7 +1004,7 @@ impl ModelProvider for GoogleProvider {
         request: &ProviderRequest,
         cancellation: &CancellationToken,
     ) -> Result<ProviderResponse, ProviderError> {
-        let credential = load_credential(&self.config.credential)?;
+        let credential = load_credential(&self.config, cancellation).await?;
         let endpoint = format!(
             "{}/{}:generateContent",
             self.config.endpoint.trim_end_matches('/'),
@@ -675,10 +1015,18 @@ impl ModelProvider for GoogleProvider {
             .config
             .headers
             .iter()
-            .fold(http, |request, (name, value)| request.header(name, value));
-        let http = http.header("x-goog-api-key", &credential);
+            .fold(http, |request, (name, value)| {
+                request.header(name, value.expose())
+            });
+        let http = http.header("x-goog-api-key", credential.expose());
         let secrets = configured_secrets(&credential, &self.config.headers);
-        let response = send(http, cancellation, &secrets).await?;
+        let response = send(
+            http,
+            cancellation,
+            &secrets,
+            self.config.transport.max_response_bytes,
+        )
+        .await?;
         parse_google(response, request)
     }
 }
@@ -1005,12 +1353,226 @@ impl ModelProvider for FakeProvider {
             finish_reason: FinishReason::Complete,
         })
     }
+
+    async fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        sink: &dyn ProviderStreamSink,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderError> {
+        sink.emit(ProviderStreamEvent {
+            event_type: "response.created".to_owned(),
+            provider_sequence: Some(0),
+            payload: serde_json::json!({"responseId": "fake-response", "status": "in_progress"}),
+        })
+        .await?;
+        let response = self.complete(request, cancellation).await?;
+        let characters = response.text.chars().collect::<Vec<_>>();
+        for (index, chunk) in characters.chunks(8).enumerate() {
+            let delta = chunk.iter().collect::<String>();
+            sink.emit(ProviderStreamEvent {
+                event_type: "response.output_text.delta".to_owned(),
+                provider_sequence: Some(u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1)),
+                payload: serde_json::json!({"delta": delta}),
+            })
+            .await?;
+        }
+        sink.emit(ProviderStreamEvent {
+            event_type: "response.completed".to_owned(),
+            provider_sequence: None,
+            payload: serde_json::json!({
+                "responseId": response.response_id,
+                "status": "completed",
+                "finishReason": response.finish_reason,
+            }),
+        })
+        .await?;
+        Ok(response)
+    }
+}
+
+async fn send_openai_stream(
+    request: reqwest::RequestBuilder,
+    sink: &dyn ProviderStreamSink,
+    cancellation: &CancellationToken,
+    secrets: &[&str],
+    max_response_bytes: usize,
+) -> Result<Value, ProviderError> {
+    let response = tokio::select! {
+        response = request.send() => response.map_err(normalize_transport)?,
+        () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+    };
+    let status = response.status();
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .or_else(|| response.headers().get("request-id"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unavailable");
+    let mut request_id = redact_text(request_id, secrets);
+    request_id.truncate(512);
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let mut received = 0_usize;
+    let mut terminal = None;
+    loop {
+        let next = tokio::select! {
+            next = stream.next() => next,
+            () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+        };
+        let Some(chunk) = next else { break };
+        let chunk = chunk.map_err(normalize_transport)?;
+        received = received.saturating_add(chunk.len());
+        let limit = MAX_PROVIDER_STREAM_BYTES.min(max_response_bytes);
+        if received > limit {
+            return Err(ProviderError::Malformed(format!(
+                "stream exceeds {limit} bytes"
+            )));
+        }
+        buffer.extend_from_slice(&chunk);
+        for value in drain_sse_events(&mut buffer)? {
+            let event_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ProviderError::Malformed("stream event is missing `type`".to_owned())
+                })?
+                .to_owned();
+            let provider_sequence = value.get("sequence_number").and_then(Value::as_u64);
+            let mut safe = value.clone();
+            redact_value(&mut safe, secrets);
+            let payload = stream_event_payload(&event_type, &safe);
+            sink.emit(ProviderStreamEvent {
+                event_type: event_type.clone(),
+                provider_sequence,
+                payload,
+            })
+            .await?;
+            match event_type.as_str() {
+                "response.completed" | "response.incomplete" => {
+                    terminal = safe.get("response").cloned();
+                }
+                "response.failed" | "error" => {
+                    let message = value
+                        .pointer("/response/error/message")
+                        .or_else(|| value.pointer("/error/message"))
+                        .or_else(|| value.get("message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("OpenAI streaming response failed");
+                    let mut message = redact_text(message, secrets);
+                    message.truncate(512);
+                    return Err(ProviderError::Http {
+                        status: status.as_u16(),
+                        message,
+                        request_id,
+                        retryable: false,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    if !status.is_success() {
+        let mut body: Value = serde_json::from_slice(&buffer)
+            .unwrap_or_else(|_| serde_json::json!({"message": "provider request failed"}));
+        redact_value(&mut body, secrets);
+        let message = body
+            .pointer("/error/message")
+            .or_else(|| body.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("provider request failed");
+        let mut message = redact_text(message, secrets);
+        message.truncate(512);
+        return Err(ProviderError::Http {
+            status: status.as_u16(),
+            message,
+            request_id,
+            retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+        });
+    }
+    if !content_type.starts_with("text/event-stream") {
+        return Err(ProviderError::Malformed(format!(
+            "streaming response used unexpected content type `{content_type}`"
+        )));
+    }
+    if !buffer.iter().all(u8::is_ascii_whitespace) {
+        return Err(ProviderError::Malformed(
+            "stream ended with an incomplete SSE event".to_owned(),
+        ));
+    }
+    terminal.ok_or_else(|| {
+        ProviderError::Malformed("stream ended before a terminal response event".to_owned())
+    })
+}
+
+fn sse_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+    bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4))
+        .or_else(|| {
+            bytes
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|position| (position, 2))
+        })
+}
+
+fn drain_sse_events(buffer: &mut Vec<u8>) -> Result<Vec<Value>, ProviderError> {
+    let mut events = Vec::new();
+    while let Some((boundary, delimiter_length)) = sse_boundary(buffer) {
+        let frame = buffer.drain(..boundary).collect::<Vec<_>>();
+        buffer.drain(..delimiter_length);
+        if let Some(value) = parse_sse_frame(&frame)? {
+            events.push(value);
+        }
+    }
+    Ok(events)
+}
+
+fn parse_sse_frame(frame: &[u8]) -> Result<Option<Value>, ProviderError> {
+    let text = std::str::from_utf8(frame)
+        .map_err(|error| ProviderError::Malformed(format!("SSE UTF-8: {error}")))?;
+    let data = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if data.is_empty() || data == "[DONE]" {
+        return Ok(None);
+    }
+    serde_json::from_str(&data)
+        .map(Some)
+        .map_err(|error| ProviderError::Malformed(format!("SSE data: {error}")))
+}
+
+fn stream_event_payload(event_type: &str, event: &Value) -> Value {
+    match event_type {
+        "response.created"
+        | "response.in_progress"
+        | "response.completed"
+        | "response.incomplete"
+        | "response.failed" => serde_json::json!({
+            "responseId": event.pointer("/response/id"),
+            "status": event.pointer("/response/status"),
+            "error": event.pointer("/response/error"),
+        }),
+        _ => event.clone(),
+    }
 }
 
 async fn send(
     request: reqwest::RequestBuilder,
     cancellation: &CancellationToken,
     secrets: &[&str],
+    max_response_bytes: usize,
 ) -> Result<Value, ProviderError> {
     let response = tokio::select! {
         response = request.send() => response.map_err(normalize_transport)?,
@@ -1034,19 +1596,22 @@ async fn send(
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(normalize_transport)?;
-        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
+        let limit = MAX_PROVIDER_RESPONSE_BYTES.min(max_response_bytes);
+        if bytes.len().saturating_add(chunk.len()) > limit {
             return Err(ProviderError::Malformed(format!(
-                "response exceeds {MAX_PROVIDER_RESPONSE_BYTES} bytes"
+                "response exceeds {limit} bytes"
             )));
         }
         bytes.extend_from_slice(&chunk);
     }
-    let mut body: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| ProviderError::Malformed(error.to_string()))?;
-    redact_value(&mut body, secrets);
     if status.is_success() {
+        let mut body: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| ProviderError::Malformed(error.to_string()))?;
+        redact_value(&mut body, secrets);
         Ok(body)
     } else {
+        let mut body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        redact_value(&mut body, secrets);
         let message = body
             .pointer("/error/message")
             .or_else(|| body.get("message"))
@@ -1064,11 +1629,11 @@ async fn send(
 }
 
 fn configured_secrets<'a>(
-    credential: &'a str,
-    headers: &'a BTreeMap<String, String>,
+    credential: &'a SecretValue,
+    headers: &'a BTreeMap<String, SecretValue>,
 ) -> Vec<&'a str> {
-    std::iter::once(credential)
-        .chain(headers.values().map(String::as_str))
+    std::iter::once(credential.expose())
+        .chain(headers.values().map(SecretValue::expose))
         .filter(|secret| !secret.is_empty())
         .collect()
 }
@@ -1114,12 +1679,35 @@ fn normalize_transport(error: reqwest::Error) -> ProviderError {
     }
 }
 
-fn load_credential(reference: &SecretReference) -> Result<String, ProviderError> {
-    #[cfg(test)]
-    if reference.env == "AGENTCTL_PROVIDER_TEST_KEY" {
-        return Ok("test-key".to_owned());
+async fn load_credential(
+    config: &HttpProviderConfig,
+    cancellation: &CancellationToken,
+) -> Result<SecretValue, ProviderError> {
+    if let Some(credential) = &config.resolved_credential {
+        return Ok(credential.clone());
     }
-    std::env::var(&reference.env).map_err(|_| ProviderError::Authentication(reference.env.clone()))
+    if let Some(resolver) = &config.credential_resolver {
+        return resolver
+            .resolve_secret(&config.credential, cancellation)
+            .await
+            .map_err(ProviderError::Authentication);
+    }
+    #[cfg(test)]
+    if matches!(
+        &config.credential,
+        SecretReference::Environment { env } if env == "AGENTCTL_PROVIDER_TEST_KEY"
+    ) {
+        return Ok(SecretValue::from("test-key"));
+    }
+    match &config.credential {
+        SecretReference::Environment { env } => std::env::var(env)
+            .map(SecretValue::new)
+            .map_err(|_| ProviderError::Authentication(env.clone())),
+        reference => Err(ProviderError::Authentication(format!(
+            "{} was not resolved by the runtime",
+            reference.source_description()
+        ))),
+    }
 }
 
 fn required_field(value: &Value, field: &str) -> Result<String, ProviderError> {
@@ -1162,6 +1750,40 @@ mod tests {
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDETCCAfmgAwIBAgIUQHzD3SnUaJsT7HKOkZH+TTIuqbswDQYJKoZIhvcNAQEL
+BQAwGDEWMBQGA1UEAwwNYWdlbnRjdGwudGVzdDAeFw0yNjA3MjcwNjM0NThaFw0y
+NjA3MjgwNjM0NThaMBgxFjAUBgNVBAMMDWFnZW50Y3RsLnRlc3QwggEiMA0GCSqG
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQC28TUKNYIA6cu3Vf8Vqmvpa3xGS41x4Z1f
+x5wlLUF3LH+aS2xrEvkdxxgwVpNGPXGymPtKepInAtaHWgrcY7EF1iRpOr3IFD81
+iUoK1MjNUtBu2Aq6M77hsK89473X0BIIE5ECsoHCaO7m8MwBQu1b1T7eleo0qADH
+VFAxDjZl4ZB/SHzr1hW8Z/tK9aQ5T2fGGJRmlH2K13JiRcqW4mB5WOUkBFQxUF/9
+GUhBPVvftEZphAKNNlTRyFe0mIbmC5tq66aoNd1baYufP+0ptd+5y9nIqx1Qltw1
+2Am5GkFZEYKgSjztsS5qtMtAsUh0oYekIHA6MGOmsJu5gxNsy/d/AgMBAAGjUzBR
+MB0GA1UdDgQWBBRiEXFf6JE+ppbbI8XNoS69EZAjVTAfBgNVHSMEGDAWgBRiEXFf
+6JE+ppbbI8XNoS69EZAjVTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUA
+A4IBAQAv63jTIpJzZ4qpEVHdhJFqhbPN0lHcGoWKptujN7nk4towPkmktZPh1ypL
+VgG4uoBeBR47vHPorQRKktk00DD9YXd6JYMALUpBXevukXIi6kuaqr2w4PqVJB5C
+rBy+W0yvWag6hv7/ptDWvfJrYTV2dzOgNpS2/NUms2SaQTXNooail1UyVj+PeoFX
+T2gIwaJA5cZGocMC1/dspskyV2a32eH51bbobwdMbYrfqujWvSV2CX954r+eSfu8
+Nae+Wpy1dTP85fXTHRBmfJooV1sQPVbZEBGYiv1bbLnLVyxl0Vl5s7FGLevIUTF4
+CtKEl+CNRhcXc/b/4bqdwn9pC6iT
+-----END CERTIFICATE-----"#;
+
+    #[derive(Default)]
+    struct RecordingStreamSink(Mutex<Vec<ProviderStreamEvent>>);
+
+    #[async_trait]
+    impl ProviderStreamSink for RecordingStreamSink {
+        async fn emit(&self, event: ProviderStreamEvent) -> Result<(), ProviderError> {
+            self.0
+                .lock()
+                .map_err(|_| ProviderError::Malformed("recording sink poisoned".to_owned()))?
+                .push(event);
+            Ok(())
+        }
+    }
+
     fn request() -> ProviderRequest {
         ProviderRequest {
             model: "test-model".to_owned(),
@@ -1189,7 +1811,6 @@ mod tests {
                 network_requirements: Vec::new(),
                 approval: ApprovalRequirement::Never,
                 observability: Value::Null,
-                compensation: None,
             }],
             max_output_tokens: 64,
             reasoning: None,
@@ -1239,6 +1860,10 @@ mod tests {
         ]);
         let body = openai_request(&request).expect("request mapping");
         assert_eq!(body["store"], false);
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
         assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["reasoning"]["effort"], "max");
         assert_eq!(body["reasoning"]["mode"], "pro");
@@ -1251,14 +1876,18 @@ mod tests {
 
     #[test]
     fn openai_preserves_multiple_function_call_ids() {
-        let response = parse_openai(serde_json::json!({
-            "id": "resp_tools",
-            "status": "completed",
-            "output": [
-                {"type": "function_call", "call_id": "call-a", "name": "echo", "arguments": "{\"text\":\"a\"}"},
-                {"type": "function_call", "call_id": "call-b", "name": "echo", "arguments": "{\"text\":\"b\"}"}
-            ]
-        }))
+        let request = request();
+        let response = parse_openai(
+            serde_json::json!({
+                "id": "resp_tools",
+                "status": "completed",
+                "output": [
+                    {"type": "function_call", "call_id": "call-a", "name": "echo", "arguments": "{\"text\":\"a\"}"},
+                    {"type": "function_call", "call_id": "call-b", "name": "echo", "arguments": "{\"text\":\"b\"}"}
+                ]
+            }),
+            &request,
+        )
         .expect("valid multiple function calls");
         assert_eq!(response.finish_reason, FinishReason::ToolCalls);
         assert_eq!(response.tool_calls.len(), 2);
@@ -1270,6 +1899,121 @@ mod tests {
                 "resp_tools".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn openai_replays_stateless_reasoning_and_tool_items_in_order() {
+        let mut first = request();
+        first
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        let response = parse_openai(
+            serde_json::json!({
+                "id": "resp_stateless",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "encrypted_content": "encrypted-reasoning",
+                        "summary": []
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-stateless",
+                        "name": "echo",
+                        "arguments": "{\"text\":\"hello\"}"
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-stateless-2",
+                        "name": "echo",
+                        "arguments": "{\"text\":\"again\"}"
+                    }
+                ]
+            }),
+            &first,
+        )
+        .expect("stateless response");
+        assert!(matches!(
+            response.continuation,
+            Some(ContinuationState::Conversation(_))
+        ));
+
+        let mut second = first.clone();
+        second
+            .messages
+            .push(Message::Assistant(response.assistant_content.clone()));
+        second.messages.push(Message::User(vec![
+            ContentBlock::ToolResult {
+                id: "call-stateless".to_owned(),
+                output: serde_json::json!({"text": "hello"}),
+                is_error: false,
+            },
+            ContentBlock::ToolResult {
+                id: "call-stateless-2".to_owned(),
+                output: serde_json::json!({"text": "again"}),
+                is_error: false,
+            },
+        ]));
+        second.continuation = response.continuation;
+        let body = openai_request(&second).expect("stateless continuation request");
+        assert_eq!(body["store"], false);
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        assert!(body.get("previous_response_id").is_none());
+        let input = body["input"].as_array().expect("input items");
+        assert_eq!(input.len(), 6);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["encrypted_content"], "encrypted-reasoning");
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["call_id"], "call-stateless");
+        assert_eq!(input[3]["type"], "function_call");
+        assert_eq!(input[3]["call_id"], "call-stateless-2");
+        assert_eq!(input[4]["type"], "function_call_output");
+        assert_eq!(input[4]["call_id"], "call-stateless");
+        assert_eq!(input[5]["type"], "function_call_output");
+        assert_eq!(input[5]["call_id"], "call-stateless-2");
+    }
+
+    #[test]
+    fn openai_rejects_stateless_reasoning_without_encrypted_content() {
+        let mut request = request();
+        request
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        let result = parse_openai(
+            serde_json::json!({
+                "id": "resp_stateless",
+                "status": "completed",
+                "output": [{"type": "reasoning", "id": "rs_1", "summary": []}]
+            }),
+            &request,
+        );
+        assert!(matches!(
+            result,
+            Err(ProviderError::Malformed(message))
+                if message.contains("missing encrypted_content")
+        ));
+    }
+
+    #[test]
+    fn openai_bounds_stateless_continuation_input() {
+        let mut request = request();
+        request
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        request.messages = vec![Message::User(vec![ContentBlock::Text {
+            text: "x".repeat(MAX_OPENAI_STATELESS_INPUT_BYTES),
+        }])];
+        assert!(matches!(
+            openai_request(&request),
+            Err(ProviderError::Malformed(message))
+                if message.contains("stateless OpenAI input exceeds")
+        ));
     }
 
     #[tokio::test]
@@ -1305,6 +2049,170 @@ mod tests {
         assert_eq!(response.usage.cache_read_tokens, 3);
         assert_eq!(response.usage.cache_write_tokens, 5);
         assert_eq!(response.usage.reasoning_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn provider_transport_pins_the_authorized_dns_answer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_pinned",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "pinned"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!(
+            "http://agentctl.test:{}/v1/responses",
+            server.address().port()
+        );
+        config.transport.resolved_host = Some("agentctl.test".to_owned());
+        config.transport.resolved_addresses = vec![*server.address()];
+
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete(&request(), &CancellationToken::new())
+            .await
+            .expect("pinned response");
+        assert_eq!(response.text, "pinned");
+    }
+
+    #[tokio::test]
+    async fn provider_transport_rejects_redirects_and_oversized_responses() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/redirect"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}/redirected", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/redirected"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut redirect = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        redirect.endpoint = format!("{}/redirect", server.uri());
+        assert!(matches!(
+            OpenAiProvider::new(redirect)
+                .expect("provider")
+                .complete(&request(), &CancellationToken::new())
+                .await,
+            Err(ProviderError::Http { status: 307, .. })
+        ));
+
+        Mock::given(method("POST"))
+            .and(path("/oversized"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_oversized",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "x".repeat(1024)}]}]
+            })))
+            .mount(&server)
+            .await;
+        let mut oversized = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        oversized.endpoint = format!("{}/oversized", server.uri());
+        oversized.transport.max_response_bytes = 128;
+        assert!(matches!(
+            OpenAiProvider::new(oversized)
+                .expect("provider")
+                .complete(&request(), &CancellationToken::new())
+                .await,
+            Err(ProviderError::Malformed(message)) if message.contains("response exceeds 128 bytes")
+        ));
+        server.verify().await;
+    }
+
+    #[test]
+    fn provider_transport_accepts_a_certificate_bundle_and_rejects_invalid_ca() {
+        let mut valid = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        valid.transport.custom_ca_pem = Some(SecretValue::from(TEST_CA_PEM));
+        assert!(OpenAiProvider::new(valid).is_ok());
+
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.transport.custom_ca_pem = Some(SecretValue::from("not a PEM certificate"));
+        match OpenAiProvider::new(config) {
+            Err(ProviderError::Malformed(message)) => {
+                assert_eq!(message, "network custom CA PEM is invalid");
+            }
+            Err(error) => panic!("unexpected custom CA error: {error}"),
+            Ok(_) => panic!("invalid custom CA was accepted"),
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_streams_typed_sse_and_returns_the_terminal_response() {
+        let server = MockServer::start().await;
+        let mut expected = openai_request(&request()).expect("request mapping");
+        expected["stream"] = Value::Bool(true);
+        let response = serde_json::json!({
+            "id": "resp_stream",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "hello"}]
+            }],
+            "usage": {"input_tokens": 2, "output_tokens": 1}
+        });
+        let body = format!(
+            "event: response.created\r\ndata: {}\r\n\r\nevent: response.output_text.delta\r\ndata: {}\r\n\r\nevent: response.completed\r\ndata: {}\r\n\r\n",
+            serde_json::json!({
+                "type": "response.created",
+                "sequence_number": 0,
+                "response": {"id": "resp_stream", "status": "in_progress"}
+            }),
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "delta": "hello"
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "sequence_number": 2,
+                "response": response
+            }),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("accept", "text/event-stream"))
+            .and(body_json(expected))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        let sink = RecordingStreamSink::default();
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete_streaming(&request(), &sink, &CancellationToken::new())
+            .await
+            .expect("stream response");
+
+        assert_eq!(response.text, "hello");
+        let events = sink.0.lock().expect("events");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[1].event_type, "response.output_text.delta");
+        assert_eq!(events[1].payload["delta"], "hello");
+        assert_eq!(events[2].payload["responseId"], "resp_stream");
+    }
+
+    #[test]
+    fn fragmented_sse_frames_wait_for_a_complete_boundary() {
+        let mut buffer =
+            b"event: response.output_text.delta\ndata: {\"type\":\"response.output".to_vec();
+        assert!(drain_sse_events(&mut buffer).expect("partial").is_empty());
+        buffer.extend_from_slice(b"_text.delta\",\"delta\":\"ok\"}\n\n");
+        let events = drain_sse_events(&mut buffer).expect("complete");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["delta"], "ok");
+        assert!(buffer.is_empty());
     }
 
     #[tokio::test]
@@ -1440,13 +2348,14 @@ mod tests {
             .await;
         let config = HttpProviderConfig {
             endpoint: format!("{}/openai/v1/responses", server.uri()),
-            credential: SecretReference {
-                env: "AGENTCTL_PROVIDER_TEST_KEY".to_owned(),
-            },
+            credential: SecretReference::environment("AGENTCTL_PROVIDER_TEST_KEY"),
+            resolved_credential: None,
+            credential_resolver: None,
             organization: None,
             project: None,
             api_version: Some("v1".to_owned()),
             headers: BTreeMap::new(),
+            transport: HttpTransportSecurity::default(),
         };
         let response = OpenAiProvider::azure(config)
             .expect("provider")
@@ -1474,7 +2383,7 @@ mod tests {
         config.endpoint = format!("{}/v1/responses", server.uri());
         config
             .headers
-            .insert("x-custom-auth".to_owned(), "header-secret".to_owned());
+            .insert("x-custom-auth".to_owned(), "header-secret".into());
         let error = OpenAiProvider::new(config)
             .expect("provider")
             .complete(&request(), &CancellationToken::new())
@@ -1516,7 +2425,7 @@ mod tests {
         config.endpoint = format!("{}/v1/responses", server.uri());
         config
             .headers
-            .insert("x-custom-auth".to_owned(), "header-secret".to_owned());
+            .insert("x-custom-auth".to_owned(), "header-secret".into());
         let response = OpenAiProvider::new(config)
             .expect("provider")
             .complete(&request(), &CancellationToken::new())
@@ -1526,6 +2435,54 @@ mod tests {
         assert!(!serialized.contains("header-secret"));
         assert!(!serialized.contains("test-key"));
         assert_eq!(response.text, "echo [REDACTED] and [REDACTED]");
+    }
+
+    #[tokio::test]
+    async fn runtime_resolved_non_environment_credential_is_used_and_redacted() {
+        #[derive(Debug)]
+        struct FixtureSecretResolver;
+
+        #[async_trait]
+        impl SecretSourceResolver for FixtureSecretResolver {
+            async fn resolve_secret(
+                &self,
+                _reference: &SecretReference,
+                _cancellation: &CancellationToken,
+            ) -> Result<SecretValue, String> {
+                Ok(SecretValue::from("resolved-file-secret"))
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(header("authorization", "Bearer resolved-file-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_resolved-file-secret",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "resolved-file-secret"}]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("unused");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        config.credential = SecretReference::File {
+            file: "/run/secrets/openai".to_owned(),
+        };
+        config.credential_resolver = Some(Arc::new(FixtureSecretResolver));
+        let response = OpenAiProvider::new(config)
+            .expect("provider")
+            .complete(&request(), &CancellationToken::new())
+            .await
+            .expect("response");
+        assert_eq!(response.text, "[REDACTED]");
+        assert!(
+            !serde_json::to_string(&response)
+                .expect("response json")
+                .contains("resolved-file-secret")
+        );
     }
 
     #[tokio::test]
@@ -1584,5 +2541,122 @@ mod tests {
             .complete(&request(), &token)
             .await;
         assert!(matches!(result, Err(ProviderError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_use_the_documented_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_json(serde_json::json!({
+                "model": "text-embedding-3-small",
+                "input": "durable semantic memory",
+                "dimensions": 8,
+                "encoding_format": "float",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": "list",
+                "data": [{
+                    "object": "embedding",
+                    "embedding": [0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4],
+                    "index": 0
+                }],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 3, "total_tokens": 3}
+            })))
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        let embedding = OpenAiEmbeddingProvider::new(config, "text-embedding-3-small")
+            .expect("provider")
+            .embed("durable semantic memory", 8, &CancellationToken::new())
+            .await
+            .expect("embedding");
+        assert_eq!(embedding.len(), 8);
+        assert_eq!(embedding[0], 0.1_f32);
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_fail_closed_and_redact_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"embedding": [0.1, 0.2], "index": 0}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", server.uri());
+        let provider =
+            OpenAiEmbeddingProvider::new(config, "text-embedding-3-small").expect("provider");
+        let error = provider
+            .embed("wrong dimensions", 8, &CancellationToken::new())
+            .await
+            .expect_err("dimension mismatch");
+        assert!(matches!(error, ProviderError::Malformed(_)));
+
+        let secret_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": {"message": "invalid test-key"}
+            })))
+            .mount(&secret_server)
+            .await;
+        let mut config = HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY");
+        config.endpoint = format!("{}/v1/responses", secret_server.uri());
+        let error = OpenAiEmbeddingProvider::new(config, "text-embedding-3-small")
+            .expect("provider")
+            .embed("redact", 8, &CancellationToken::new())
+            .await
+            .expect_err("authentication error");
+        assert!(error.to_string().contains("[REDACTED]"));
+        assert!(!error.to_string().contains("test-key"));
+
+        assert!(
+            OpenAiEmbeddingProvider::new(
+                HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY"),
+                ""
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_honor_precancelled_requests() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = OpenAiEmbeddingProvider::new(
+            HttpProviderConfig::openai("AGENTCTL_PROVIDER_TEST_KEY"),
+            "text-embedding-3-small",
+        )
+        .expect("provider")
+        .embed("cancelled", 8, &cancellation)
+        .await;
+        assert!(matches!(result, Err(ProviderError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn fake_embeddings_are_deterministic_and_cancellable() {
+        let provider = FakeEmbeddingProvider;
+        let first = provider
+            .embed("durable semantic memory", 64, &CancellationToken::new())
+            .await
+            .expect("embedding");
+        let second = provider
+            .embed("durable semantic memory", 64, &CancellationToken::new())
+            .await
+            .expect("embedding");
+        assert_eq!(first, second);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            provider.embed("cancelled", 64, &cancellation).await,
+            Err(ProviderError::Cancelled)
+        ));
     }
 }

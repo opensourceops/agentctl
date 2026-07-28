@@ -8,7 +8,10 @@ Declare support for text, structured output, tools, reasoning, continuation, cac
 
 ## Authentication and network boundary
 
-Use a workflow environment reference. Resolve credentials only at the adapter boundary, never from a CLI key flag. Enforce the reviewed endpoint host, disable redirects, use rustls, and define whether an endpoint override is permitted.
+Use the core secret-reference contract and runtime resolver. Resolve credentials
+only at the adapter boundary, never from a CLI key flag. Enforce the reviewed
+endpoint host, disable redirects, use rustls, and define whether an endpoint
+override is permitted.
 
 ## Native request mapping
 
@@ -32,4 +35,7 @@ Add local mock-protocol tests for request mapping, authentication, headers, redi
 
 ## Documentation claims
 
-Update the provider guide and matrix with the exact level: implemented, mock-protocol tested, retained live evidence, or deferred. Add an example that passes `check` without resolving a secret. Run `cargo xtask generate`, `cargo xtask docs-verify`, and `cargo xtask verify`.
+Update the provider guide and matrix with the exact level: implemented,
+mock-protocol tested, retained live evidence, or outside the current supported
+surface. Add an example that passes `check` without resolving a secret. Run
+`cargo xtask generate`, `cargo xtask docs-verify`, and `cargo xtask verify`.

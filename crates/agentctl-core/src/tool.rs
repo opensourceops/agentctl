@@ -24,7 +24,6 @@ pub struct ToolContract {
     pub network_requirements: Vec<String>,
     pub approval: ApprovalRequirement,
     pub observability: Value,
-    pub compensation: Option<String>,
 }
 
 impl ToolContract {
@@ -109,7 +108,6 @@ mod tests {
             network_requirements: Vec::new(),
             approval: ApprovalRequirement::Never,
             observability: Value::Null,
-            compensation: None,
         }
     }
 

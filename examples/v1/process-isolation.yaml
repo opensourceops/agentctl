@@ -1,0 +1,30 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: process-isolation
+spec:
+  policy:
+    processAllowlist: [true, agentctl]
+    approval: never
+  actions:
+    host:
+      kind: builtin.shell.exec
+      command: /usr/bin/true
+      isolation: process
+    isolated:
+      kind: builtin.shell.exec
+      command: /usr/local/bin/agentctl
+      args: [version, --output, json, --color, never]
+      isolation: container
+      container:
+        image: sha256:0000000000000000000000000000000000000000000000000000000000000000
+        runtime: auto
+        memoryLimitBytes: 268435456
+        cpuLimitMillis: 1000
+        pidsLimit: 64
+  tasks:
+    - id: host
+      uses: action:host
+    - id: isolated
+      uses: action:isolated
+      needs: [host]

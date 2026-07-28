@@ -4,11 +4,21 @@ Evidence date: 2026-07-22 (Asia/Kolkata)
 
 Status: **passed**. A packaged macOS arm64 `agentctl` executed the canonical GPT-5.6 tool workflow, retained its exact SQLite state, and the updated production Linux arm64 image replayed a byte-identical copy of that state as UID/GID 65532 with no credential and `--network none`.
 
+This document preserves the original stateful evidence. The canonical workflow
+now uses `store: false`; the 2026-07-27 packaged stateless run and keyless replay
+are recorded in [VERIFICATION.md](VERIFICATION.md#stateless-openai-follow-up).
+
 The local evidence is ignored at `.release-evidence/openai-live/`. It contains the exact pre-replay database, the post-replay database, the generated artifact, machine-readable public-CLI output, safe metadata, a manifest, and sanitized commands. It is deliberately not committed because normalized prompts, provider results, tool output, and workspace content are durable runtime data.
 
 ## Live execution
 
-The canonical workflow is `examples/openai-live/workflow.yaml`. It uses GPT-5.6, one strict model-selected `builtin.workspace.read` call, a concrete fixture marker, an exact final verdict, a deterministic assertion, and a deterministic artifact write. OpenAI tool continuation uses the documented `previous_response_id` plus function-call output flow described by the official [function-calling guide](https://developers.openai.com/api/docs/guides/function-calling).
+At evidence time, the canonical workflow was
+`examples/openai-live/workflow.yaml`. It used GPT-5.6, one strict
+model-selected `builtin.workspace.read` call, a concrete fixture marker, an
+exact final verdict, a deterministic assertion, and a deterministic artifact
+write. OpenAI tool continuation used the documented `previous_response_id`
+plus function-call output flow described by the official [function-calling
+guide](https://developers.openai.com/api/docs/guides/function-calling).
 
 The final retained invocation was:
 

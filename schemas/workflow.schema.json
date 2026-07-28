@@ -95,6 +95,20 @@
           },
           "default": {}
         },
+        "subworkflows": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SubworkflowDefinition"
+          },
+          "default": {}
+        },
+        "compensation": {
+          "$ref": "#/$defs/CompensationPolicyDefinition",
+          "default": {
+            "onFailure": "manual",
+            "approval": "policy"
+          }
+        },
         "tasks": {
           "type": "array",
           "items": {
@@ -108,7 +122,20 @@
             "writableRoots": [],
             "environmentAllowlist": [],
             "networkAllowlist": [],
+            "network": {
+              "allowedSchemes": [
+                "https",
+                "http"
+              ],
+              "allowedPorts": [],
+              "allowPrivate": false,
+              "allowProxy": false,
+              "connectTimeoutSeconds": 10,
+              "maxResponseBytes": 8388608
+            },
             "processAllowlist": [],
+            "secretFileRoots": [],
+            "secretProcessAllowlist": [],
             "providers": [],
             "toolsAllow": [],
             "toolsDeny": [],
@@ -143,11 +170,20 @@
           },
           "default": []
         },
+        "packTrust": {
+          "$ref": "#/$defs/PackTrustDefinition",
+          "default": {
+            "unsigned": "warn",
+            "identities": [],
+            "allowUnsignedProcess": false
+          }
+        },
         "runtime": {
           "$ref": "#/$defs/RuntimeDefinition",
           "default": {
             "maxConcurrency": 1,
-            "defaultTimeoutSeconds": 120
+            "defaultTimeoutSeconds": 120,
+            "budgets": {}
           }
         },
         "output": {
@@ -215,15 +251,74 @@
       ]
     },
     "SecretReference": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "env"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "process": {
+              "$ref": "#/$defs/SecretProcessReference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "process"
+          ]
+        }
+      ]
+    },
+    "SecretProcessReference": {
       "type": "object",
       "properties": {
-        "env": {
+        "command": {
           "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 5
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 16384
         }
       },
       "additionalProperties": false,
       "required": [
-        "env"
+        "command"
       ]
     },
     "AgentDefinition": {
@@ -318,6 +413,10 @@
               "type": "null"
             }
           ]
+        },
+        "stream": {
+          "type": "boolean",
+          "default": false
         },
         "providerOptions": {
           "type": "object",
@@ -425,6 +524,16 @@
           "additionalProperties": true,
           "default": {}
         },
+        "idempotency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Idempotency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "command": {
           "type": [
             "string",
@@ -483,6 +592,34 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "isolation": {
+          "$ref": "#/$defs/ProcessIsolation"
+        },
+        "container": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContainerIsolationDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocolVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputSchema": true,
+        "outputSchema": true,
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -498,12 +635,74 @@
         "builtin.read",
         "builtin.write",
         "builtin.shell.exec",
+        "extension.process",
         "builtin.memory.read",
         "builtin.memory.write",
         "builtin.long_term_memory.read",
+        "builtin.long_term_memory.search",
         "builtin.long_term_memory.write",
+        "builtin.long_term_memory.promote",
         "mcp.call",
         "a2a.delegate"
+      ]
+    },
+    "Idempotency": {
+      "type": "string",
+      "enum": [
+        "pure",
+        "idempotent",
+        "keyed",
+        "at_most_once",
+        "unknown"
+      ]
+    },
+    "ProcessIsolation": {
+      "type": "string",
+      "enum": [
+        "process",
+        "container"
+      ]
+    },
+    "ContainerIsolationDefinition": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "runtime": {
+          "$ref": "#/$defs/ContainerRuntime",
+          "default": "auto"
+        },
+        "memoryLimitBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 268435456
+        },
+        "cpuLimitMillis": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 1000
+        },
+        "pidsLimit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 64
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ]
+    },
+    "ContainerRuntime": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "docker",
+        "podman"
       ]
     },
     "ToolDefinition": {
@@ -554,12 +753,6 @@
         "approval": {
           "$ref": "#/$defs/ApprovalRequirement",
           "default": "policy"
-        },
-        "compensation": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "additionalProperties": false,
@@ -607,22 +800,45 @@
         "remote_agent"
       ]
     },
-    "Idempotency": {
-      "type": "string",
-      "enum": [
-        "pure",
-        "idempotent",
-        "keyed",
-        "at_most_once",
-        "unknown"
-      ]
-    },
     "ApprovalRequirement": {
       "type": "string",
       "enum": [
         "policy",
         "never",
         "always"
+      ]
+    },
+    "SubworkflowDefinition": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "inputSchema": true,
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "outputSchema": true,
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskDefinition"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "inputSchema",
+        "outputSchema",
+        "tasks"
       ]
     },
     "TaskDefinition": {
@@ -640,6 +856,52 @@
             "type": "string"
           },
           "default": []
+        },
+        "foreach": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForeachDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "matrix": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MatrixDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memoryWrites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "when": {
           "type": [
@@ -677,7 +939,18 @@
         "failure": {
           "$ref": "#/$defs/FailureBehavior",
           "default": "stop"
-        }
+        },
+        "compensate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompensationDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputSchema": true
       },
       "additionalProperties": false,
       "required": [
@@ -685,11 +958,174 @@
         "uses"
       ]
     },
+    "ForeachDefinition": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": true
+        },
+        "as": {
+          "type": "string",
+          "default": "item"
+        },
+        "maxItems": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 32
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items"
+      ]
+    },
+    "MatrixDefinition": {
+      "type": "object",
+      "properties": {
+        "axes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": true
+          }
+        },
+        "maxItems": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 32
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "axes"
+      ]
+    },
+    "RouteDefinition": {
+      "type": "object",
+      "properties": {
+        "select": {
+          "type": "string"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteCaseDefinition"
+          }
+        },
+        "default": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "select",
+        "cases"
+      ]
+    },
+    "RouteCaseDefinition": {
+      "type": "object",
+      "properties": {
+        "equals": true,
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "equals",
+        "tasks"
+      ]
+    },
+    "LoopDefinition": {
+      "type": "object",
+      "properties": {
+        "maxIterations": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "while": {
+          "type": "string"
+        },
+        "initial": {
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "maxIterations",
+        "while"
+      ]
+    },
     "FailureBehavior": {
       "type": "string",
       "enum": [
         "stop",
         "continue"
+      ]
+    },
+    "CompensationDefinition": {
+      "type": "object",
+      "properties": {
+        "uses": {
+          "type": "string"
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryDefinition",
+          "default": {
+            "maxAttempts": 1,
+            "backoffMs": 0
+          }
+        },
+        "timeoutSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uses"
+      ]
+    },
+    "CompensationPolicyDefinition": {
+      "type": "object",
+      "properties": {
+        "onFailure": {
+          "$ref": "#/$defs/CompensationTrigger",
+          "default": "manual"
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalRequirement",
+          "default": "policy"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CompensationTrigger": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "automatic"
       ]
     },
     "PolicyDefinition": {
@@ -720,7 +1156,35 @@
           },
           "default": []
         },
+        "network": {
+          "$ref": "#/$defs/NetworkPolicyDefinition",
+          "default": {
+            "allowedSchemes": [
+              "https",
+              "http"
+            ],
+            "allowedPorts": [],
+            "allowPrivate": false,
+            "allowProxy": false,
+            "connectTimeoutSeconds": 10,
+            "maxResponseBytes": 8388608
+          }
+        },
         "processAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "secretFileRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "secretProcessAllowlist": {
           "type": "array",
           "items": {
             "type": "string"
@@ -755,6 +1219,62 @@
         "nonInteractive": {
           "$ref": "#/$defs/NonInteractiveMode",
           "default": "pause"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NetworkPolicyDefinition": {
+      "type": "object",
+      "properties": {
+        "allowedSchemes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "https",
+            "http"
+          ]
+        },
+        "allowedPorts": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "default": []
+        },
+        "allowPrivate": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowProxy": {
+          "type": "boolean",
+          "default": false
+        },
+        "customCa": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connectTimeoutSeconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 10
+        },
+        "maxResponseBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 8388608
         }
       },
       "additionalProperties": false
@@ -815,6 +1335,36 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "embedding": {
+          "$ref": "#/$defs/MemoryEmbeddingDefinition",
+          "default": {
+            "provider": "local_hash",
+            "dimensions": 64
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MemoryEmbeddingDefinition": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "default": "local_hash"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 64
         }
       },
       "additionalProperties": false
@@ -867,6 +1417,18 @@
           "minimum": 0,
           "default": 120
         },
+        "maxPolls": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 100
+        },
+        "pollIntervalMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 100
+        },
         "protocolVersion": {
           "type": "string",
           "default": "1.0"
@@ -886,19 +1448,164 @@
         "version": {
           "type": "string"
         },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackSignature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "path": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "integrity": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
-        "version",
-        "path",
-        "integrity"
+        "version"
+      ]
+    },
+    "PackSource": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "git": {
+              "type": "string"
+            },
+            "rev": {
+              "type": "string"
+            },
+            "manifest": {
+              "type": "string",
+              "default": "agentctl.pack.yaml"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "git",
+            "rev"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "integrity": {
+              "type": "string"
+            },
+            "manifest": {
+              "type": "string",
+              "default": "agentctl.pack.yaml"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "integrity"
+          ]
+        }
+      ]
+    },
+    "PackSignature": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": "string"
+        },
+        "identity": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "identity",
+        "issuer"
+      ]
+    },
+    "PackTrustDefinition": {
+      "type": "object",
+      "properties": {
+        "unsigned": {
+          "$ref": "#/$defs/UnsignedPackPolicy",
+          "default": "warn"
+        },
+        "identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PackIdentity"
+          },
+          "default": []
+        },
+        "allowUnsignedProcess": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "UnsignedPackPolicy": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "warn",
+        "allow"
+      ]
+    },
+    "PackIdentity": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "issuer"
       ]
     },
     "RuntimeDefinition": {
@@ -915,9 +1622,196 @@
           "format": "uint64",
           "minimum": 0,
           "default": 120
+        },
+        "budgets": {
+          "$ref": "#/$defs/ResourceBudgetDefinition",
+          "default": {}
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PricingDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
+    },
+    "ResourceBudgetDefinition": {
+      "type": "object",
+      "properties": {
+        "maxProviderRequests": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxTurns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxToolCalls": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxInputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxOutputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxTotalTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxWallTimeSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxProcessOutputBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxArtifactBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxTasks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxExpansionItems": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxLoopIterations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "maxCostMicrousd": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "PricingDefinition": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelPricingDefinition"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "models"
+      ]
+    },
+    "ModelPricingDefinition": {
+      "type": "object",
+      "properties": {
+        "inputMicrousdPerMillionTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputMicrousdPerMillionTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoningMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cacheReadMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cacheWriteMicrousdPerMillionTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputMicrousdPerMillionTokens",
+        "outputMicrousdPerMillionTokens"
+      ]
     },
     "OutputDefinition": {
       "type": "object",

@@ -1,7 +1,9 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::{Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -21,11 +23,22 @@ fn main() -> Result<()> {
         .context("xtask must be inside the workspace")?
         .to_path_buf();
     match command.as_str() {
+        "extension-fixture" => process_extension_fixture(),
         "verify" => verify(&root),
         "docs-verify" => docs_verify(&root),
+        "artifact-store-verify" => artifact_store_verify(&root),
+        "migration-verify" => migration_verify(&root),
+        "protocol-resilience" => protocol_resilience(&root),
         "acceptance" => acceptance::run(&root),
+        "completeness" => acceptance::completeness(&root),
         "acceptance-container" => acceptance::container(&root),
         "acceptance-live-openai" => acceptance::live_openai(&root),
+        "resource-budget-live-openai" => acceptance::live_openai_budget(&root),
+        "examples-verify" => examples_verify(&root),
+        "examples-verify-live-openai" => acceptance::examples_live_openai(&root),
+        "examples-verify-live-openai-container" => {
+            acceptance::examples_live_openai_container(&root)
+        }
         "generate" => generate(&root),
         "package" => package(&root),
         "secret-scan" => {
@@ -34,12 +47,131 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask acceptance\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask artifact-store-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask examples-verify-live-openai-container\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
         other => bail!("unknown xtask command `{other}`"),
     }
+}
+
+fn process_extension_fixture() -> Result<()> {
+    let marker = env::args()
+        .nth(2)
+        .context("extension fixture marker argument is required")?;
+    let mode = env::args()
+        .nth(3)
+        .context("extension fixture protocol mode is required")?;
+    match mode.as_str() {
+        "--agentctl-handshake" => {
+            print!(
+                "{}",
+                serde_json::json!({
+                    "protocolVersion": "agentctl.dev/process-extension/v1",
+                    "name": "xtask-fixture",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {"value": {"type": "string"}},
+                        "additionalProperties": false,
+                    },
+                    "outputSchema": {
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {"value": {"type": "string"}},
+                        "additionalProperties": false,
+                    },
+                    "capabilities": ["transform"],
+                })
+            );
+            Ok(())
+        }
+        "--agentctl-invoke" => {
+            let mut request = String::new();
+            std::io::stdin().read_to_string(&mut request)?;
+            let request: Value = serde_json::from_str(&request)?;
+            let effect_id = request["effectId"]
+                .as_str()
+                .context("extension fixture effectId")?;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(marker)?;
+            file.write_all(b"invocation")?;
+            print!(
+                "{}",
+                serde_json::json!({
+                    "protocolVersion": "agentctl.dev/process-extension/v1",
+                    "effectId": effect_id,
+                    "output": {"value": "extended"},
+                })
+            );
+            Ok(())
+        }
+        other => bail!("unknown extension fixture mode `{other}`"),
+    }
+}
+
+fn artifact_store_verify(root: &Path) -> Result<()> {
+    println!("[1/2] artifact store integrity, concurrency, and garbage collection");
+    run(
+        root,
+        "cargo",
+        &["test", "-p", "agentctl-store", "artifact", "--locked"],
+    )?;
+    println!("[2/2] repair from CAS after workspace deletion");
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-runtime",
+            "repair_uses_cas_after_workspace_deletion_and_blocks_blob_corruption",
+            "--locked",
+        ],
+    )?;
+    println!("agentctl artifact-store verification passed");
+    Ok(())
+}
+
+fn migration_verify(root: &Path) -> Result<()> {
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-store",
+            "upgrades_every_retained_database_schema_fixture",
+            "--locked",
+        ],
+    )
+}
+
+fn protocol_resilience(root: &Path) -> Result<()> {
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-protocols",
+            "--locked",
+            "--all-targets",
+        ],
+    )?;
+    run(
+        root,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "agentctl-runtime",
+            "continued_a2a_boundary_is_materialized_without_resubmission",
+            "--locked",
+        ],
+    )
 }
 
 fn docs_verify(root: &Path) -> Result<()> {
@@ -84,11 +216,13 @@ pub(crate) fn package(root: &Path) -> Result<()> {
         .join("dist")
         .join(format!("agentctl-{}-{host}", env!("CARGO_PKG_VERSION")));
     fs::create_dir_all(&package)?;
-    let source = root.join("target").join("release").join(if cfg!(windows) {
-        "agentctl.exe"
-    } else {
-        "agentctl"
-    });
+    let source = target_directory(root)
+        .join("release")
+        .join(if cfg!(windows) {
+            "agentctl.exe"
+        } else {
+            "agentctl"
+        });
     let binary = package.join(source.file_name().context("release binary name")?);
     fs::copy(&source, &binary)?;
     fs::copy(root.join("LICENSE"), package.join("LICENSE"))?;
@@ -198,8 +332,9 @@ fn verify(root: &Path) -> Result<()> {
     println!("[6/12] generated schema and CLI reference consistency");
     verify_generated(root)?;
 
-    println!("[7/12] examples and negative contracts");
+    println!("[7/12] examples, inventory, and negative contracts");
     verify_examples(root)?;
+    verify_example_matrix(root)?;
 
     println!("[8/12] dependency sources and license metadata");
     verify_metadata(root)?;
@@ -218,6 +353,16 @@ fn verify(root: &Path) -> Result<()> {
     verify_production_boundary(root)?;
 
     println!("agentctl verification passed");
+    Ok(())
+}
+
+fn examples_verify(root: &Path) -> Result<()> {
+    run(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
+    verify_example_matrix(root)?;
+    verify_examples(root)?;
+    verify_docs_examples(root)?;
+    verify_markdown_links(root)?;
+    println!("agentctl credential-free example verification passed");
     Ok(())
 }
 
@@ -275,8 +420,18 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["resume"],
         &["replay"],
         &["fork"],
+        &["repair"],
+        &["retry"],
+        &["compensate"],
+        &["runs"],
+        &["runs", "analyze"],
+        &["runs", "upgrade"],
         &["cancel"],
         &["inspect"],
+        &["effects"],
+        &["effects", "list"],
+        &["effects", "inspect"],
+        &["effects", "reconcile"],
         &["approvals"],
         &["approvals", "list"],
         &["approvals", "approve"],
@@ -288,8 +443,27 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &["schema"],
         &["migrate"],
         &["packs"],
+        &["packs", "inspect"],
+        &["packs", "verify"],
+        &["packs", "lock"],
+        &["packs", "update"],
+        &["packs", "verify-lock"],
+        &["artifacts"],
+        &["artifacts", "list"],
+        &["artifacts", "inspect"],
+        &["artifacts", "verify"],
+        &["artifacts", "export"],
+        &["artifacts", "gc"],
         &["db"],
+        &["db", "encryption"],
+        &["db", "encryption", "inventory"],
+        &["db", "encryption", "enable"],
+        &["db", "encryption", "rotate"],
         &["memory"],
+        &["memory", "get"],
+        &["memory", "put"],
+        &["memory", "search"],
+        &["memory", "reindex"],
         &["gc"],
         &["completion"],
         &["version"],
@@ -352,10 +526,13 @@ fn verify_examples(root: &Path) -> Result<()> {
         "hello.yaml",
         "dataflow.yaml",
         "condition.yaml",
+        "parallel.yaml",
         "working-memory.yaml",
         "long-term-memory.yaml",
         "fake-provider.yaml",
         "reusable-pack.yaml",
+        "structured-handoff.yaml",
+        "streaming.yaml",
     ] {
         let db = directory.path().join(format!("{name}.db"));
         run_binary(
@@ -414,6 +591,119 @@ fn verify_examples(root: &Path) -> Result<()> {
     }
     if examples.join("artifacts/denied.txt").exists() {
         bail!("policy-denial example mutated the workspace");
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ExampleMatrixRow {
+    path: String,
+    check_code: i32,
+    plan_code: i32,
+}
+
+fn verify_example_matrix(root: &Path) -> Result<()> {
+    let matrix_path = root.join("docs/execution/EXAMPLE_VERIFICATION_MATRIX.md");
+    let matrix = fs::read_to_string(&matrix_path)
+        .with_context(|| format!("read {}", matrix_path.display()))?;
+    let mut rows = BTreeMap::new();
+    for line in matrix.lines().filter(|line| line.starts_with("| `")) {
+        let columns = line.split('|').skip(1).map(str::trim).collect::<Vec<_>>();
+        if columns.len() < 13 {
+            bail!(
+                "{} has an incomplete example row: {line}",
+                matrix_path.display()
+            );
+        }
+        let path = columns[0]
+            .strip_prefix('`')
+            .and_then(|value| value.strip_suffix('`'))
+            .context("matrix path must be wrapped in backticks")?
+            .to_owned();
+        let check_code = columns[4]
+            .parse::<i32>()
+            .with_context(|| format!("matrix check code for {path}"))?;
+        let plan_code = columns[5]
+            .parse::<i32>()
+            .with_context(|| format!("matrix plan code for {path}"))?;
+        if rows
+            .insert(
+                path.clone(),
+                ExampleMatrixRow {
+                    path,
+                    check_code,
+                    plan_code,
+                },
+            )
+            .is_some()
+        {
+            bail!("duplicate example matrix row");
+        }
+    }
+
+    let mut discovered = Vec::new();
+    collect_yaml_files(&root.join("examples"), root, &mut discovered)?;
+    collect_yaml_files(&root.join("fixtures/compat"), root, &mut discovered)?;
+    let discovered = discovered.into_iter().collect::<BTreeSet<_>>();
+    let documented = rows.keys().cloned().collect::<BTreeSet<_>>();
+    if discovered != documented {
+        let missing = discovered.difference(&documented).collect::<Vec<_>>();
+        let stale = documented.difference(&discovered).collect::<Vec<_>>();
+        bail!("example matrix inventory mismatch; missing={missing:?}, stale={stale:?}");
+    }
+
+    let binary = binary_path(root);
+    for row in rows.values() {
+        if row.path.ends_with(".pack.yaml") {
+            continue;
+        }
+        let workflow = root.join(&row.path);
+        for (command_name, expected_code) in [("check", row.check_code), ("plan", row.plan_code)] {
+            let mut command = Command::new(&binary);
+            command
+                .current_dir(workflow.parent().context("workflow parent")?)
+                .arg(command_name)
+                .arg(&workflow)
+                .args(["--output", "json", "--color", "never"]);
+            let output = bounded_output(command, "example matrix validation")
+                .with_context(|| format!("{command_name} {}", row.path))?;
+            if output.status.code() != Some(expected_code) {
+                bail!(
+                    "{command_name} {} returned {:?}, expected {expected_code}\n{}",
+                    row.path,
+                    output.status.code(),
+                    output_diagnostics(&output)
+                );
+            }
+            let machine = if output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                &output.stdout
+            } else {
+                &output.stderr
+            };
+            serde_json::from_slice::<Value>(machine)
+                .with_context(|| format!("{command_name} {} did not emit JSON", row.path))?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_yaml_files(directory: &Path, root: &Path, output: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files(&path, root, output)?;
+        } else if matches!(
+            path.extension().and_then(OsStr::to_str),
+            Some("yaml" | "yml")
+        ) {
+            output.push(
+                path.strip_prefix(root)
+                    .context("example path outside repository")?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
     }
     Ok(())
 }
@@ -529,6 +819,12 @@ fn verify_public_documentation(root: &Path) -> Result<()> {
         "docs/guides/FIRST_AGENT_WORKFLOW.md",
         "docs/guides/WORKFLOW_AUTHORING.md",
         "docs/guides/LOCAL_OPERATION.md",
+        "docs/guides/SENSITIVE_STATE_ENCRYPTION.md",
+        "docs/guides/SECRET_REFERENCES.md",
+        "docs/guides/TERMINAL_RETRY.md",
+        "docs/guides/repair-a-failed-workflow.md",
+        "docs/guides/LEGACY_RUN_UPGRADE.md",
+        "docs/guides/EFFECT_RECONCILIATION.md",
         "docs/guides/CI_CD.md",
         "docs/guides/TROUBLESHOOTING.md",
         "docs/reference/YAML.md",
@@ -543,6 +839,8 @@ fn verify_public_documentation(root: &Path) -> Result<()> {
         "docs/development/ADD_PROVIDER.md",
         "docs/development/ADD_MIGRATION.md",
         "docs/development/DOCUMENTATION.md",
+        "docs/execution/EXAMPLE_VERIFICATION_MATRIX.md",
+        "docs/research/selective-repair.md",
     ];
     for relative in required {
         if !root.join(relative).is_file() {
@@ -730,7 +1028,24 @@ fn verify_workflow_action_pins(root: &Path) -> Result<()> {
             continue;
         }
         let source = fs::read_to_string(&path)?;
+        let handles_pull_requests = source.lines().any(|line| line.trim() == "pull_request:");
+        let mut secret_step_is_pull_request_safe = false;
         for (index, line) in source.lines().enumerate() {
+            if line.starts_with("      - ") {
+                secret_step_is_pull_request_safe = false;
+            } else if line.trim() == "if: github.event_name != 'pull_request'" {
+                secret_step_is_pull_request_safe = true;
+            }
+            if handles_pull_requests
+                && line.contains("${{ secrets.")
+                && !secret_step_is_pull_request_safe
+            {
+                bail!(
+                    "{}:{} pull-request workflow secret requires an explicit non-PR step guard",
+                    path.display(),
+                    index + 1
+                );
+            }
             let Some(reference) = line.trim_start().strip_prefix("- uses: ") else {
                 continue;
             };
@@ -853,11 +1168,25 @@ fn write(path: &Path, value: &str) -> Result<()> {
 }
 
 fn binary_path(root: &Path) -> PathBuf {
-    root.join("target").join("debug").join(if cfg!(windows) {
+    target_directory(root).join("debug").join(if cfg!(windows) {
         "agentctl.exe"
     } else {
         "agentctl"
     })
+}
+
+fn target_directory(root: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || root.join("target"),
+        |target| {
+            let target = PathBuf::from(target);
+            if target.is_absolute() {
+                target
+            } else {
+                root.join(target)
+            }
+        },
+    )
 }
 
 fn run(root: &Path, program: &str, args: &[&str]) -> Result<()> {

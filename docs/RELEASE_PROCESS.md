@@ -13,9 +13,15 @@ Push the review branch and open a pull request only after the local gates below 
 - `container-security / container`
 - `supply-chain-security / security`
 
-The three platform jobs run `cargo xtask verify`, `cargo xtask acceptance`, and `cargo xtask package`. The other jobs enforce the Linux container contract, HIGH/CRITICAL image vulnerability policy, production and image CycloneDX SBOMs, complete-history and checked-out-tree secret scans, dependency policy, immutable action pins, and workflow lint.
+The three platform jobs run `cargo xtask verify`, `cargo xtask acceptance`,
+`cargo xtask completeness`, and `cargo xtask package`. The other jobs enforce
+the Linux container contract, HIGH/CRITICAL image vulnerability policy,
+production and image CycloneDX SBOMs, complete-history and checked-out-tree
+secret scans, dependency policy, immutable action pins, and workflow lint.
 
-The repository owner must enable GitHub Actions and required checks after the workflows reach the remote. This repository-local change does not modify remote settings or claim a hosted run.
+The repository owner must enable required checks on the protected release
+branch. Repository-local changes and green pull-request jobs do not modify or
+prove that remote governance setting.
 
 ## Local preflight
 
@@ -26,6 +32,8 @@ env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
   -u GOOGLE_API_KEY -u GEMINI_API_KEY cargo xtask verify
 env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
   -u GOOGLE_API_KEY -u GEMINI_API_KEY cargo xtask acceptance
+env -u OPENAI_API_KEY -u AZURE_OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+  -u GOOGLE_API_KEY -u GEMINI_API_KEY cargo xtask completeness
 cargo xtask package
 ```
 
@@ -61,8 +69,10 @@ For the candidate workflow run:
 - Secret-scan finding: stop, revoke any real credential, remove it from the complete history using the repository's incident procedure, then rerun both history and tree scans.
 - Dependency or image finding: review the advisory and remediate or document an explicit time-bounded exception before release. The default HIGH/CRITICAL image gate ignores only unfixed findings.
 - SBOM failure or missing artifact: treat as a release failure. SBOM generation is not best-effort.
-- Container CA failure: configure only `AGENTCTL_BUILD_CA_PEM` as a protected repository/organization secret. Do not use insecure Cargo, Git, curl, or container flags.
+- Container CA failure on `main` or a manually dispatched run: configure only `AGENTCTL_BUILD_CA_PEM` as a protected repository/organization secret. Pull-request runs intentionally cannot receive it. Do not use insecure Cargo, Git, curl, or container flags.
 
 ## Release decision
 
-The local recommendation is **Ready for hosted RC validation**. Promote to an RC only after the exact remote commit has all required hosted checks and artifacts. Stable `v1.0` remains outside this `v1alpha1` gate.
+Promote an exact commit to a framework candidate only after it has all required
+hosted checks and artifacts. Stable `v1.0` remains outside this `v1alpha1`
+gate.

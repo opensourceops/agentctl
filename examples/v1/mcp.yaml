@@ -5,6 +5,8 @@ metadata:
 spec:
   policy:
     networkAllowlist: [127.0.0.1]
+    network:
+      allowPrivate: true
     approval: never
   mcpServers:
     local:
@@ -14,6 +16,7 @@ spec:
   actions:
     call:
       kind: mcp.call
+      idempotency: idempotent
   tasks:
     - id: call
       uses: action:call

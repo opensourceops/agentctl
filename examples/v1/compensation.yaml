@@ -1,0 +1,40 @@
+apiVersion: agentctl.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: compensation
+  description: Run explicit best-effort compensation after a downstream failure.
+spec:
+  compensation:
+    onFailure: manual
+    approval: policy
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    approval: never
+  actions:
+    write:
+      kind: builtin.write
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: provision
+      uses: action:write
+      with:
+        path: artifacts/compensation-resource.txt
+        content: provisioned
+      compensate:
+        uses: action:write
+        with:
+          path: artifacts/compensation-resource.txt
+          content: compensated
+        retry:
+          maxAttempts: 2
+          backoffMs: 50
+    - id: validate
+      uses: action:assert
+      needs:
+        - provision
+      with:
+        that: false
+        message: expected failure demonstrates manual compensation

@@ -2,6 +2,11 @@
 
 Audit date: 2026-07-22 (Asia/Kolkata)
 
+> Historical release-candidate checkpoint. The current framework result and
+> final evidence are in
+> [Completeness verification](COMPLETENESS_VERIFICATION.md) and
+> [Live framework verification](LIVE_FRAMEWORK_VERIFICATION.md).
+
 Historical recommendation: **Ready as a `v1alpha1` release candidate**. This conclusion is superseded by the later [independent RC review](INDEPENDENT_RC_REVIEW.md), which found additional P0/P1 defects and changed current status to **Ready for internal review** pending hosted CI and current image-build evidence. The retained live-run facts below remain historical evidence.
 
 ## Final live durable-replay gate
@@ -89,7 +94,12 @@ No P0 finding was identified.
 - Symptom: a tool-using OpenAI/Azure agent could set `store: false`, while continuation still used `previous_response_id` and did not replay stateless response/reasoning/function items.
 - Root cause: provider-option validation did not account for runtime continuation semantics.
 - Affected journey: multi-turn OpenAI/Azure function calling.
-- Change: compilation now rejects `store: false` for tool-using OpenAI/Azure agents; one-turn non-tool use remains supported.
+- Original audit change: compilation rejected `store: false` for tool-using
+  OpenAI/Azure agents rather than pretending it was supported.
+- Framework-completeness follow-up: the adapter now requests encrypted
+  reasoning content, persists provider-neutral ordered continuation items, and
+  replays them with correlated function outputs. The compiler restriction was
+  removed after deterministic pause/resume/replay coverage was added.
 - Regression: compiler unit test and credential-free acceptance negative contract.
 - Result: no unsupported continuation is silently emitted. This matches the official [function-calling continuation contract](https://developers.openai.com/api/docs/guides/function-calling) and [reasoning-item context guidance](https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context).
 
@@ -206,7 +216,7 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 
 | Guarantee | Evidence |
 | --- | --- |
-| Parser/schema/compiler/templates | strict/unknown-field, source diagnostic, cycle, deterministic order, property, capability, stateless-tool negative tests |
+| Parser/schema/compiler/templates | strict/unknown-field, source diagnostic, cycle, deterministic order, property, capability, stateless-tool compilation tests |
 | State/persistence/migrations/corruption | state transition, transactional checkpoint, schema upgrade/future version, corruption, lock wait, GC tests |
 | Effects/approval/resume/fork | store/runtime tests plus public scenarios 9–16 |
 | Replay no dispatch | panic-on-call provider+tool regression and exact live-state OCI public replay inspection |
@@ -218,14 +228,15 @@ No adapter except OpenAI is represented as live-tested, and no external provider
 
 Coverage percentage was not invented; `cargo-llvm-cov` was unavailable. Timing-sensitive tool/process/signal tests were run through both the focused suite and repeated canonical acceptance during the audit without a flaky failure.
 
-## Deferred items and residual risks
+## Historical residual boundaries
 
 - Dispatch the configured Linux amd64, macOS, Windows, scan/SBOM, and external pipeline gates; until then they remain CI-configured or documentation-reviewed only.
 - Expand Azure/Anthropic/Google adapter negative/error/cancellation/tool-continuation coverage before raising their maturity beyond focused mock mapping.
-- Single-host SQLite, sequential scheduling, manual uncertain-effect reconciliation, alpha schema evolution, and policy-not-sandbox limitations remain intentional.
-- Tool-using OpenAI/Azure `store: false` remains unsupported until full stateless response-item replay is implemented.
+- Single-host SQLite, local bounded parallel scheduling, explicit uncertain-effect reconciliation, alpha schema evolution, and policy-not-sandbox limitations remain intentional.
 - Container bind mounts require deliberate UID/GID 65532 provisioning and protected collection of state, which may contain prompts and outputs.
-- Formal external MCP/A2A/provider conformance suites and long-horizon upgrade fixtures are deferred.
+- Formal external MCP/A2A/provider conformance suites are not claimed as
+  current evidence. Retained schema fixtures and deterministic protocol
+  recovery tests define the supported compatibility boundary.
 
 Files requiring closest human review are `crates/agentctl-runtime/src/lib.rs` (effect windows and replay), `crates/agentctl-store/src/lib.rs` (uncertainty persistence), `crates/agentctl-providers/src/lib.rs` (OpenAI continuation mapping), `crates/agentctl-protocols/src/lib.rs` (ambiguity classification), `crates/agentctl-cli/src/main.rs` (machine errors/correlation), `xtask/src/acceptance.rs` (release claims), `Containerfile`, and `docs/CONTAINER.md`.
 
