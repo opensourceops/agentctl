@@ -4367,7 +4367,6 @@ pub fn examples_live_openai(root: &Path, composites_only: bool) -> Result<()> {
     usage = usage.plus(container.usage);
     tool_calls = tool_calls.saturating_add(container.tool_calls);
     guard_live_budget(requests, &usage)?;
-    devops_live_openai(root, &binary)?;
     write_live_summary(
         root,
         &model,
@@ -4381,6 +4380,7 @@ pub fn examples_live_openai(root: &Path, composites_only: bool) -> Result<()> {
         "local-and-container-complete",
         Some(&container),
     )?;
+    devops_live_openai(root, &binary)?;
     println!(
         "live OpenAI example verification passed: legacyExamples={} devopsExamples=4 model={model} legacyRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
         if composites_only { 3 } else { 7 },
@@ -4448,7 +4448,6 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
     tool_calls = tool_calls.saturating_add(container.tool_calls);
     usage = usage.plus(container.usage);
     guard_live_budget(requests, &usage)?;
-    devops_live_openai(root, &packaged_binary(root)?)?;
     write_live_summary(
         root,
         &model,
@@ -4462,6 +4461,7 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
         "local-and-container-complete",
         Some(&container),
     )?;
+    devops_live_openai(root, &packaged_binary(root)?)?;
     println!(
         "live OpenAI container continuation passed: model={model} totalRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
         usage.input,

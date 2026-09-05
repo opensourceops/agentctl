@@ -93,7 +93,8 @@ for number,(slug,title,description) in enumerate(TITLES,1):
         save(folder,'fixtures/build.log','[1/4] checkout revision abc123\n[2/4] python -m pytest\nModuleNotFoundError: No module named requests\n[3/4] tests aborted\n[4/4] exit 2\n')
         output={'rootCause':'missing_dependency','evidence':['fixtures/build.log:3'],
                 'recommendation':'Install the declared requests dependency before running tests.'}
-        instructions='Diagnose the provided parsed CI findings. Return rootCause, evidence (exact source locations from the report), and a nonempty recommendation. The log identifies a missing Python dependency.'
+        instructions='Diagnose the provided parsed CI findings. Return rootCause as a machine-readable classification code: preserve the exact report.rootCause value, never replace it with a sentence. The allowed codes are missing_dependency, test_failure, configuration_error, and unknown. Return evidence using exact source locations from the report. Put the explanation and a concrete fix in the nonempty recommendation field.'
+        semantic+=' rootCause is a classification code, not prose; it must match the parsed findings. A deterministic malformed-output case proves a sentence is rejected by the agent schema before the verification action executes.'
         model=True
     elif number==2:
         save(folder,'fixtures/junit.xml','<testsuite tests="3" failures="1" errors="1"><testcase classname="api" name="health"/><testcase classname="api" name="total"><failure message="expected 4, got 3">assert total == 4</failure></testcase><testcase classname="worker" name="database"><error message="connection refused">fixture database unavailable</error></testcase></testsuite>\n')
@@ -163,7 +164,8 @@ for number,(slug,title,description) in enumerate(TITLES,1):
         save(folder,'fixtures/incident.log','2026-09-05T10:00:10Z api database connection refused\n2026-09-05T10:00:00Z database connection pool exhausted\n2026-09-05T10:02:00Z api requests recovered\n')
         output={'durationSeconds':120,'evidence':['fixtures/incident.log:2','fixtures/incident.log:1'],
                 'recommendation':'Check database connection-pool capacity before restarting the API.'}
-        instructions='Given the sorted incident timeline, return durationSeconds, evidence (exact source locations from the report), and a nonempty runbook recommendation consistent with the database connection failure. Do not invent events.'
+        instructions='Given the sorted incident timeline, preserve the supplied report.durationSeconds exactly: it is the elapsed seconds from the earliest to the latest timestamp across the whole timeline. Return at least one evidence citation, copied exactly from a timeline source location, and a nonempty runbook recommendation consistent with the database connection failure. Do not invent events.'
+        semantic+=' The agent preserves the computed whole-timeline duration and supplies at least one exact source citation. A deterministic empty-citation response must fail the agent schema before verification.'
         model=True
     elif number==13:
         save(folder,'fixtures/metrics.json',[{'requests':500,'errors':1},{'requests':500,'errors':2}])
@@ -229,9 +231,11 @@ for number,(slug,title,description) in enumerate(TITLES,1):
         spec['actions']['read']={'kind':'builtin.read'}
         spec['tools']={'read_scope':{'kind':'builtin.workspace.read','description':'Read the local change scope','inputSchema':obj({'path':{'type':'string','enum':['fixtures/change.txt']}}),'outputSchema':{'type':'object'},'capability':'filesystem.read','effectClass':'observe','risk':'low','idempotency':'idempotent','retrySafe':True,'timeoutSeconds':5,'approval':'never'},
                        'publish':{'kind':'builtin.workspace.write','description':'Write the reviewed local change','inputSchema':obj({'path':{'type':'string','enum':['artifacts/role-change.txt']},'content':{'type':'string','enum':['reviewed-local-change']}}),'outputSchema':{'type':'object'},'capability':'filesystem.write','effectClass':'workspace_mutate','risk':'medium','idempotency':'idempotent','retrySafe':True,'timeoutSeconds':5,'approval':'policy'}}
-        spec['agents']={'planner':agent(folder,'planner','Use read_scope once to read fixtures/change.txt. Return the exact reviewed payload and ready=true.',{'payload':'reviewed-local-change','ready':True},['read_scope'],{'path':'fixtures/change.txt'}),
+        spec['agents']={'planner':agent(folder,'planner','Use read_scope once to read fixtures/change.txt. Extract only the exact text the scope permits writing: reviewed-local-change. Return payload="reviewed-local-change" with no extra prose, whitespace, or newline, and ready=true. Do not return the complete scope sentence as payload.',{'payload':'reviewed-local-change','ready':True},['read_scope'],{'path':'fixtures/change.txt'}),
             'reviewer':agent(folder,'reviewer','Review the typed planner payload. Approve only reviewed-local-change by returning approved=true and the same payload.',{'approved':True,'payload':'reviewed-local-change'}),
             'executor':agent(folder,'executor','Use publish exactly once to write the approved payload reviewed-local-change to artifacts/role-change.txt. Then return executed=true.',{'executed':True},['publish'],{'path':'artifacts/role-change.txt','content':'reviewed-local-change'})}
+        for role in ['planner','reviewer']:
+            spec['agents'][role]['structuredOutput']['properties']['payload']['enum']=['reviewed-local-change']
         boundary=obj({'payload':{'type':'string','enum':['reviewed-local-change']},'approved':{'const':True}})
         spec['subworkflows']={'change':{'version':'1.0.0','inputSchema':obj({'request':{'type':'string'}}),'outputSchema':obj({'executed':{'type':'boolean'}}),
             'outputs':{'executed':ref('execute','.executed')},'tasks':[
@@ -242,6 +246,7 @@ for number,(slug,title,description) in enumerate(TITLES,1):
         spec['tasks']=[task('roles','workflow:change',{'request':'Read, review and execute the narrow local change.'}),task('analyze','action:fixture',{},['roles'])]
         features+=['typed-handoff','subworkflow','distinct-tool-visibility','agent-tool-loop']
         artifacts+=['artifacts/role-change.txt']
+        semantic+=' Planner and reviewer payload schemas require the exact reviewed token. A separate negative fixture deliberately permits an invalid fake reviewer payload through that agent schema to exercise the unchanged typed handoff; it must fail before any executor effect and preserve artifact bytes.'
         model=True
     elif number==20:
         save(folder,'fixtures/configuration.json',{'timeoutSeconds':300})
@@ -260,6 +265,12 @@ for number,(slug,title,description) in enumerate(TITLES,1):
     if number in [1,12]:
         spec['providers']={'fake':{'kind':'fake'}}
         spec['agents']={'analyst':agent(folder,'analyst',instructions,output)}
+        if number == 1:
+            spec['agents']['analyst']['structuredOutput']['properties']['rootCause'].update({
+                'enum':['missing_dependency','test_failure','configuration_error','unknown'],
+                'description':'Machine-readable classification code from the parsed report; put prose in recommendation.'})
+        if number == 12:
+            spec['agents']['analyst']['structuredOutput']['properties']['evidence']['minItems']=1
         spec['tasks'] += [task('advise','agent:analyst',{'prompt':ref('analyze')},['analyze']),
             task('verify','action:fixture',{'phase':'verify-model','report':ref('analyze'),'analysis':ref('advise')},['analyze','advise'])]
         report(spec,'verify')

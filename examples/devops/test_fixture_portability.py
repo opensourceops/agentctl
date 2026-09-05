@@ -17,6 +17,20 @@ from run import cleanup_workspace, latest_run_id
 
 
 class FixturePortabilityTests(unittest.TestCase):
+    def test_pipeline_patch_preserves_proposal_bytes_with_host_autocrlf_enabled(self):
+        before = json.dumps({"permissions": "write-all", "jobs": {"test": {"timeout-minutes": 90}}}, indent=2) + "\n"
+        expected = json.dumps({"permissions": "read-all", "jobs": {"test": {"timeout-minutes": 15}}}, indent=2) + "\n"
+        git_defaults = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": "true"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(fixture, "ROOT", Path(directory).resolve()), patch.dict(os.environ, git_defaults):
+            root = Path(directory)
+            (root / "fixtures").mkdir()
+            (root / "fixtures/pipeline.json").write_bytes(before.replace("\n", "\r\n").encode())
+            report = fixture.analyze("03", {})
+            self.assertTrue(report["validated"])
+            self.assertEqual(len(report["violations"]), 2)
+            self.assertTrue(report["patch"]["appliedAndVerified"])
+            self.assertEqual((root / "artifacts/patch-workspace/pipeline.json").read_bytes(), expected.encode())
+
     def test_explicit_git_works_with_empty_environment_and_crlf_patch(self):
         executable = shutil.which("git")
         self.assertIsNotNone(executable, "Git is a fixture prerequisite")

@@ -109,8 +109,9 @@ def patch(relative, before, after):
     target.write_bytes(before.encode("utf-8"))
     patch_file = path("artifacts/proposed.patch")
     write("artifacts/proposed.patch", patch_text)
-    command(["git", "apply", "--check", str(patch_file)], cwd=work)
-    command(["git", "apply", str(patch_file)], cwd=work)
+    # Apply the reviewed bytes exactly, regardless of Git for Windows defaults.
+    command(["git", "-c", "core.autocrlf=false", "apply", "--check", str(patch_file)], cwd=work)
+    command(["git", "-c", "core.autocrlf=false", "apply", str(patch_file)], cwd=work)
     if target.read_bytes().decode("utf-8") != after:
         raise ValueError("applied patch differs from validated proposal")
     return {"path": "artifacts/proposed.patch", "appliedAndVerified": True,

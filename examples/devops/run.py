@@ -310,6 +310,44 @@ class Case:
 
     def alternate_cases(self):
         case = self.entry["id"]
+        if case in {"01", "12"}:
+            malformed = json.loads((self.workspace / "workflow.yaml").read_text())
+            response = json.loads(malformed["spec"]["agents"]["analyst"]["providerOptions"]["finalText"])
+            label = "classification" if case == "01" else "citations"
+            response["rootCause" if case == "01" else "evidence"] = "The requests package is missing." if case == "01" else []
+            malformed["spec"]["agents"]["analyst"]["providerOptions"]["finalText"] = json.dumps(response)
+            filename = self.workspace / f"malformed-{label}.workflow.yaml"
+            database = self.workspace / f"malformed-{label}.db"
+            save(filename, malformed)
+            failed = self.cli(["run", filename, "--workspace", self.workspace, "--db", database],
+                              expected=4, credential_free=True, filename=f"malformed-{label}.json")
+            inspection = self.cli(["inspect", run_id(failed), "--db", database], credential_free=True,
+                                  filename=f"malformed-{label}-inspect.json")["data"]
+            require(any(task["taskId"] == "advise" and task["state"] == "failed" for task in inspection["tasks"])
+                    and "provider structured output failed its contract" in failed["error"]["message"],
+                    f"invalid {label} were not rejected by the agent schema")
+            require(not any(effect["request"]["taskId"] == "verify" for effect in inspection["effects"]),
+                    f"malformed {label} reached the downstream verification action")
+        if case == "19":
+            malformed = json.loads((self.workspace / "workflow.yaml").read_text())
+            reviewer = malformed["spec"]["agents"]["reviewer"]
+            reviewer["providerOptions"]["finalText"] = json.dumps({"approved": True, "payload": "unreviewed-change"})
+            # Negative fixture only: permit malformed fake model data through
+            # its schema to test the independently enforced typed handoff.
+            reviewer["structuredOutput"]["properties"]["payload"].pop("enum")
+            filename = self.workspace / "invalid-handoff.workflow.yaml"
+            database = self.workspace / "invalid-handoff.db"
+            save(filename, malformed)
+            before = artifact_digests(self.workspace)
+            failed = self.cli(["run", filename, "--workspace", self.workspace, "--db", database],
+                              expected=4, credential_free=True, filename="invalid-handoff.json")
+            inspection = self.cli(["inspect", run_id(failed), "--db", database], credential_free=True,
+                                  filename="invalid-handoff-inspect.json")["data"]
+            require(any(task["taskId"] == "roles--handoff" and task["state"] == "failed" for task in inspection["tasks"]),
+                    "invalid reviewer payload did not reach and fail the typed handoff")
+            require(not any(effect["request"]["taskId"] == "roles--execute" for effect in inspection["effects"]),
+                    "invalid handoff dispatched an executor effect")
+            require(artifact_digests(self.workspace) == before, "invalid handoff changed artifact bytes")
         if case == "11":
             explanation = self.cli(["explain", self.workflow, "--workspace", self.workspace],
                                    filename="explain-defaults.json")["data"]
@@ -446,6 +484,8 @@ class Case:
             if case == "04":
                 result["containerBuild"] = "passed" if self.args.container_build else "not-executed"
         except Exception as error:
+            identifier = identifier or next((run_id(item["envelope"]) for item in reversed(self.commands)
+                                            if run_id(item["envelope"])), None)
             result.update({"status": "failed", "error": str(error), "runId": identifier,
                            "reservationRetained": self.reservation})
             diagnostic = self.evidence / "fixture-error.json"

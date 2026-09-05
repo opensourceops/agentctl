@@ -145,7 +145,14 @@
           "additionalProperties": false,
           "properties": {
             "rootCause": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "missing_dependency",
+                "test_failure",
+                "configuration_error",
+                "unknown"
+              ],
+              "description": "Machine-readable classification code from the parsed report; put prose in recommendation."
             },
             "evidence": {
               "type": "array",

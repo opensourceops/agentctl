@@ -23,7 +23,7 @@ The DSL carries request, turn, token, task, wall-time, process-output and artifa
 
 ## Expected artifacts and semantic assertions
 
-The runner validates the case-specific structured report and its source-derived fields.
+The runner validates the case-specific structured report and its source-derived fields. rootCause is a classification code, not prose; it must match the parsed findings. A deterministic malformed-output case proves a sentence is rejected by the agent schema before the verification action executes.
 
 - `artifacts/report.json`
 

@@ -187,7 +187,10 @@
           "additionalProperties": false,
           "properties": {
             "payload": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "reviewed-local-change"
+              ]
             },
             "ready": {
               "type": "boolean"
@@ -222,7 +225,10 @@
               "type": "boolean"
             },
             "payload": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "reviewed-local-change"
+              ]
             }
           }
         },

@@ -3,8 +3,6 @@
 //! YAML cannot supply SourceSnapshot. Captured values are persisted with the
 //! workflow, under the store's existing selected-field encryption policy.
 use std::collections::BTreeMap;
-#[cfg(not(unix))]
-use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -620,8 +618,8 @@ impl Capture<'_> {
 }
 
 /// Inspect a normalized absolute regular-file path without reading its contents.
-/// Symlinks and special files are rejected by the same nonblocking descriptor
-/// walk used for captured workflow sources.
+/// Symlinks and special files are rejected by the same handle-relative walk
+/// used for captured workflow sources (nonblocking descriptors on Unix).
 pub fn regular_file_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
     if !path.is_absolute()
         || path
@@ -667,31 +665,105 @@ pub(crate) fn open_regular(path: &Path) -> std::io::Result<File> {
     Ok(directory)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub(crate) fn open_regular(path: &Path) -> std::io::Result<File> {
-    // Reject reparse/symlink changes while opening the already canonical path.
-    let before = fs::symlink_metadata(path)?;
-    if !before.is_file() {
-        return Err(std::io::Error::new(
+    open_regular_windows(path, |_, _, _| {})
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceOpenCheckpoint {
+    BeforeChild,
+    AfterChild,
+}
+
+#[cfg(windows)]
+fn open_regular_windows(
+    path: &Path,
+    mut checkpoint: impl FnMut(SourceOpenCheckpoint, &Path, &File),
+) -> std::io::Result<File> {
+    use cap_fs_ext::OpenOptionsFollowExt;
+    use cap_primitives::fs::{FollowSymlinks, OpenOptions, open, open_dir_nofollow};
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    let invalid = || {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
+            "source must be a normalized absolute regular-file path without reparse points",
+        )
+    };
+    if !path.is_absolute() {
+        return Err(invalid());
     }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000);
+    let mut root = PathBuf::new();
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir if parts.is_empty() => root.push(component),
+            Component::Normal(part) => parts.push(part),
+            _ => return Err(invalid()),
+        }
     }
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() || fs::canonicalize(path)? != path {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "source path changed while opening",
-        ));
+    if parts.is_empty() {
+        return Err(invalid());
     }
-    Ok(file)
+
+    // Only the volume/share root uses an ambient pathname. Every descendant
+    // opens one component relative to an already opened directory handle.
+    // Do not replace this with full-path opens plus canonicalize checks:
+    // intermediate junctions can be swapped and restored between those calls.
+    // Sharing restrictions alone are also insufficient: Windows permits some
+    // reparse mutations through attribute-only handles.
+    let root_handle =
+        cap_primitives::fs::open_ambient_dir(&root, cap_primitives::ambient_authority())?;
+    let metadata = root_handle.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(invalid());
+    }
+    // Retain ancestors until the final handle is obtained. cap-primitives
+    // disallows directory delete sharing; NtCreateFile's RootDirectory is the
+    // opened parent handle, so an in-place junction mutation cannot redirect
+    // the following operation through a freshly resolved absolute pathname.
+    let mut directories = vec![root_handle];
+    let mut current_path = root;
+    for (index, part) in parts.iter().enumerate() {
+        let parent = directories.last().expect("root handle is retained");
+        let is_last = index + 1 == parts.len();
+        current_path.push(part);
+        checkpoint(SourceOpenCheckpoint::BeforeChild, &current_path, parent);
+        let result = if is_last {
+            let mut options = OpenOptions::new();
+            options.read(true).follow(FollowSymlinks::No);
+            open(parent, Path::new(part), &options)
+        } else {
+            open_dir_nofollow(parent, Path::new(part))
+        };
+        // The no-op production callback lets platform tests stage and restore
+        // mutations around exactly the open operation, without timing loops.
+        checkpoint(SourceOpenCheckpoint::AfterChild, &current_path, parent);
+        let child = result?;
+        let metadata = child.metadata()?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || (is_last && !metadata.is_file())
+            || (!is_last && !metadata.is_dir())
+        {
+            return Err(invalid());
+        }
+        if is_last {
+            return Ok(child);
+        }
+        directories.push(child);
+    }
+    Err(invalid())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_regular(_path: &Path) -> std::io::Result<File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "race-safe configuration source capture is unsupported on this platform",
+    ))
 }
 
 fn error(origin: &Path, scope: &str, message: &str) -> Box<Diagnostic> {
@@ -970,6 +1042,231 @@ mod tests {
             "spec.varsFiles[0]",
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_windows_opened_parent_cannot_be_renamed_during_capture() {
+        let directory = tempdir().expect("workspace");
+        let parent = directory.path().join("parent");
+        let moved = directory.path().join("moved");
+        std::fs::create_dir(&parent).expect("parent");
+        let source = parent.join("source.txt");
+        std::fs::write(&source, "authorized source").expect("source");
+        let normalized = std::fs::canonicalize(&source).expect("canonical source");
+        let mut attempted = false;
+        let mut opened = open_regular_windows(&normalized, |phase, child, _| {
+            if phase == SourceOpenCheckpoint::BeforeChild && child == normalized {
+                let error =
+                    std::fs::rename(&parent, &moved).expect_err("opened ancestor must deny rename");
+                assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+                attempted = true;
+            }
+        })
+        .expect("original source remains readable");
+        let mut content = String::new();
+        opened.read_to_string(&mut content).expect("captured bytes");
+        assert!(attempted);
+        assert_eq!(content, "authorized source");
+        drop(opened);
+        std::fs::rename(&parent, &moved).expect("fixture can rename after handles are released");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_windows_junction_swap_and_restore_cannot_redirect_component_open() {
+        let directory = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside workspace");
+        let parent = directory.path().join("parent");
+        let saved = directory.path().join("saved");
+        std::fs::create_dir(&parent).expect("parent");
+        std::fs::write(parent.join("source.txt"), "authorized source").expect("source");
+        std::fs::write(outside.path().join("source.txt"), "PRIVATE_OUTSIDE_CONTENT")
+            .expect("outside source");
+        let normalized =
+            std::fs::canonicalize(parent.join("source.txt")).expect("canonical source");
+        let normalized_parent = normalized.parent().expect("parent");
+        let mut replaced = false;
+        let mut restored = false;
+        let result = open_regular_windows(&normalized, |phase, child, _| {
+            if child != normalized_parent {
+                return;
+            }
+            if phase == SourceOpenCheckpoint::BeforeChild {
+                std::fs::rename(&parent, &saved).expect("swap directory before it is opened");
+                let output = std::process::Command::new("cmd")
+                    .args(["/d", "/c", "mklink", "/J"])
+                    .arg(&parent)
+                    .arg(outside.path())
+                    .output()
+                    .expect("junction fixture");
+                assert!(
+                    output.status.success(),
+                    "junction fixture failed: {output:?}"
+                );
+                assert_eq!(
+                    std::fs::read(parent.join("source.txt")).expect("junction is active"),
+                    b"PRIVATE_OUTSIDE_CONTENT"
+                );
+                replaced = true;
+            } else {
+                std::fs::remove_dir(&parent).expect("remove junction only");
+                std::fs::rename(&saved, &parent).expect("restore original path before postcheck");
+                restored = true;
+            }
+        });
+        assert!(
+            replaced && restored,
+            "both deterministic race checkpoints ran"
+        );
+        assert!(
+            result.is_err(),
+            "the intermediate junction must never be followed"
+        );
+        assert_eq!(
+            std::fs::read(parent.join("source.txt")).unwrap(),
+            b"authorized source"
+        );
+        assert_eq!(
+            std::fs::canonicalize(parent.join("source.txt")).unwrap(),
+            normalized
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_windows_in_place_reparse_mutation_cannot_redirect_opened_parent() {
+        use std::os::windows::fs::MetadataExt;
+
+        let directory = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside workspace");
+        let parent = directory.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        let source = parent.join("source.txt");
+        std::fs::write(&source, "authorized source").expect("source");
+        std::fs::write(outside.path().join("source.txt"), "PRIVATE_OUTSIDE_CONTENT")
+            .expect("outside source");
+        let script = directory.path().join("mutate-junction.ps1");
+        std::fs::write(&script, WINDOWS_REPARSE_FIXTURE).expect("fixture helper");
+        let normalized = std::fs::canonicalize(&source).expect("canonical source");
+        let mut mutated = false;
+        let mut restored = false;
+        let result = open_regular_windows(&normalized, |phase, child, opened_parent| {
+            if child != normalized {
+                return;
+            }
+            let operation = if phase == SourceOpenCheckpoint::BeforeChild {
+                // NTFS permits setting a junction on an existing empty
+                // directory. Keep its handle open and mutate that same object.
+                std::fs::remove_file(&source).expect("empty the held directory");
+                "set"
+            } else {
+                "delete"
+            };
+            let output = std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(&script)
+                .arg(operation)
+                .arg(&parent)
+                .arg(outside.path())
+                .output()
+                .expect("attribute-only reparse fixture helper");
+            assert!(
+                output.status.success(),
+                "in-place reparse {operation} fixture failed; no race evidence: {output:?}"
+            );
+            let attributes = opened_parent
+                .metadata()
+                .expect("same opened directory")
+                .file_attributes();
+            if phase == SourceOpenCheckpoint::BeforeChild {
+                assert_ne!(
+                    attributes & 0x0000_0400,
+                    0,
+                    "the opened object itself became a junction"
+                );
+                assert_eq!(std::fs::read(&source).unwrap(), b"PRIVATE_OUTSIDE_CONTENT");
+                mutated = true;
+            } else {
+                assert_eq!(attributes & 0x0000_0400, 0, "the same object was restored");
+                std::fs::write(&source, "authorized source").expect("restore original file");
+                restored = true;
+            }
+        });
+        assert!(
+            mutated && restored,
+            "both deterministic mutation checkpoints ran"
+        );
+        assert!(
+            result.is_err(),
+            "a held parent must not redirect to junction target bytes"
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"authorized source");
+        assert_eq!(std::fs::canonicalize(&source).unwrap(), normalized);
+    }
+
+    // Only used on disposable test directories. FILE_WRITE_ATTRIBUTES (0x100)
+    // deliberately proves why deny-write sharing is not a reparse defense.
+    // No Rust unsafe-code exception or privileged symlink creation is needed.
+    #[cfg(windows)]
+    const WINDOWS_REPARSE_FIXTURE: &str = r#"
+param([string]$Operation, [string]$SourceDirectory, [string]$Destination)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class ReparseFixture {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
+        IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle handle, uint code,
+        byte[] input, uint length, IntPtr output, uint outputLength,
+        out uint returned, IntPtr overlapped);
+    public static void Change(string operation, string directory, string target) {
+        byte[] buffer;
+        uint control;
+        using (var stream = new MemoryStream()) {
+            using (var writer = new BinaryWriter(stream, Encoding.Unicode, true)) {
+                writer.Write((uint)0xA0000003);
+                if (operation == "set") {
+                    string full = Path.GetFullPath(target);
+                    string substitute = full.StartsWith(@"\\?\")
+                        ? @"\??\" + full.Substring(4) : @"\??\" + full;
+                    byte[] sub = Encoding.Unicode.GetBytes(substitute);
+                    byte[] print = Encoding.Unicode.GetBytes(full);
+                    writer.Write((ushort)(8 + sub.Length + 2 + print.Length + 2));
+                    writer.Write((ushort)0);
+                    writer.Write((ushort)0);
+                    writer.Write((ushort)sub.Length);
+                    writer.Write((ushort)(sub.Length + 2));
+                    writer.Write((ushort)print.Length);
+                    writer.Write(sub); writer.Write((ushort)0);
+                    writer.Write(print); writer.Write((ushort)0);
+                    control = 0x000900A4;
+                } else if (operation == "delete") {
+                    writer.Write((ushort)0); writer.Write((ushort)0);
+                    control = 0x000900AC;
+                } else { throw new ArgumentException("unknown fixture operation"); }
+            }
+            buffer = stream.ToArray();
+        }
+        using (var handle = CreateFileW(directory, 0x100, 7, IntPtr.Zero, 3,
+                                       0x02200000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            uint returned;
+            if (!DeviceIoControl(handle, control, buffer, (uint)buffer.Length,
+                                 IntPtr.Zero, 0, out returned, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+    }
+}
+'@
+[ReparseFixture]::Change($Operation, $SourceDirectory, $Destination)
+"#;
 
     #[cfg(windows)]
     #[test]

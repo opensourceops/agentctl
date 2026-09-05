@@ -23,7 +23,7 @@ The DSL carries request, turn, token, task, wall-time, process-output and artifa
 
 ## Expected artifacts and semantic assertions
 
-The runner validates the case-specific structured report and its source-derived fields.
+The runner validates the case-specific structured report and its source-derived fields. Planner and reviewer payload schemas require the exact reviewed token. A separate negative fixture deliberately permits an invalid fake reviewer payload through that agent schema to exercise the unchanged typed handoff; it must fail before any executor effect and preserve artifact bytes.
 
 - `artifacts/report.json`
 - `artifacts/role-change.txt`

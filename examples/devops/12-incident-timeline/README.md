@@ -23,7 +23,7 @@ The DSL carries request, turn, token, task, wall-time, process-output and artifa
 
 ## Expected artifacts and semantic assertions
 
-The runner validates the case-specific structured report and its source-derived fields.
+The runner validates the case-specific structured report and its source-derived fields. The agent preserves the computed whole-timeline duration and supplies at least one exact source citation. A deterministic empty-citation response must fail the agent schema before verification.
 
 - `artifacts/report.json`
 
