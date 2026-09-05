@@ -2,6 +2,7 @@
 """Execute the catalog through the real CLI from isolated clean directories."""
 import argparse
 import copy
+from contextlib import closing
 import hashlib
 import http.server
 import json
@@ -45,6 +46,14 @@ def run_id(envelope):
     return envelope.get("data", {}).get("runId") or envelope.get("error", {}).get("runId")
 
 
+def latest_run_id(database):
+    # sqlite3's connection context manages transactions; it does not close the
+    # handle. Explicit close is required before Windows can remove runtime.db.
+    with closing(sqlite3.connect(database, timeout=1)) as connection:
+        row = connection.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+        return row[0] if row else None
+
+
 def cleanup_workspace(base):
     root = Path(base).resolve()
     def remove_readonly(function, filename, exc_info):
@@ -66,6 +75,13 @@ class Case:
         self.cwd.mkdir()
         shutil.copytree(ROOT / entry["directory"], self.workspace)
         shutil.copy2(ROOT / "fixture.py", self.base / "fixture.py")
+        self.fixture_tools = {}
+        if "git" in entry["dependencies"]:
+            executable = shutil.which("git")
+            require(executable, "Git is required by this fixture")
+            executable = Path(executable).resolve()
+            self.fixture_tools["git"] = {"executable": str(executable), "sha256": digest(executable)}
+            save(self.base / "fixture-tools.json", self.fixture_tools)
         self.db = self.workspace / "runtime.db"
         self.evidence = self.workspace / "evidence"
         self.evidence.mkdir()
@@ -141,10 +157,7 @@ class Case:
             while time.monotonic() < deadline and child.poll() is None:
                 if self.db.exists():
                     try:
-                        with sqlite3.connect(self.db, timeout=1) as connection:
-                            row = connection.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
-                            if row:
-                                identifier = row[0]
+                        identifier = latest_run_id(self.db)
                         if identifier:
                             inspection = self.inspect(identifier, "before-crash.json")
                             if any(task["taskId"] == "deploy" and task["state"] == "succeeded" for task in inspection["tasks"]) and any(
@@ -374,7 +387,8 @@ class Case:
         identifier = None
         live_start = None
         result = {"id": self.entry["id"], "directory": self.entry["directory"], "mode": self.args.mode,
-                  "workspace": str(self.workspace), "workflowSha256": digest(self.workflow)}
+                  "workspace": str(self.workspace), "workflowSha256": digest(self.workflow),
+                  "fixtureTools": self.fixture_tools}
         try:
             self.cli(["check", self.workflow], filename="check.json")
             self.cli(["plan", self.workflow], filename="plan.json")

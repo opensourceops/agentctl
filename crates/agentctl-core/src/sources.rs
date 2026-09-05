@@ -914,6 +914,125 @@ mod tests {
         assert!(resolve(&mut base.clone(), dir.path()).is_err());
     }
 
+    #[cfg(unix)]
+    fn assert_unreadable_source_rejected(filename: &str, config: &str, scope: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempdir().expect("workspace");
+        let source = directory.path().join(filename);
+        std::fs::write(&source, "value: PRIVATE_SOURCE_CONTENT").expect("regular source");
+        let original = workflow(config);
+        resolve(&mut original.clone(), directory.path()).expect("readable fixture resolves");
+        let permissions = std::fs::metadata(&source).expect("metadata").permissions();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000))
+            .expect("remove file access permissions");
+        let permission_probe = File::open(&source);
+        if permission_probe.is_ok() {
+            std::fs::set_permissions(&source, permissions).expect("restore permissions");
+            eprintln!(
+                "SKIPPED OS permission-denial assertion for {filename}: this identity can open a mode-000 file (for example root or CAP_DAC_OVERRIDE); this run provides no unreadable-file evidence"
+            );
+            return;
+        }
+        let mut attempted = original.clone();
+        let result = resolve(&mut attempted, directory.path());
+        std::fs::set_permissions(&source, permissions).expect("restore permissions");
+        assert_eq!(
+            permission_probe
+                .expect_err("unreadable regular file")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let diagnostics = result.expect_err("permission denial must prevent capture");
+        assert_eq!(diagnostics[0].path.as_deref(), Some(scope));
+        assert!(diagnostics[0].message.contains(filename));
+        assert!(diagnostics[0].message.contains("cannot be opened"));
+        assert!(diagnostics[0].help.is_some());
+        assert!(!format!("{diagnostics:?}").contains("PRIVATE_SOURCE_CONTENT"));
+        assert_eq!(attempted, original, "failed capture must be atomic");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_unreadable_instruction_file_fails_before_capture() {
+        assert_unreadable_source_rejected(
+            "instructions.txt",
+            "  providers: { fake: { kind: fake } }\n  agents:\n    review: { provider: fake, model: fake, instructionsFile: instructions.txt }\n  tasks: [{ id: first, uses: 'agent:review' }]",
+            "spec.agents.review.instructionsFile",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_unreadable_variable_file_fails_before_capture() {
+        assert_unreadable_source_rejected(
+            "vars.yaml",
+            "  varsFiles: [vars.yaml]\n  actions: { assign: { kind: builtin.assign } }\n  tasks: [{ id: first, uses: 'action:assign' }]",
+            "spec.varsFiles[0]",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_windows_junction_escape_is_rejected_before_capture() {
+        let directory = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside workspace");
+        for filename in ["vars.yaml", "instructions.txt"] {
+            std::fs::write(
+                outside.path().join(filename),
+                "value: PRIVATE_OUTSIDE_CONTENT",
+            )
+            .expect("outside regular file");
+        }
+        let junction = directory.path().join("escape");
+        // Directory junctions on the local NTFS test volume do not require the
+        // symlink privilege or Developer Mode. Failure to create the fixture is
+        // a failed prerequisite, never evidence of successful escape rejection.
+        let created = std::process::Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .output()
+            .expect("Windows cmd creates local NTFS junction fixture");
+        assert!(
+            created.status.success(),
+            "junction fixture prerequisite failed; no escape coverage: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let normalized_root = std::fs::canonicalize(directory.path()).expect("canonical workspace");
+        for (filename, config, scope) in [
+            (
+                "vars.yaml",
+                "  varsFiles: [escape/vars.yaml]\n  actions: { assign: { kind: builtin.assign } }\n  tasks: [{ id: first, uses: 'action:assign' }]",
+                "spec.varsFiles[0]",
+            ),
+            (
+                "instructions.txt",
+                "  providers: { fake: { kind: fake } }\n  agents:\n    review: { provider: fake, model: fake, instructionsFile: escape/instructions.txt }\n  tasks: [{ id: first, uses: 'agent:review' }]",
+                "spec.agents.review.instructionsFile",
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read(junction.join(filename)).expect("junction reaches real outside file"),
+                b"value: PRIVATE_OUTSIDE_CONTENT"
+            );
+            assert!(regular_file_metadata(&normalized_root.join("escape").join(filename)).is_err());
+            let original = workflow(config);
+            let mut attempted = original.clone();
+            let diagnostics = resolve(&mut attempted, directory.path())
+                .expect_err("junction must not grant access outside the workspace");
+            assert_eq!(diagnostics[0].path.as_deref(), Some(scope));
+            assert!(
+                diagnostics[0]
+                    .message
+                    .contains("escapes the authorized root")
+            );
+            assert!(!format!("{diagnostics:?}").contains("PRIVATE_OUTSIDE_CONTENT"));
+            assert_eq!(attempted, original);
+        }
+        std::fs::remove_dir(&junction).expect("remove junction without removing its target");
+        assert!(outside.path().join("vars.yaml").is_file());
+    }
+
     #[test]
     fn reserved_bindings_are_rejected_but_ordinary_data_does_not_dereference_secrets() {
         let dir = tempdir().unwrap();

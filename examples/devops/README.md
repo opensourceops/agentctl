@@ -61,6 +61,14 @@ process grant. Host execution is not an operating-system sandbox; the helper
 can invoke the documented Git/Python subprocesses. Use only reviewed helpers
 on a trusted fixture runner.
 
+For Git fixtures, the runner resolves the installed executable before dispatch
+and stages its absolute path and SHA-256 in `fixture-tools.json` beside the
+copied helper. The helper verifies that fingerprint before invoking Git; the
+case report records the same configuration. This is trusted host preparation,
+separate from workflow variables and the compiled plan. It avoids importing
+PATH into cleared process environments, including on Windows. Run these fixtures
+through the suite runner so their support configuration is prepared.
+
 The approval cases preserve `approval: mutations`. The runner lists and reviews
 each pending effect, uses actor `devops-fixture-reviewer` with an explicit
 reason, and resumes the same durable run. This framework version records actors

@@ -51,7 +51,6 @@ export AGENTCTL_LIVE_MODEL=gpt-5.6-sol
 cargo xtask acceptance-live-openai
 cargo xtask resource-budget-live-openai
 cargo xtask examples-verify-live-openai
-python3 examples/devops/run.py --agentctl target/debug/agentctl --mode openai --model gpt-5-mini --live-budget "$AGENTCTL_LIVE_BUDGET" --keep --report /tmp/agentctl-devops-openai.json
 ```
 
 These commands are a deliberate release sequence, not a debugging loop. The
@@ -61,8 +60,23 @@ resource gate allows one dispatch and proves that the next requested effect
 is denied. The legacy example gate inventories public OpenAI workflows and
 the failed two-agent source/selective repair/keyless replay journey. It retains
 its additional 40-request and conservative US$10 guard. The four distinct
-DevOps OpenAI workflows are examples 01, 12, 19, and 20; the other examples
+DevOps OpenAI workflows are examples 01, 12, 19, and 20 and are included in the
+example gate; the other examples
 remain deterministic. See their [catalog](../examples/devops/catalog.json).
+
+After a failure in the composite, `cargo xtask examples-verify-live-openai-composites`
+runs that composite, selective repair, the OCI repair case and the four DevOps
+variants. It preserves every semantic assertion while avoiding four independent
+legacy workflows that already passed. Its evidence lists only executed examples
+and marks `legacyInventoryComplete: false`; combine it with the earlier source,
+logs and charged ledger when assessing the complete inventory. The normal full
+gate still executes every workflow. The container-only continuation remains
+available after a completed local summary. Do not repeat a successful paid case
+just to assemble a single green command invocation.
+
+For the four DevOps variants alone, use their runner's `--mode openai --model
+gpt-5-mini --live-budget "$AGENTCTL_LIVE_BUDGET" --keep` options and a report path;
+this is an alternative to their execution within the full example gate.
 
 The shared allowance is at most 100 provider requests, 200,000 input-plus-output
 tokens, 1,800 seconds of paid execution, and US$25 estimated cost, including
@@ -75,8 +89,16 @@ gate; it is never silently converted to a passing result. Parallel callers
 share the same atomic allowance; accumulated paid execution time may be more
 conservative than elapsed suite time.
 
+The CLI wrapper retains run identity, numeric observed budget counters and
+effect statuses in the shared ledger before attempting reconciliation. It
+excludes prompts, workflow values, provider error text and tool/model outputs.
+This preserves actionable accounting evidence when a temporary fixture is
+cleaned up after failure.
+
 Copied live fixtures receive the explicitly selected model, bounded runtime
 budgets, and a versioned price schedule before compilation and approvals.
+Per-agent output reservations also fit the existing aggregate output ceiling
+at the configured concurrency; the harness does not enlarge that ceiling.
 Checked-in model choices remain unchanged. Monetary accounting is an estimate
 from reviewed public prices, not an invoice or automatic price discovery.
 Unpriced model selections fail before dispatch. The lower-cost DevOps variants

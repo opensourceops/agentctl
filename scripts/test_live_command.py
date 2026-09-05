@@ -197,6 +197,20 @@ class WrapperTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "fixture-private-key"}):
             self.assertEqual(wrapper.redact(b"prefix fixture-private-key suffix"), b"prefix [REDACTED] suffix")
 
+    def test_uncertain_usage_retains_numeric_audit_metadata_without_payloads(self):
+        self.after = inspection(status="uncertain", state="failed")
+        self.after["effects"][0]["request"]["input"] = "PRIVATE_TOOL_PAYLOAD"
+        self.after["run"]["workflow"]["private"] = "PRIVATE_WORKFLOW_VALUE"
+        self.assertEqual(self.execute("run", "workflow.yaml"), 2)
+        with closing(sqlite3.connect(self.budget)) as connection:
+            encoded = connection.execute("SELECT metadata_json FROM reservations").fetchone()[0]
+        self.assertNotIn("PRIVATE_", encoded)
+        metadata = json.loads(encoded)
+        self.assertEqual(metadata["runId"], "fixture-run")
+        self.assertEqual(metadata["observedBudget"]["usage"]["inputTokens"], 10)
+        self.assertEqual(metadata["effectStatuses"], ["uncertain"])
+        self.assertEqual(self.rows()[0][0], "reserved")
+
 
 if __name__ == "__main__":
     unittest.main()

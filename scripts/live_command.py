@@ -161,6 +161,25 @@ def delta_usage(after, before):
     return delta
 
 
+def retain_inspection_metadata(ledger, reservation, run_id, inspection):
+    """Keep audit identity and numeric counters even when reconciliation refuses.
+
+    Do not retain workflow, prompt, effect payload, provider error text or output.
+    """
+    row = ledger.connection.execute("SELECT metadata_json FROM reservations WHERE id=?", (reservation,)).fetchone()
+    metadata = json.loads(row[0])
+    budget = inspection.get("budget", {})
+    metadata["runId"] = run_id
+    metadata["runState"] = inspection.get("run", {}).get("state")
+    metadata["observedBudget"] = {section: {key: value for key, value in budget.get(section, {}).items()
+                                           if nonnegative(value)} for section in ["usage", "reserved"]}
+    exceeded = budget.get("exceeded")
+    if isinstance(exceeded, dict):
+        metadata["budgetExceeded"] = {key: exceeded[key] for key in ["dimension", "limit", "attempted"] if key in exceeded}
+    metadata["effectStatuses"] = [effect.get("status") for effect in inspection.get("effects", [])]
+    ledger.connection.execute("UPDATE reservations SET metadata_json=? WHERE id=?", (json.dumps(metadata), reservation))
+
+
 def exit_status(code):
     return 128 - code if code < 0 else code
 
@@ -239,7 +258,9 @@ def execute(budget_path, model, argv):
         if result.returncode < 0 or len(run_ids) != 1:
             raise BudgetError("no unique completed run identity; full reservation retained")
         run_id = next(iter(run_ids))
-        usage = complete_usage(inspect(binary, run_id, database))
+        inspection = inspect(binary, run_id, database)
+        retain_inspection_metadata(ledger, reservation, run_id, inspection)
+        usage = complete_usage(inspection)
         ledger.reconcile(reservation, delta_usage(usage, before), elapsed)
     except (BudgetError, ValueError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as error:
         warning(str(error))

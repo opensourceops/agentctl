@@ -46,6 +46,20 @@ pub fn configure(path: &Path) -> Result<()> {
 
 fn configure_value(workflow: &mut Value, model: &str) -> Result<()> {
     let (input, output, cache_read, cache_write) = prices(model)?;
+    let concurrency = workflow
+        .pointer("/spec/runtime/maxConcurrency")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1);
+    let parallel_output_cap = workflow
+        .pointer("/spec/runtime/budgets/maxOutputTokens")
+        .and_then(Value::as_u64)
+        .map(|limit| limit / concurrency)
+        .unwrap_or(2048);
+    ensure!(
+        parallel_output_cap > 0,
+        "live output budget cannot reserve one token per concurrent task"
+    );
     let providers = workflow
         .pointer("/spec/providers")
         .and_then(Value::as_object)
@@ -72,7 +86,8 @@ fn configure_value(workflow: &mut Value, model: &str) -> Result<()> {
             let cap = agent["maxOutputTokens"]
                 .as_u64()
                 .unwrap_or(512)
-                .clamp(512, 2048);
+                .clamp(512, 2048)
+                .min(parallel_output_cap);
             agent["maxOutputTokens"] = json!(cap);
             agent["timeoutSeconds"] =
                 json!(agent["timeoutSeconds"].as_u64().unwrap_or(60).min(120));
@@ -146,5 +161,46 @@ mod tests {
         assert_eq!(workflow["spec"]["agents"]["b"]["model"], "scripted");
         assert_eq!(workflow["spec"]["agents"]["a"]["model"], "gpt-5.6-sol");
         assert!(prices("unpriced-model").is_err());
+    }
+
+    #[test]
+    fn live_configuration_preserves_aggregate_parallel_output_reservations() {
+        let mut workflow: Value = serde_yaml_ng::from_str(include_str!(
+            "../../examples/framework-completeness/live-composite.yaml"
+        ))
+        .unwrap();
+        configure_value(&mut workflow, "gpt-5.6-sol").unwrap();
+        assert_eq!(
+            workflow["spec"]["runtime"]["budgets"]["maxOutputTokens"],
+            1536
+        );
+        assert_eq!(workflow["spec"]["runtime"]["maxConcurrency"], 4);
+        for agent in workflow["spec"]["agents"].as_object().unwrap().values() {
+            assert_eq!(agent["maxOutputTokens"], 384);
+        }
+    }
+
+    #[test]
+    fn parallel_budget_fix_leaves_independent_live_fixture_caps_unchanged() {
+        for yaml in [
+            include_str!("../../examples/openai-live/workflow.yaml"),
+            include_str!("../../examples/v1/openai-live.yaml"),
+            include_str!("../../examples/v1/secret-reference.yaml"),
+            include_str!("../../examples/docs/provider-portability/openai.yaml"),
+        ] {
+            let mut workflow: Value = serde_yaml_ng::from_str(yaml).unwrap();
+            let before = workflow["spec"]["agents"].clone();
+            configure_value(&mut workflow, "gpt-5.6-sol").unwrap();
+            for (name, agent) in before.as_object().unwrap() {
+                let prior_cap = agent["maxOutputTokens"]
+                    .as_u64()
+                    .unwrap_or(512)
+                    .clamp(512, 2048);
+                assert_eq!(
+                    workflow["spec"]["agents"][name]["maxOutputTokens"],
+                    prior_cap
+                );
+            }
+        }
     }
 }

@@ -1,6 +1,10 @@
 import json
+import hashlib
+from contextlib import closing
 import os
 from pathlib import Path
+import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -9,10 +13,60 @@ import unittest
 from unittest.mock import patch
 
 import fixture
-from run import cleanup_workspace
+from run import cleanup_workspace, latest_run_id
 
 
 class FixturePortabilityTests(unittest.TestCase):
+    def test_explicit_git_works_with_empty_environment_and_crlf_patch(self):
+        executable = shutil.which("git")
+        self.assertIsNotNone(executable, "Git is a fixture prerequisite")
+        executable = Path(executable).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(fixture.__file__, root / "fixture.py")
+            support = {"git": {"executable": str(executable),
+                               "sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}}
+            (root / "fixture-tools.json").write_text(json.dumps(support))
+            script = (
+                f"import sys; sys.path.insert(0, {str(root)!r}); import fixture; "
+                "fixture.patch('sample.txt', 'before\\r\\n', 'after\\r\\n'); "
+                "assert fixture.path('artifacts/patch-workspace/sample.txt').read_bytes() == b'after\\r\\n'"
+            )
+            child = subprocess.run(["python3", "-c", script], executable=sys.executable,
+                                   cwd=root, env={}, capture_output=True, text=True, timeout=10)
+            self.assertEqual(child.returncode, 0, child.stderr)
+            support["git"]["sha256"] = "0" * 64
+            (root / "fixture-tools.json").write_text(json.dumps(support))
+            rejected = subprocess.run(["python3", "-c", script], executable=sys.executable,
+                                      cwd=root, env={}, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("Git installation changed after runner preflight", rejected.stderr)
+
+    def test_package_digest_rejects_changed_line_endings(self):
+        source = Path(__file__).resolve().parent / "10-release-readiness/fixtures"
+        package = (source / "package.txt").read_bytes()
+        gates = json.loads((source / "gates.json").read_text())
+        self.assertEqual(hashlib.sha256(package).hexdigest(), gates["packageSha256"])
+        with tempfile.TemporaryDirectory() as directory, patch.object(fixture, "ROOT", Path(directory).resolve()):
+            root = Path(directory)
+            shutil.copytree(source, root / "fixtures")
+            (root / "fixtures/package.txt").write_bytes(package.replace(b"\n", b"\r\n"))
+            self.assertEqual(fixture.analyze("10", {})["blocking"], ["security-review", "package-digest"])
+
+    def test_run_probe_closes_sqlite_handle_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "runtime.db"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("CREATE TABLE runs (run_id TEXT, created_at INTEGER)")
+                connection.execute("INSERT INTO runs VALUES ('fixture-run', 1)")
+                connection.commit()
+            connection = sqlite3.connect(database)
+            with patch("run.sqlite3.connect", return_value=connection):
+                self.assertEqual(latest_run_id(database), "fixture-run")
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+            database.unlink()
+
     def test_nested_python_runs_with_empty_environment(self):
         script = (
             f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "

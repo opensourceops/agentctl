@@ -3910,7 +3910,7 @@ pub fn live_openai_budget(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn examples_live_openai(root: &Path) -> Result<()> {
+pub fn examples_live_openai(root: &Path, composites_only: bool) -> Result<()> {
     let (_, model) = super::live_config::settings()?;
     ensure!(
         env::var_os("OPENAI_API_KEY").is_some(),
@@ -3943,13 +3943,20 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     let mut tool_calls = 0_usize;
     let mut example_runs = Vec::new();
 
-    for (example, expected_code) in [
+    let local_examples = [
         ("examples/openai-live/workflow.yaml", 0),
         ("examples/v1/openai-live.yaml", 0),
         ("examples/v1/secret-reference.yaml", 0),
         ("examples/docs/provider-portability/openai.yaml", 0),
         ("examples/framework-completeness/live-composite.yaml", 0),
-    ] {
+    ];
+    // A failed composite can continue without paying for four already-verified
+    // independent workflows. Evidence below lists only cases actually executed.
+    for (example, expected_code) in
+        local_examples
+            .into_iter()
+            .skip(if composites_only { 4 } else { 0 })
+    {
         let directory = tempfile::tempdir()?;
         let source = root.join(example);
         let source_parent = source.parent().context("live example parent")?;
@@ -4375,7 +4382,8 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         Some(&container),
     )?;
     println!(
-        "live OpenAI example verification passed: legacyExamples=7 devopsExamples=4 model={model} legacyRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
+        "live OpenAI example verification passed: legacyExamples={} devopsExamples=4 model={model} legacyRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
+        if composites_only { 3 } else { 7 },
         usage.input,
         usage.output,
         usage.reasoning,
@@ -5214,7 +5222,8 @@ fn write_live_summary(
     let mut value = serde_json::json!({
         "formatVersion": 1,
         "status": status,
-        "scope": "legacy OpenAI workflows; four DevOps workflows have separate devops-live.json evidence",
+        "scope": "only listed legacy OpenAI workflows; four DevOps workflows have separate devops-live.json evidence",
+        "legacyInventoryComplete": examples.iter().filter_map(|entry| entry["example"].as_str()).collect::<BTreeSet<_>>().len() == 7,
         "model": model,
         "requestCount": requests,
         "toolCallCount": tool_calls,
@@ -7095,6 +7104,7 @@ mod tests {
         )
         .expect("parse summary");
         assert_eq!(summary["status"], "local-and-container-complete");
+        assert_eq!(summary["legacyInventoryComplete"], false);
         assert_eq!(summary["model"], "fixture-model");
         assert_eq!(summary["container"]["sourceRunId"], "source");
         assert_eq!(summary["container"]["requestCount"], 5);

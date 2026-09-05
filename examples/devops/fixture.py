@@ -43,16 +43,38 @@ def document(name):
 def write(name, value):
     target = path(name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(value if isinstance(value, str) else json.dumps(value, indent=2) + "\n")
+    target.write_bytes((value if isinstance(value, str) else json.dumps(value, indent=2) + "\n").encode("utf-8"))
 
 
 def command(argv, cwd=None, expected=0):
+    if argv[0] == "git":
+        argv = [git_executable()] + argv[1:]
     result = subprocess.run(argv, cwd=cwd or ROOT, capture_output=True, text=True, timeout=30)
     if result.returncode != expected:
         raise ValueError(f"{argv[0]} returned {result.returncode}: {result.stderr[:2000]}")
     if len(result.stdout) + len(result.stderr) > 1024 * 1024:
         raise ValueError("fixture subprocess output exceeds 1 MiB")
     return result
+
+
+def git_executable():
+    # The trusted runner stages this beside the helper, outside workflow data.
+    # Cleared child environments cannot discover Git for Windows through PATH.
+    config_path = Path(__file__).resolve().with_name("fixture-tools.json")
+    if not config_path.is_file():
+        executable = shutil.which("git")
+        if not executable:
+            raise FileNotFoundError("use the suite runner to stage the trusted Git installation")
+        return executable
+    if config_path.stat().st_size > 16384:
+        raise ValueError("fixture tool configuration exceeds 16 KiB")
+    configured = json.loads(config_path.read_text(encoding="utf-8"))["git"]
+    executable = Path(configured["executable"])
+    if not executable.is_absolute() or not executable.is_file():
+        raise ValueError("fixture Git executable must be an existing absolute path")
+    if hashlib.sha256(executable.read_bytes()).hexdigest() != configured["sha256"]:
+        raise ValueError("fixture Git installation changed after runner preflight")
+    return str(executable)
 
 
 def python_executable():
@@ -84,12 +106,12 @@ def patch(relative, before, after):
     work.mkdir(parents=True, exist_ok=True)
     target = work / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(before)
+    target.write_bytes(before.encode("utf-8"))
     patch_file = path("artifacts/proposed.patch")
     write("artifacts/proposed.patch", patch_text)
     command(["git", "apply", "--check", str(patch_file)], cwd=work)
     command(["git", "apply", str(patch_file)], cwd=work)
-    if target.read_text() != after:
+    if target.read_bytes().decode("utf-8") != after:
         raise ValueError("applied patch differs from validated proposal")
     return {"path": "artifacts/proposed.patch", "appliedAndVerified": True,
             "sha256": hashlib.sha256(patch_text.encode()).hexdigest()}

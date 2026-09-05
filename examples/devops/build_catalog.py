@@ -33,7 +33,7 @@ def save(folder, name, value):
     target.parent.mkdir(parents=True, exist_ok=True)
     if name.endswith('.md') and isinstance(value, str):
         value = '\n'.join(line.rstrip() for line in value.splitlines()) + '\n'
-    target.write_text(value if isinstance(value,str) else json.dumps(value, indent=2)+'\n')
+    target.write_bytes((value if isinstance(value,str) else json.dumps(value, indent=2)+'\n').encode('utf-8'))
 
 def obj(properties):
     return {'type':'object','required':list(properties),'additionalProperties':False,'properties':properties}
