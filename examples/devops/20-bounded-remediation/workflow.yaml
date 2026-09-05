@@ -151,7 +151,7 @@
     "tools": {
       "repair_config": {
         "kind": "builtin.workspace.write",
-        "description": "Write the validated local timeout setting",
+        "description": "Stage the exact approved decimal timeout value",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -163,13 +163,13 @@
             "path": {
               "type": "string",
               "enum": [
-                "artifacts/remediation.json"
+                "artifacts/timeout-seconds.txt"
               ]
             },
             "content": {
               "type": "string",
               "enum": [
-                "{\"timeoutSeconds\":30}\n"
+                "30"
               ]
             }
           }
@@ -217,8 +217,8 @@
         "providerOptions": {
           "finalText": "{\"done\": true, \"timeoutSeconds\": 30}",
           "toolInput": {
-            "path": "artifacts/remediation.json",
-            "content": "{\"timeoutSeconds\":30}\n"
+            "path": "artifacts/timeout-seconds.txt",
+            "content": "30"
           }
         }
       }

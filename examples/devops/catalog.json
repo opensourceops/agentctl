@@ -902,7 +902,9 @@
       "openaiRequestCeiling": 6,
       "services": [],
       "artifacts": [
-        "artifacts/report.json"
+        "artifacts/report.json",
+        "artifacts/timeout-seconds.txt",
+        "artifacts/remediation.json"
       ],
       "evidence": {
         "status": "see source-labeled validation.json; final commit gates assessed separately",

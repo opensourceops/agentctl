@@ -306,6 +306,11 @@ def analyze(case, payload):
             raise ValueError("executor artifact differs from reviewed payload")
         return {"executed": True, "content": value, "scope": "local role handoff fixture"}
     if case == "20":
+        token = path("artifacts/timeout-seconds.txt").read_bytes()
+        if token != b"30":
+            raise ValueError("remediation token must be exactly the approved decimal bytes")
+        approved = {"timeoutSeconds": int(token)}
+        write("artifacts/remediation.json", json.dumps(approved, separators=(",", ":")) + "\n")
         result = document("artifacts/remediation.json")
         if result != {"timeoutSeconds": 30}:
             raise ValueError("remediation output failed final semantic validation")

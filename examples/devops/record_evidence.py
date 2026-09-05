@@ -26,6 +26,25 @@ def read_report(filename):
     return {"source": source, "results": results, "liveBudget": data.get("liveBudget")}
 
 
+
+def live_coverage(reports):
+    """Describe source-labeled union coverage without turning failed runs green."""
+    required = ["01", "12", "19", "20"]
+    cases = {identifier: {"passed": False, "attempts": []} for identifier in required}
+    for report in reports:
+        if report.get("source", {}).get("mode") != "openai":
+            continue
+        for result in report["results"]:
+            if result["id"] not in cases:
+                raise ValueError("unexpected live DevOps example ID")
+            case = cases[result["id"]]
+            case["attempts"].append({"source": report["source"], "result": result})
+            case["passed"] = case["passed"] or result["status"] == "passed"
+    return {"scope": "Union of individually passed cases at their recorded sources; failures remain in attempts. This is not a whole-invocation or final-source release verdict.",
+            "requiredIds": required, "allRequiredIdsHavePassed": all(case["passed"] for case in cases.values()),
+            "cases": cases}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deterministic", type=Path, required=True)
@@ -54,6 +73,7 @@ def main():
                                                                            "imageId", "response", "performanceClaim"]}
     else:
         evidence["container"] = {"status": "not-executed"}
+    evidence["liveCoverage"] = live_coverage(evidence["focused"] + [evidence["live"]])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(evidence, indent=2) + "\n")
 

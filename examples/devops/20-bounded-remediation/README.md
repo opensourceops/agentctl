@@ -23,9 +23,11 @@ The DSL carries request, turn, token, task, wall-time, process-output and artifa
 
 ## Expected artifacts and semantic assertions
 
-The runner validates the case-specific structured report and its source-derived fields. A separate deterministic nonconverging run must stop after three iterations and at most six requests. Fake pricing is an explicit synthetic accounting fixture, not a provider cost claim. Live execution requires separately supplied current provider prices to retain a monetary ceiling.
+The runner validates the case-specific structured report and its source-derived fields. The model tool stages only the exact bytes `30` at a fixed path. After the loop completes, the deterministic helper rejects any other bytes before creating the canonical JSON configuration `{"timeoutSeconds":30}` followed by one newline; the final typed value must remain exactly 30. This decimal staging representation avoids the provider rejecting embedded JSON quotes in a strict tool-schema string enum, while preserving the fixed path and allowed value. A separate deterministic nonconverging run must stop after three iterations and at most six requests. Fake pricing is an explicit synthetic accounting fixture, not a provider cost claim. Live execution requires separately supplied current provider prices to retain a monetary ceiling.
 
 - `artifacts/report.json`
+- `artifacts/timeout-seconds.txt`
+- `artifacts/remediation.json`
 
 Deterministic execution status is recorded by the suite report, not inferred from static checking. Live model output is checked semantically, never by exact prose equality.
 

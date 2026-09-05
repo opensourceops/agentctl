@@ -304,6 +304,10 @@ class Case:
             items = output["items"]
             require([item["output"]["index"] for item in items] == list(range(4)), "matrix aggregation order is unstable")
         if case == "20":
+            require((self.workspace / "artifacts/timeout-seconds.txt").read_bytes() == b"30",
+                    "model tool staged bytes outside the approved decimal contract")
+            require((self.workspace / "artifacts/remediation.json").read_bytes() == b'{"timeoutSeconds":30}\n',
+                    "deterministic remediation serialization changed the approved configuration")
             loop = next(task for task in inspection["tasks"] if task["taskId"] == "remediate")
             require(loop["output"]["iterations"] == 1, "completion guard failed to stop bounded loop")
             require(inspection["budget"]["usage"]["providerRequests"] == 2, "unexpected remediation requests")

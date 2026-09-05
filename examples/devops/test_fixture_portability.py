@@ -17,6 +17,23 @@ from run import cleanup_workspace, latest_run_id
 
 
 class FixturePortabilityTests(unittest.TestCase):
+    def test_remediation_token_is_byte_exact_before_serialization(self):
+        for token in [b"30", b"30\n", b" 30", b"31", b'{"timeoutSeconds":30}\n']:
+            with self.subTest(token=token), tempfile.TemporaryDirectory() as directory, patch.object(fixture, "ROOT", Path(directory).resolve()):
+                root = Path(directory)
+                (root / "artifacts").mkdir()
+                (root / "artifacts/timeout-seconds.txt").write_bytes(token)
+                final = root / "artifacts/remediation.json"
+                if token == b"30":
+                    report = fixture.analyze("20", {})
+                    self.assertTrue(report["validated"])
+                    self.assertEqual(report["configuration"], {"timeoutSeconds": 30})
+                    self.assertEqual(final.read_bytes(), b'{"timeoutSeconds":30}\n')
+                else:
+                    with self.assertRaisesRegex(ValueError, "approved decimal bytes"):
+                        fixture.analyze("20", {})
+                    self.assertFalse(final.exists())
+
     def test_pipeline_patch_preserves_proposal_bytes_with_host_autocrlf_enabled(self):
         before = json.dumps({"permissions": "write-all", "jobs": {"test": {"timeout-minutes": 90}}}, indent=2) + "\n"
         expected = json.dumps({"permissions": "read-all", "jobs": {"test": {"timeout-minutes": 15}}}, indent=2) + "\n"
