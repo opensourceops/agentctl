@@ -1,7 +1,7 @@
 """Persistent aggregate reservation ledger shared by all explicitly paid gates.
 
-API: ledger = LiveBudget(path); reservation = ledger.reserve(label, limits,
-metadata); ledger.reconcile(reservation, usage, elapsed_seconds). `limits` uses
+Use `with LiveBudget(path) as ledger` to reserve(label, limits, metadata), then
+reconcile(reservation, usage, elapsed_seconds). `limits` uses
 runtime.budgets camelCase names; usage uses inspect.data.budget.usage names.
 An unreconciled reservation remains fully charged, including after process death.
 No credential or prompt is stored. SQLite IMMEDIATE transactions serialize callers.
@@ -24,14 +24,28 @@ class LiveBudget:
         self.filename = Path(filename).resolve()
         self.filename.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.filename, timeout=30, isolation_level=None)
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("CREATE TABLE IF NOT EXISTS budget_config (id INTEGER PRIMARY KEY, limits_json TEXT NOT NULL)")
-        self.connection.execute("CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL, charged_json TEXT NOT NULL, reserved_json TEXT NOT NULL, metadata_json TEXT NOT NULL, created REAL NOT NULL)")
-        self.connection.execute("INSERT OR IGNORE INTO budget_config VALUES (1, ?)", (json.dumps(limits or DEFAULTS),))
-        configured = json.loads(self.connection.execute("SELECT limits_json FROM budget_config WHERE id=1").fetchone()[0])
-        if limits is not None and configured != limits:
-            raise ValueError("existing live-budget limits differ; cannot silently reset or increase a shared allowance")
-        self.limits = configured
+        try:
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS budget_config (id INTEGER PRIMARY KEY, limits_json TEXT NOT NULL)")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL, charged_json TEXT NOT NULL, reserved_json TEXT NOT NULL, metadata_json TEXT NOT NULL, created REAL NOT NULL)")
+            self.connection.execute("INSERT OR IGNORE INTO budget_config VALUES (1, ?)", (json.dumps(limits or DEFAULTS),))
+            configured = json.loads(self.connection.execute("SELECT limits_json FROM budget_config WHERE id=1").fetchone()[0])
+            if limits is not None and configured != limits:
+                raise ValueError("existing live-budget limits differ; cannot silently reset or increase a shared allowance")
+            self.limits = configured
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        """Release the SQLite handle; committed reservations remain charged."""
+        self.connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
     def _totals(self):
         totals = {key: 0 for key in KEYS}

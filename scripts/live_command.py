@@ -223,52 +223,44 @@ def execute(budget_path, model, argv):
         if requested <= 0:
             raise BudgetError("command timeout must be positive")
         timeout = min(timeout, requested)
-    ledger = LiveBudget(budget_path)
-    actual_models = sorted({agent.get("model", "") for agent in workflow.get("spec", {}).get("agents", {}).values()})
-    try:
+    with LiveBudget(budget_path) as ledger:
+        actual_models = sorted({agent.get("model", "") for agent in workflow.get("spec", {}).get("agents", {}).values()})
         reservation = ledger.reserve(f"legacy:{command}", limits, {"command": command, "model": model, "workflowModels": actual_models})
-    except BaseException:
-        ledger.connection.close()
-        raise
-    start = time.monotonic()
-    try:
-        result = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as error:
-        emit(error.stdout, error.stderr)
-        warning("command timed out; full reservation retained")
-        ledger.connection.close()
-        return 124
-    except (OSError, KeyboardInterrupt):
-        warning("command interrupted or failed to start; full reservation retained")
-        ledger.connection.close()
-        return 130
-    elapsed = time.monotonic() - start
-    emit(result.stdout, result.stderr)
-    run_ids = set()
-    for envelope in documents(result.stdout) + documents(result.stderr):
-        for field in ("data", "error"):
-            item = envelope.get(field)
-            run_id = item.get("runId") if isinstance(item, dict) else None
-            if isinstance(run_id, str) and run_id:
-                run_ids.add(run_id)
-    if command == "resume":
-        run_ids.add(positional[1])
-    result_code = exit_status(result.returncode)
-    try:
-        if result.returncode < 0 or len(run_ids) != 1:
-            raise BudgetError("no unique completed run identity; full reservation retained")
-        run_id = next(iter(run_ids))
-        inspection = inspect(binary, run_id, database)
-        retain_inspection_metadata(ledger, reservation, run_id, inspection)
-        usage = complete_usage(inspection)
-        ledger.reconcile(reservation, delta_usage(usage, before), elapsed)
-    except (BudgetError, ValueError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as error:
-        warning(str(error))
-        if result_code == 0:
-            result_code = 2
-    finally:
-        ledger.connection.close()
-    return result_code
+        start = time.monotonic()
+        try:
+            result = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as error:
+            emit(error.stdout, error.stderr)
+            warning("command timed out; full reservation retained")
+            return 124
+        except (OSError, KeyboardInterrupt):
+            warning("command interrupted or failed to start; full reservation retained")
+            return 130
+        elapsed = time.monotonic() - start
+        emit(result.stdout, result.stderr)
+        run_ids = set()
+        for envelope in documents(result.stdout) + documents(result.stderr):
+            for field in ("data", "error"):
+                item = envelope.get(field)
+                run_id = item.get("runId") if isinstance(item, dict) else None
+                if isinstance(run_id, str) and run_id:
+                    run_ids.add(run_id)
+        if command == "resume":
+            run_ids.add(positional[1])
+        result_code = exit_status(result.returncode)
+        try:
+            if result.returncode < 0 or len(run_ids) != 1:
+                raise BudgetError("no unique completed run identity; full reservation retained")
+            run_id = next(iter(run_ids))
+            inspection = inspect(binary, run_id, database)
+            retain_inspection_metadata(ledger, reservation, run_id, inspection)
+            usage = complete_usage(inspection)
+            ledger.reconcile(reservation, delta_usage(usage, before), elapsed)
+        except (BudgetError, ValueError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as error:
+            warning(str(error))
+            if result_code == 0:
+                result_code = 2
+        return result_code
 
 
 def main(argv=None):

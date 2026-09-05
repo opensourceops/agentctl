@@ -83,6 +83,19 @@ class WrapperTests(unittest.TestCase):
         self.assertFalse(self.warnings)
         self.assertEqual([call[0][1] for call in self.calls], ["migrate", "run", "inspect"])
 
+    def test_unexpected_output_error_closes_ledger_and_preserves_reservation(self):
+        ledger = wrapper.LiveBudget(self.budget)
+        with patch.object(wrapper, "LiveBudget", return_value=ledger), patch.object(wrapper, "emit", side_effect=RuntimeError("fixture output failure")):
+            with self.assertRaisesRegex(RuntimeError, "fixture output failure"):
+                self.execute("run", "workflow.yaml")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            ledger.connection.execute("SELECT 1")
+        status, charged, reserved = self.rows()[0]
+        self.assertEqual(status, "reserved")
+        self.assertEqual(charged, reserved)
+        self.budget.unlink()
+        self.assertFalse(self.budget.exists())
+
     def test_definitive_http_failure_on_stderr_counts_one_request(self):
         self.after = inspection(requests=1, inputs=0, outputs=0, cost=0, state="failed", status="failed")
         self.code, self.stdout = 6, b""

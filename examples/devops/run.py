@@ -555,32 +555,36 @@ def main():
         require(args.live_budget, "paid mode requires an explicit --live-budget shared across the entire launch suite")
         require(bool(os.environ.get("OPENAI_API_KEY")), "OPENAI_API_KEY unavailable at runtime")
         ledger = LiveBudget(args.live_budget)
-    source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True)
-    report = {"schemaVersion": "agentctl.dev/devops-evidence/v1", "sourceSha": source.stdout.strip(),
-              "sourceWorktreeDirty": bool(dirty.stdout.strip()),
-              "supportSha256": {name: digest(ROOT / name) for name in ["run.py", "fixture.py", "live_budget.py"]},
-              "binarySha256": digest(args.agentctl), "catalogSha256": digest(ROOT / "catalog.json"),
-              "mode": args.mode, "results": []}
-    for entry in catalog:
-        if selected and entry["id"] not in selected:
-            continue
-        if args.mode == "openai" and not entry["openaiWorkflow"]:
-            continue
-        result = Case(args, entry).execute(ledger)
-        report["results"].append(result)
+    try:
+        source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True)
+        report = {"schemaVersion": "agentctl.dev/devops-evidence/v1", "sourceSha": source.stdout.strip(),
+                  "sourceWorktreeDirty": bool(dirty.stdout.strip()),
+                  "supportSha256": {name: digest(ROOT / name) for name in ["run.py", "fixture.py", "live_budget.py"]},
+                  "binarySha256": digest(args.agentctl), "catalogSha256": digest(ROOT / "catalog.json"),
+                  "mode": args.mode, "results": []}
+        for entry in catalog:
+            if selected and entry["id"] not in selected:
+                continue
+            if args.mode == "openai" and not entry["openaiWorkflow"]:
+                continue
+            result = Case(args, entry).execute(ledger)
+            report["results"].append(result)
+            if ledger:
+                report["liveBudget"] = ledger.summary()
+            save(args.report.resolve(), report)
+            print(f"{entry['id']} {result['status']}: {result.get('error', entry['title'])}", flush=True)
+            if result.get("fixtureDiagnostic"):
+                print("  local fixture diagnostic: " + json.dumps(result["fixtureDiagnostic"]), flush=True)
+            if result["workspaceRetained"]:
+                print("  " + result["workspace"], flush=True)
+            if args.mode == "openai" and result["status"] != "passed":
+                break
+        require(report["results"], "no executable cases selected")
+        return 1 if any(result["status"] != "passed" for result in report["results"]) else 0
+    finally:
         if ledger:
-            report["liveBudget"] = ledger.summary()
-        save(args.report.resolve(), report)
-        print(f"{entry['id']} {result['status']}: {result.get('error', entry['title'])}", flush=True)
-        if result.get("fixtureDiagnostic"):
-            print("  local fixture diagnostic: " + json.dumps(result["fixtureDiagnostic"]), flush=True)
-        if result["workspaceRetained"]:
-            print("  " + result["workspace"], flush=True)
-        if args.mode == "openai" and result["status"] != "passed":
-            break
-    require(report["results"], "no executable cases selected")
-    return 1 if any(result["status"] != "passed" for result in report["results"]) else 0
+            ledger.close()
 
 
 if __name__ == "__main__":
