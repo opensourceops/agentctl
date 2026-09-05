@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,18 @@ def artifact_digests(workspace):
 
 def run_id(envelope):
     return envelope.get("data", {}).get("runId") or envelope.get("error", {}).get("runId")
+
+
+def cleanup_workspace(base):
+    root = Path(base).resolve()
+    def remove_readonly(function, filename, exc_info):
+        error = exc_info[1]
+        target = Path(filename)
+        if not isinstance(error, PermissionError) or target.is_symlink() or not target.resolve().is_relative_to(root):
+            raise error
+        target.chmod(target.stat().st_mode | stat.S_IWRITE)
+        function(filename)
+    shutil.rmtree(base, onerror=remove_readonly)
 
 
 class Case:
@@ -421,6 +434,9 @@ class Case:
         except Exception as error:
             result.update({"status": "failed", "error": str(error), "runId": identifier,
                            "reservationRetained": self.reservation})
+            diagnostic = self.evidence / "fixture-error.json"
+            if diagnostic.is_file() and diagnostic.stat().st_size < 16384:
+                result["fixtureDiagnostic"] = json.loads(diagnostic.read_text())
             # Partial provider usage can be reconciled only when no model effect is uncertain.
             if ledger and self.reservation:
                 candidates = [run_id(item["envelope"]) for item in self.commands if run_id(item["envelope"])]
@@ -440,12 +456,17 @@ class Case:
                 server.server_close()
         result["wallSeconds"] = round(time.monotonic() - self.start, 3)
         result["commands"] = [{"argv": item["argv"], "exitCode": item["exitCode"]} for item in self.commands]
-        save(self.evidence / "result.json", result)
         if not self.args.keep and result["status"] == "passed":
-            shutil.rmtree(self.base)
-            result["workspaceRetained"] = False
+            try:
+                cleanup_workspace(self.base)
+                result["workspaceRetained"] = False
+            except OSError as error:
+                result.update({"status": "failed", "error": "fixture cleanup failed: " + str(error),
+                               "workspaceRetained": True})
         else:
             result["workspaceRetained"] = True
+        if result["workspaceRetained"]:
+            save(self.evidence / "result.json", result)
         return result
 
 
@@ -494,6 +515,8 @@ def main():
             report["liveBudget"] = ledger.summary()
         save(args.report.resolve(), report)
         print(f"{entry['id']} {result['status']}: {result.get('error', entry['title'])}", flush=True)
+        if result.get("fixtureDiagnostic"):
+            print("  local fixture diagnostic: " + json.dumps(result["fixtureDiagnostic"]), flush=True)
         if result["workspaceRetained"]:
             print("  " + result["workspace"], flush=True)
         if args.mode == "openai" and result["status"] != "passed":

@@ -387,19 +387,21 @@ fn devops_examples(root: &Path, build: bool) -> Result<()> {
             "target/devops-evidence.json",
         ],
     )?;
-    run(
-        root,
-        python,
-        &[
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "examples/devops",
-            "-p",
-            "test_live_budget.py",
-        ],
-    )?;
+    for pattern in ["test_live_budget.py", "test_fixture_portability.py"] {
+        run(
+            root,
+            python,
+            &[
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "examples/devops",
+                "-p",
+                pattern,
+            ],
+        )?;
+    }
     for pattern in ["test_live_command.py", "test_container_agentctl.py"] {
         run(
             root,

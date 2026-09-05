@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 import xml.etree.ElementTree as ET
 
 PROTOCOL = "agentctl.dev/process-extension/v1"
@@ -52,6 +53,27 @@ def command(argv, cwd=None, expected=0):
     if len(result.stdout) + len(result.stderr) > 1024 * 1024:
         raise ValueError("fixture subprocess output exceeds 1 MiB")
     return result
+
+
+def python_executable():
+    # An env-cleared Linux process launched with argv0=python3 can have no
+    # sys.executable. Resolve the same installation without importing host PATH.
+    candidates = [Path(sys.executable)] if sys.executable else []
+    candidates += [Path(sys.exec_prefix) / "bin/python3", Path(sys.exec_prefix) / "python.exe"]
+    for candidate in candidates:
+        if candidate.is_absolute() and candidate.is_file():
+            return str(candidate)
+    raise FileNotFoundError("cannot resolve Python interpreter in its installation directory")
+
+
+def record_failure(error):
+    # Exception values and source lines can include input data. Preserve only
+    # stack locations and the exception class in this local fixture diagnostic.
+    diagnostic = {"errorType": type(error).__name__, "frames": [
+        {"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+        for frame in traceback.extract_tb(error.__traceback__)[-12:]],
+        "exceptionValuesRedacted": True}
+    write("evidence/fixture-error.json", diagnostic)
 
 
 def patch(relative, before, after):
@@ -119,7 +141,7 @@ def analyze(case, payload):
         evidence = patch("Dockerfile", before, after)
         write("artifacts/Dockerfile", after)
         shutil.copy2(path("fixtures/app.py"), path("artifacts/app.py"))
-        command([sys.executable, "-m", "py_compile", str(path("artifacts/app.py"))])
+        command([python_executable(), "-m", "py_compile", str(path("artifacts/app.py"))])
         assert "USER 65534:65534" in after and "COPY ." not in after
         return {"improvements": ["explicit-copy", "non-root-user"], "patch": evidence,
                 "syntaxValidated": True, "containerBuild": "requires --container-build",
@@ -153,9 +175,9 @@ def analyze(case, payload):
         work.mkdir(parents=True, exist_ok=True)
         (work / "vendor_version.py").write_text(before)
         (work / "test_dependency.py").write_text(test)
-        baseline = command([sys.executable, "-B", "-m", "unittest", "-v"], cwd=work, expected=1)
+        baseline = command([python_executable(), "-B", "-m", "unittest", "-v"], cwd=work, expected=1)
         evidence = patch("vendor_version.py", before, after)
-        changed = command([sys.executable, "-B", "-m", "unittest", "-v"], cwd=work)
+        changed = command([python_executable(), "-B", "-m", "unittest", "-v"], cwd=work)
         write("artifacts/test-before.txt", baseline.stderr)
         write("artifacts/test-after.txt", changed.stderr)
         return {"dependency": "local-vendor-version", "from": "1.0.0", "to": "1.1.0",
@@ -308,4 +330,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as error:
+        record_failure(error)
+        print(f"{type(error).__name__}: see evidence/fixture-error.json (exception values redacted)", file=sys.stderr)
+        sys.exit(1)

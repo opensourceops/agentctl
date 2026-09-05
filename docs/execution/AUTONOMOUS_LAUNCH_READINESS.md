@@ -79,7 +79,7 @@ This historical checkpoint records the earlier environment; the continuation and
 
 Objects, arrays, scalar values and null replace at the top-level key; missing keys retain lower defaults. No implicit deep merge, recursive includes, environment import or policy grants. Duplicate YAML keys are errors. Ordinary variables are non-secret configuration; dedicated secret references and existing encrypted state remain the secret mechanism. Reserved loop/matrix/foreach engine bindings cannot be invocation variables. File origins are declaring workflow/pack manifest parents, independent of the invoking cwd; explicitly supplied CLI files are relative to the invoking cwd and still subject to workflow read policy. File reads must be bounded regular UTF-8 inputs captured once before compilation, with fingerprints and redacted winning-source diagnostics.
 
-### Current confirmed gaps
+### Confirmed gaps at initial inventory (historical)
 
 - check/plan do not currently capture instruction files; runtime sends instruction templates without expansion; pack file origins are lost.
 - Existing live guards are per-command and mostly post-run. Shared suite reservation and actual usage reconciliation are required before paid dispatch (100 requests, 200,000 total tokens, 30 minutes paid wall time, USD 25 estimate ceiling).
@@ -142,3 +142,11 @@ Store review additionally rejects tool-call/effect identity mismatches across ru
 `cargo xtask generate`, `cargo xtask secret-scan`, full-workspace/all-target/all-feature Clippy with warnings denied and formatting passed before source freeze. Final full release gates are next, rather than inferred from these checks.
 
 The corrected provider completed a real gpt-5-mini preflight: one successful request, 20 input +46 output tokens, estimated97 microUSD. Including the earlier definitive400, the shared allowance has charged2 requests,66 tokens,7 wall seconds and97 microUSD, with zero unreconciled reservations. This proves runtime credential and POST/TLS access; it is not final broad live evidence.
+
+### Cross-platform checkpoint after source 266eb44360886aa3019e5d42eb9cd28d26f97246
+
+Local full verification, 46 packaged CLI acceptance scenarios, completeness composites, source/package OCI acceptance and paired documentation verification passed. The local image build required the machine's existing trusted public CA through the existing ephemeral build-secret mechanism; runtime OpenAI TLS passed without an added certificate. The explicit live resource-budget gate passed with gpt-5-mini: one request, 18 input +42 output tokens, estimated89 microUSD, followed by a proven pre-dispatch request-budget denial. Shared totals are now 3 requests, 126 tokens, 10 seconds and186 microUSD, with zero unreconciled reservations.
+
+Draft framework [PR7](https://github.com/opensourceops/agentctl/pull/7) and docs [PR6](https://github.com/opensourceops/opensourceops.github.io/pull/6) are open. Hosted framework container/security and macOS gates passed at266eb44; Linux and Windows failed in new fixture portability, so the release verdict remains **not ready**. Linux's cleared environment can leave `sys.executable` empty; Windows requires writable permission to remove fixture CAS blobs. The fixture now resolves its own installed interpreter and confines permission-repair cleanup to its disposable workspace. Five targeted regressions pass on macOS and real Linux Python, and all twenty local examples pass after the fix. Hosted Linux/Windows and RC preparation must rerun on the next source commit.
+
+The docs hosted validation passed, but artifact inspection found upload-artifact omitted `.nojekyll`. A scoped docs workflow fix and a fresh paired source pin are being prepared. Remaining commands are the broad bounded OpenAI gates (Astra acceptance and Sol examples, including four distinct mini DevOps variants), final fixture/container execution, hosted platform/SBOM/RC gates, and refreshed paired documentation artifact verification. Previously proven unchanged paid cases will not be repeated.
