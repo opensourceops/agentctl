@@ -516,6 +516,12 @@ fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
     }
     if let Some(key) = &request.prompt_cache_key {
         body.insert("prompt_cache_key".to_owned(), Value::String(key.clone()));
+    }
+    // Cache routing keys work on older models too. Advanced cache options are an
+    // explicit GPT-5.6+ capability and must not be inferred from a routing key.
+    if request.provider_options.contains_key("promptCacheMode")
+        || request.provider_options.contains_key("promptCacheTtl")
+    {
         let mode = request
             .provider_options
             .get("promptCacheMode")
@@ -1299,7 +1305,7 @@ impl ModelProvider for FakeProvider {
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
             let call = ToolCall {
-                id: "fake-call-1".to_owned(),
+                id: format!("fake-call-{call_number}"),
                 name: tool.id.clone(),
                 input: input.clone(),
             };
@@ -1308,7 +1314,7 @@ impl ModelProvider for FakeProvider {
                 text: String::new(),
                 tool_calls: vec![call],
                 assistant_content: vec![ContentBlock::ToolCall {
-                    id: "fake-call-1".to_owned(),
+                    id: format!("fake-call-{call_number}"),
                     name: tool.id.clone(),
                     input,
                     provider_metadata: None,
@@ -1872,6 +1878,46 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
         assert_eq!(body["prompt_cache_options"]["ttl"], "30m");
         assert_eq!(body["tools"][0]["strict"], true);
         assert_eq!(body["text"]["format"]["strict"], true);
+    }
+
+    #[tokio::test]
+    async fn fake_provider_uses_distinct_ids_for_separate_tool_requests() {
+        let provider = FakeProvider::default();
+        let mut request = request();
+        request.provider_options.insert(
+            "toolInput".to_owned(),
+            serde_json::json!({"text":"example"}),
+        );
+        let first = provider
+            .complete(&request, &CancellationToken::new())
+            .await
+            .unwrap();
+        let second = provider
+            .complete(&request, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_ne!(first.tool_calls[0].id, second.tool_calls[0].id);
+        let ContentBlock::ToolCall { id, .. } = &second.assistant_content[0] else {
+            panic!("missing tool call block")
+        };
+        assert_eq!(id, &second.tool_calls[0].id);
+    }
+
+    #[test]
+    fn openai_cache_routing_does_not_enable_model_specific_cache_options() {
+        let mut request = request();
+        request.model = "gpt-5-mini".to_owned();
+        let body = openai_request(&request).expect("older model request");
+        assert_eq!(body["prompt_cache_key"], "cache-key");
+        assert!(body.get("prompt_cache_options").is_none());
+        request
+            .provider_options
+            .insert("promptCacheTtl".to_owned(), Value::String("30m".to_owned()));
+        let explicit = openai_request(&request).expect("explicit cache capability");
+        assert_eq!(
+            explicit["prompt_cache_options"],
+            serde_json::json!({"mode":"implicit", "ttl":"30m"})
+        );
     }
 
     #[test]

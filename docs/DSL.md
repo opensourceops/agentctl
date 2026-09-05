@@ -6,6 +6,16 @@ The current document version is `agentctl.dev/v1`, with `kind: Workflow`. The ge
 
 Templates use only `${{ inputs.path }}`, `${{ vars.path }}`, `${{ memory.path }}`, and `${{ tasks.task-id.output.path }}`. Conditions additionally allow `not` and equality against a JSON literal or string. Exact templates preserve their JSON type; interpolation into text accepts only scalars. Missing and explicit `null` are different. There is no code execution, function call, indexing, arithmetic, or implicit task dependency.
 
+`varsFiles` accepts ordered ordinary YAML/JSON variable files at workflow,
+agent, and task scope. Low-to-high precedence is workflow files, workflow
+`vars`, selected-agent files, selected-agent `vars`, task files, task `vars`,
+explicit `--vars-file` files, then explicit `--var KEY=JSON` values. Later
+sources replace whole top-level values; they do not deep-merge objects.
+Invocation inputs remain a separate `inputs` namespace. Every agent defines
+exactly one of inline `instructions` or `instructionsFile`; file text uses the
+same task-context templates. See [Variables and instruction files](VARIABLES.md)
+for origin, capture, read-policy, redacted diagnostics, and recovery rules.
+
 `when` decisions retain the expression, boolean result, and a digest of the
 evaluated context in durable task/audit state. A `router` selects one exact
 typed template, compares it with type-sensitive enumerated cases, and records

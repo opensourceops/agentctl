@@ -39,6 +39,15 @@ pub struct Metadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vars_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vars: JsonMap,
+    /// Captured configuration is trusted only when supplied through the source resolver
+    /// or loaded from persisted history; parse_workflow rejects this field in YAML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub source_snapshot: Option<crate::sources::SourceSnapshot>,
     #[serde(default)]
     pub inputs: JsonMap,
     #[serde(default)]
@@ -162,6 +171,8 @@ pub struct AgentDefinition {
     pub instructions_file: Option<String>,
     #[serde(default)]
     pub vars: JsonMap,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vars_files: Vec<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default = "default_max_turns")]
@@ -657,6 +668,11 @@ pub struct TaskDefinition {
     pub when: Option<String>,
     #[serde(default)]
     pub vars: JsonMap,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vars_files: Vec<String>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub compiled_instructions: Option<String>,
     #[serde(default, rename = "with")]
     pub input: JsonMap,
     #[serde(default)]
@@ -1201,6 +1217,17 @@ pub fn parse_workflow(source: &str, file: &str) -> Result<ParseOutcome, Vec<Diag
         vec![diagnostic]
     })?;
 
+    if raw.get("sourceSnapshot").is_some()
+        || raw
+            .get("spec")
+            .and_then(|spec| spec.get("sourceSnapshot"))
+            .is_some()
+    {
+        return Err(vec![Diagnostic::error(
+            DiagnosticCode::SchemaViolation, file,
+            "sourceSnapshot is reserved for captured execution state; remove it from workflow YAML",
+        ).with_path("spec.sourceSnapshot")]);
+    }
     let is_legacy = raw.get("apiVersion").is_none();
     let normalized = if is_legacy {
         translate_legacy(raw, file)?

@@ -1,0 +1,10 @@
+[
+  {
+    "requests": 500,
+    "errors": 1
+  },
+  {
+    "requests": 500,
+    "errors": 2
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "replicas": 1,
+  "region": "local",
+  "settings": {
+    "timeout": 10,
+    "legacy": true
+  }
+}

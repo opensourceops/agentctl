@@ -4,6 +4,12 @@ Date: 2026-07-27, Asia/Kolkata.
 
 Status: passed.
 
+This is historical evidence for the dated matrix below. It is not a current
+launch-readiness verdict, and its usage is separate from the September 2026
+suite allowance. Consult the [current execution
+ledger](AUTONOMOUS_LAUNCH_READINESS.md) for the exact new source commit, tested
+model IDs, results, failures, and shared-budget accounting.
+
 The packaged macOS arm64 CLI and the production Linux arm64 OCI image executed
 the bounded public OpenAI matrix with model `gpt-5.6`. Every run used a clean
 temporary database and workspace. Raw provider responses and databases remain

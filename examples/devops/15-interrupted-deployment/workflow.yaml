@@ -1,0 +1,128 @@
+{
+  "apiVersion": "agentctl.dev/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "devops-interrupted-deployment",
+    "description": "Interrupt a run after a non-idempotent local mutation and prove resume does not repeat its confirmed effect."
+  },
+  "spec": {
+    "policy": {
+      "workspaceRoot": ".",
+      "writableRoots": [
+        "artifacts"
+      ],
+      "processAllowlist": [
+        "python3"
+      ],
+      "approval": "never"
+    },
+    "runtime": {
+      "maxConcurrency": 1,
+      "budgets": {
+        "maxProviderRequests": 8,
+        "maxTurns": 8,
+        "maxToolCalls": 4,
+        "maxTotalTokens": 16000,
+        "maxProcessOutputBytes": 1048576,
+        "maxArtifactBytes": 1048576,
+        "maxTasks": 32,
+        "maxWallTimeSeconds": 120
+      }
+    },
+    "actions": {
+      "fixture": {
+        "kind": "extension.process",
+        "command": "python3",
+        "args": [
+          "../fixture.py",
+          "15"
+        ],
+        "idempotency": "at_most_once",
+        "protocolVersion": "agentctl.dev/process-extension/v1",
+        "inputSchema": {
+          "type": "object"
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "capabilities": [
+          "devops.fixture"
+        ],
+        "timeoutSeconds": 30,
+        "stdoutLimitBytes": 65536,
+        "stderrLimitBytes": 8192,
+        "combinedOutputLimitBytes": 73728
+      },
+      "write": {
+        "kind": "builtin.write"
+      },
+      "assign": {
+        "kind": "builtin.assign"
+      },
+      "assert": {
+        "kind": "builtin.assert"
+      }
+    },
+    "tasks": [
+      {
+        "id": "deploy",
+        "uses": "action:fixture",
+        "with": {}
+      },
+      {
+        "id": "pause",
+        "uses": "agent:pause",
+        "needs": [
+          "deploy"
+        ],
+        "with": {
+          "prompt": "Delay for crash injection."
+        }
+      },
+      {
+        "id": "analyze",
+        "uses": "action:assign",
+        "needs": [
+          "pause"
+        ],
+        "with": {
+          "reportText": "{\"recovered\":true,\"expectedMutations\":1}\n"
+        }
+      },
+      {
+        "id": "report",
+        "uses": "action:write",
+        "needs": [
+          "analyze"
+        ],
+        "with": {
+          "path": "artifacts/report.json",
+          "content": "${{ tasks.analyze.output.output.reportText }}"
+        }
+      }
+    ],
+    "providers": {
+      "fake": {
+        "kind": "fake"
+      }
+    },
+    "agents": {
+      "pause": {
+        "provider": "fake",
+        "model": "scripted",
+        "instructions": "Deterministic crash-injection delay; no live model required.",
+        "maxTurns": 1,
+        "maxToolCalls": 0,
+        "maxOutputTokens": 64,
+        "timeoutSeconds": 15,
+        "providerOptions": {
+          "delayMs": 3000,
+          "finalText": "recovered"
+        }
+      }
+    },
+    "outputs": {
+      "report": "${{ tasks.analyze.output.output }}"
+    }
+  }
+}

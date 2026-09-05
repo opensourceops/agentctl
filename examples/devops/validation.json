@@ -1,0 +1,942 @@
+{
+  "schemaVersion": "agentctl.dev/devops-validation/v1",
+  "recordedAt": "2026-09-05T21:44:05.001625+00:00",
+  "scope": "Local execution evidence; final code-commit and hosted release gates must be assessed separately",
+  "deterministic": {
+    "source": {
+      "sourceSha": "ec7e220820ed169c005aff5344d81fe4d292cdb6",
+      "sourceWorktreeDirty": true,
+      "binarySha256": "fe27269d3c8bed9ffbb69d2f903b5b0059e60b86aa42adfa333d7fcb9671467b",
+      "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+      "supportSha256": {
+        "run.py": "72b4142ab231cbf2039b9e5190fc877cc5ade345a649f111a2b94559d0977c8e",
+        "fixture.py": "4011e147fedf013a86c9aeca5472b55e85b979aa8e00e4f14af52c2f3772ea49",
+        "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+      },
+      "mode": "deterministic",
+      "reportSha256": "4d1fad32b6d18b82276e8a105068a3c035db157887ed9e2b9ece030b741929d1",
+      "reportName": "devops-integrated.json"
+    },
+    "results": [
+      {
+        "id": "01",
+        "status": "passed",
+        "runId": "run-01a07386-4126-77d3-a573-b2a2f955d6b6",
+        "workflowSha256": "b28caf5d799d71a02fa82c1d00cb06690120b74497b7334a6f203e510bf36573",
+        "wallSeconds": 1.145,
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 3099,
+          "artifactBytes": 901,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 1
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "02",
+        "status": "passed",
+        "runId": "run-01a07386-4578-76d2-a6a8-3ff46c419eaf",
+        "workflowSha256": "508617a7b508ac0263cc775832f677657e0f99b8439050b843b1516be23eaa48",
+        "wallSeconds": 0.737,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1440,
+          "artifactBytes": 552,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "03",
+        "status": "passed",
+        "runId": "run-01a07386-4863-7dc1-9203-4243833dd53a",
+        "workflowSha256": "1ecc578679e680fd05a05dbd185c9fe9dd17d9bb4b0d4d9afe8f507fdff0af95",
+        "wallSeconds": 0.844,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1110,
+          "artifactBytes": 385,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "04",
+        "status": "passed",
+        "runId": "run-01a07386-4bb2-7491-ab76-a6b53dce868a",
+        "workflowSha256": "01e6077c412a73ca56ca4eb56dea52fc247eb743ac0ff22a3c305b13728f288f",
+        "wallSeconds": 0.975,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1052,
+          "artifactBytes": 345,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "containerBuild": "not-executed",
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "05",
+        "status": "passed",
+        "runId": "run-01a07386-4f9e-7782-b984-16315c709d9c",
+        "workflowSha256": "e9fa607a3aafb02a066fb871518f136a3fe6414ed711799d8081deed8f869f01",
+        "wallSeconds": 0.855,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 2301,
+          "artifactBytes": 1089,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "06",
+        "status": "passed",
+        "runId": "run-01a07386-52ec-7fe3-b295-8d9a0d870cf6",
+        "workflowSha256": "3f2a8ce6e0e250a2b3a65e1d5b285e60d6ccb42bc7d2ffc7fb1a7fa9ecd56193",
+        "wallSeconds": 1.207,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 781,
+          "artifactBytes": 261,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          3,
+          0,
+          0,
+          3,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "07",
+        "status": "passed",
+        "runId": "run-01a07386-57ac-7fb2-8545-b03517c05a1a",
+        "workflowSha256": "b6a7c8131b68bc5eaa0791b9086adf84dc131099facf6275daca3f59e42a1ff3",
+        "wallSeconds": 1.216,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1152,
+          "artifactBytes": 388,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "08",
+        "status": "passed",
+        "runId": "run-01a07386-5c80-7231-ace0-f541a35750a1",
+        "workflowSha256": "eb1e53294d9482cce1e9952d2938cf687c75e58b7e422a6431084ad7b7c2e534",
+        "wallSeconds": 0.804,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1756,
+          "artifactBytes": 727,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "09",
+        "status": "passed",
+        "runId": "run-01a07386-5f97-78b2-b41a-4d3ebf43e7a3",
+        "workflowSha256": "cef14da8680c70a0eb243264accdf4dd44cd0d613790ac53f3c564df0f961efd",
+        "wallSeconds": 1.173,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1449,
+          "artifactBytes": 580,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "10",
+        "status": "passed",
+        "runId": "run-01a07386-6431-7603-bb03-987b45d78df4",
+        "workflowSha256": "6b6c2cc23f3ff24d50a28be8792e2e6cb6da1cac514a45f4a1edac778a8a90b2",
+        "wallSeconds": 0.805,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1151,
+          "artifactBytes": 420,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "11",
+        "status": "passed",
+        "runId": "run-01a07386-6764-72c0-bd2f-95c50c40bfa2",
+        "workflowSha256": "7a2ffbafc06263db8180cba30b03a56675036a7f9cefdda2f65d789daf45da76",
+        "wallSeconds": 1.241,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1181,
+          "artifactBytes": 433,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "id": "12",
+        "status": "passed",
+        "runId": "run-01a07386-6c42-7082-bd3f-c22083143746",
+        "workflowSha256": "d956169204b0e09c2304183336969b441799856d4498d95cf7e74067a0dc8307",
+        "wallSeconds": 1.18,
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 6158,
+          "artifactBytes": 1980,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 1
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "13",
+        "status": "passed",
+        "runId": "run-01a07386-70e5-75b2-98d7-a155f0afc303",
+        "workflowSha256": "e59c8917f5b95bb90f927e27a43537836615f78bccb595a1bf432818e7d1f821",
+        "wallSeconds": 1.215,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 579,
+          "artifactBytes": 147,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          0
+        ]
+      },
+      {
+        "id": "14",
+        "status": "passed",
+        "runId": "run-01a07386-75a7-71d0-a433-116a1242688b",
+        "workflowSha256": "76efd4dba35ced990a7f52811bfb8ee8c5bbc314654fbf3926e5cc9d825c246b",
+        "wallSeconds": 0.949,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 0,
+          "artifactBytes": 110,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          3,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "15",
+        "status": "passed",
+        "runId": "run-01a07386-796a-75f1-b58f-c36144d9c8f9",
+        "workflowSha256": "a909443daa3aa6509ab576974b8f241c533bce89e056325ae79f678bcc4f12e6",
+        "wallSeconds": 4.003,
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 4,
+          "processOutputBytes": 450,
+          "artifactBytes": 41,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 1
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "16",
+        "status": "passed",
+        "runId": "repair-01a07386-8caa-7c53-bbe2-a0d80a526352",
+        "workflowSha256": "2451ea32886f3f6db5f8f38e3e548ed710ce57da4604d137867f0e659b9ddc3c",
+        "wallSeconds": 1.377,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 0,
+          "artifactBytes": 0,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "17",
+        "status": "passed",
+        "runId": "compensation-01a07386-8ed4-7553-aade-5ec99a583c65",
+        "workflowSha256": "c8d47167eed4593464c279140fa4cebe20281e5e57bba18ee8f7f24c62f11d16",
+        "wallSeconds": 0.568,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 0,
+          "artifactBytes": 23,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "18",
+        "status": "passed",
+        "runId": "run-01a07386-90bc-7c62-addb-113c2d6bd57c",
+        "workflowSha256": "37ed416c15e4c90846ba95e11047c32b0b52c0a83fe6917304cd3525ff8cd9db",
+        "wallSeconds": 0.847,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 2100,
+          "artifactBytes": 0,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "19",
+        "status": "passed",
+        "runId": "run-01a07386-9421-7e71-baef-99051470f222",
+        "workflowSha256": "26f8b6caf82310939997dbe7a5625ef00ee860e0344d92136238d340657fa612",
+        "wallSeconds": 1.39,
+        "usage": {
+          "providerRequests": 5,
+          "turns": 5,
+          "toolCalls": 2,
+          "inputTokens": 5,
+          "outputTokens": 5,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 573,
+          "artifactBytes": 123,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 5
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "20",
+        "status": "passed",
+        "runId": "run-01a07386-99c9-7aa2-beca-5934676257bd",
+        "workflowSha256": "35f2e57d4e4461594cc4527190cebbcd67db84538a31b8ea7c05211b03f60f9f",
+        "wallSeconds": 1.467,
+        "usage": {
+          "providerRequests": 2,
+          "turns": 2,
+          "toolCalls": 1,
+          "inputTokens": 2,
+          "outputTokens": 2,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 605,
+          "artifactBytes": 143,
+          "costMicrousd": 4,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          4,
+          0
+        ]
+      }
+    ],
+    "liveBudget": null
+  },
+  "focused": [],
+  "live": {
+    "status": "not-executed",
+    "requiredIds": [
+      "01",
+      "12",
+      "19",
+      "20"
+    ]
+  },
+  "container": {
+    "source": {
+      "sourceSha": "ec7e220820ed169c005aff5344d81fe4d292cdb6",
+      "sourceWorktreeDirty": true,
+      "binarySha256": "fe27269d3c8bed9ffbb69d2f903b5b0059e60b86aa42adfa333d7fcb9671467b",
+      "catalogSha256": "a29eb7f3df9e8606d0226414884783668c3ce3a9da84b55ecb31e17d4e068df1",
+      "supportSha256": {
+        "run.py": "410e844999c257e430b7e47f48a59f33a23c1f5ed26bc4212237715e851d2f15",
+        "fixture.py": "4011e147fedf013a86c9aeca5472b55e85b979aa8e00e4f14af52c2f3772ea49",
+        "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+      },
+      "mode": "deterministic",
+      "reportSha256": "777a5ae8f7ed1befe1ac34975c48031e8a324364e7dfb42220a356428cee96e0",
+      "reportName": "devops-container-integrated.json"
+    },
+    "results": [
+      {
+        "id": "04",
+        "status": "passed",
+        "runId": "run-01a07381-3fa7-7392-8695-6af124c27908",
+        "workflowSha256": "01e6077c412a73ca56ca4eb56dea52fc247eb743ac0ff22a3c305b13728f288f",
+        "wallSeconds": 2.962,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1052,
+          "artifactBytes": 345,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "containerBuild": "passed",
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4
+        ]
+      }
+    ],
+    "liveBudget": null,
+    "image": {
+      "baseImageId": "4f8d1afed6d58037c680221ca6dd9fb4737b7ecfa7d4809ca809fdc0c7d9b786",
+      "baseReference": "docker.io/library/python@sha256:3949e4271b0a3ff82afac7306764c313dcc8edeeb89c0376a3c2ac6007c66b1d",
+      "imageId": "078ab4a4ff37b0f84c9d08f4504a955eeb1ff282b2c310bbe27aafe67de66624",
+      "response": {
+        "service": "fixture",
+        "healthy": true
+      },
+      "performanceClaim": null
+    }
+  }
+}

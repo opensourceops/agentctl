@@ -30,7 +30,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 15;
+pub const DATABASE_SCHEMA_VERSION: u32 = 16;
 pub const RUNTIME_STATE_VERSION: u32 = 1;
 pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 pub const AUDIT_EVENT_VERSION: u32 = 1;
@@ -183,6 +183,28 @@ CREATE TABLE trace_events (
   PRIMARY KEY (run_id, sequence)
 );
 CREATE INDEX idx_trace_run_created ON trace_events(run_id, created_at);
+"#;
+
+const MIGRATION_16: &str = r#"
+CREATE TABLE tool_calls_v16 (
+  call_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  effect_id TEXT REFERENCES effects(effect_id),
+  tool_id TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  output_digest TEXT,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (run_id, effect_id, call_id)
+);
+INSERT INTO tool_calls_v16
+  (call_id, run_id, task_id, effect_id, tool_id, input_digest, output_digest, status, created_at, completed_at)
+SELECT call_id, run_id, task_id, effect_id, tool_id, input_digest, output_digest, status, created_at, completed_at
+FROM tool_calls;
+DROP TABLE tool_calls;
+ALTER TABLE tool_calls_v16 RENAME TO tool_calls;
 "#;
 
 const MIGRATION_4: &str = r#"
@@ -4497,7 +4519,7 @@ impl SqliteStore {
     pub fn tool_calls(&self, run_id: &str) -> Result<Vec<ToolCallRecord>, StoreError> {
         let connection = self.connection.lock();
         let mut statement = connection.prepare(
-            "SELECT call_id, task_id, effect_id, tool_id, input_digest, output_digest, status, created_at, completed_at FROM tool_calls WHERE run_id = ?1 ORDER BY created_at, call_id",
+            "SELECT call_id, task_id, effect_id, tool_id, input_digest, output_digest, status, created_at, completed_at FROM tool_calls WHERE run_id = ?1 ORDER BY created_at, call_id, effect_id",
         )?;
         statement
             .query_map([run_id], |row| {
@@ -4726,10 +4748,17 @@ impl SqliteStore {
         input_digest: &str,
         now: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        self.connection.lock().execute(
-            "INSERT INTO tool_calls (call_id, run_id, task_id, effect_id, tool_id, input_digest, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'started', ?7)",
+        let changed = self.connection.lock().execute(
+            "INSERT INTO tool_calls (call_id, run_id, task_id, effect_id, tool_id, input_digest, status, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'started', ?7 FROM effects
+             WHERE effect_id = ?4 AND run_id = ?2 AND task_id = ?3 AND input_digest = ?6 AND status = 'started'",
             params![call_id, run_id, task_id, effect_id, tool_id, input_digest, now.to_rfc3339()],
         )?;
+        if changed != 1 {
+            return Err(StoreError::Incompatible(format!(
+                "tool call `{call_id}` in run `{run_id}` does not match a started effect"
+            )));
+        }
         Ok(())
     }
 
@@ -4765,15 +4794,15 @@ impl SqliteStore {
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let effect_changed = transaction.execute(
-            "UPDATE effects SET status = ?2, result_json = ?3, error = ?4, confirmed = ?5, completed_at = ?6 WHERE effect_id = ?1 AND status = ?7",
-            params![effect_id, encode_enum(effect_status)?, output, error, confirmed, now.to_rfc3339(), encode_enum(EffectStatus::Started)?],
+            "UPDATE effects SET status = ?2, result_json = ?3, error = ?4, confirmed = ?5, completed_at = ?6 WHERE effect_id = ?1 AND status = ?7 AND run_id = ?8",
+            params![effect_id, encode_enum(effect_status)?, output, error, confirmed, now.to_rfc3339(), encode_enum(EffectStatus::Started)?, run_id],
         )?;
         if effect_changed != 1 {
             return Err(StoreError::EffectNotFound(effect_id.to_owned()));
         }
         let call_changed = transaction.execute(
-            "UPDATE tool_calls SET output_digest = ?3, status = ?4, completed_at = ?5 WHERE run_id = ?1 AND call_id = ?2 AND status = 'started'",
-            params![run_id, call_id, output_digest, call_status, now.to_rfc3339()],
+            "UPDATE tool_calls SET output_digest = ?3, status = ?4, completed_at = ?5 WHERE run_id = ?1 AND call_id = ?2 AND effect_id = ?6 AND status = 'started'",
+            params![run_id, call_id, output_digest, call_status, now.to_rfc3339(), effect_id],
         )?;
         if call_changed != 1 {
             return Err(StoreError::Incompatible(format!(
@@ -4795,21 +4824,22 @@ impl SqliteStore {
         let mut connection = self.connection.lock();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let effect_changed = transaction.execute(
-            "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE effect_id = ?1 AND status = ?5",
+            "UPDATE effects SET status = ?2, error = ?3, completed_at = ?4, confirmed = 0 WHERE effect_id = ?1 AND status = ?5 AND run_id = ?6",
             params![
                 effect_id,
                 encode_enum(EffectStatus::Uncertain)?,
                 protect_text(&self.protection, error, "effects.error")?,
                 now.to_rfc3339(),
-                encode_enum(EffectStatus::Started)?
+                encode_enum(EffectStatus::Started)?,
+                run_id
             ],
         )?;
         if effect_changed != 1 {
             return Err(StoreError::EffectNotFound(effect_id.to_owned()));
         }
         let call_changed = transaction.execute(
-            "UPDATE tool_calls SET status = 'uncertain', completed_at = ?3 WHERE run_id = ?1 AND call_id = ?2 AND status = 'started'",
-            params![run_id, call_id, now.to_rfc3339()],
+            "UPDATE tool_calls SET status = 'uncertain', completed_at = ?3 WHERE run_id = ?1 AND call_id = ?2 AND effect_id = ?4 AND status = 'started'",
+            params![run_id, call_id, now.to_rfc3339(), effect_id],
         )?;
         if call_changed != 1 {
             return Err(StoreError::Incompatible(format!(
@@ -5652,6 +5682,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         (13_u32, MIGRATION_13),
         (14_u32, MIGRATION_14),
         (15_u32, MIGRATION_15),
+        (16_u32, MIGRATION_16),
     ];
     for (version, sql) in migrations
         .into_iter()
@@ -7025,6 +7056,8 @@ spec:
             MIGRATION_12,
             MIGRATION_13,
             MIGRATION_14,
+            MIGRATION_15,
+            MIGRATION_16,
         ]
         .into_iter()
         .enumerate()
@@ -7243,40 +7276,39 @@ spec:
                 .is_empty()
         );
 
-        let stale_ciphertext = {
-            let connection = Connection::open(&path).expect("raw connection");
-            for column in SENSITIVE_COLUMNS {
-                let sql = format!(
-                    "SELECT {} FROM {} WHERE {} IS NOT NULL",
-                    column.column, column.table, column.column
-                );
-                let mut statement = connection.prepare(&sql).expect("prepare");
-                let values = statement
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .expect("query")
-                    .collect::<Result<Vec<_>, _>>()
-                    .expect("values");
-                for value in values {
-                    assert!(is_encrypted_value(&value), "{}", column.context());
-                    assert!(!value.contains(marker), "{}", column.context());
+        let stale_ciphertext =
+            {
+                let connection = Connection::open(&path).expect("raw connection");
+                for column in SENSITIVE_COLUMNS {
+                    let sql = format!(
+                        "SELECT {} FROM {} WHERE {} IS NOT NULL",
+                        column.column, column.table, column.column
+                    );
+                    let mut statement = connection.prepare(&sql).expect("prepare");
+                    let values = statement
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .expect("query")
+                        .collect::<Result<Vec<_>, _>>()
+                        .expect("values");
+                    for value in values {
+                        assert!(is_encrypted_value(&value), "{}", column.context());
+                        assert!(!value.contains(marker), "{}", column.context());
+                    }
                 }
-            }
-            assert!(
-                connection
-                    .execute(
-                        "UPDATE runs SET inputs_json = 'plaintext' WHERE run_id = 'encrypted-run'",
-                        [],
-                    )
-                    .is_err()
-            );
-            connection
-                .query_row(
-                    "SELECT inputs_json FROM runs WHERE run_id = 'encrypted-run'",
+                assert!(connection
+                .execute(
+                    "UPDATE runs SET inputs_json = 'plaintext' WHERE run_id = 'encrypted-run'",
                     [],
-                    |row| row.get::<_, String>(0),
                 )
-                .expect("stale ciphertext")
-        };
+                .is_err());
+                connection
+                    .query_row(
+                        "SELECT inputs_json FROM runs WHERE run_id = 'encrypted-run'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("stale ciphertext")
+            };
 
         let wrong = Arc::new(
             FixedKeyResolver::with("AGENTCTL_TEST_OLD_KEY", 9).and("AGENTCTL_TEST_NEW_KEY", 2),
@@ -7810,6 +7842,276 @@ spec:
             store.reconcile_effect(&superseding, now + chrono::Duration::seconds(2)),
             Err(StoreError::Incompatible(_))
         ));
+    }
+
+    #[test]
+    fn tool_call_identity_rejects_cross_run_task_and_input_mismatches() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        create(&store, "other-run");
+        let now = Utc::now();
+        let request = EffectRequest::new(
+            "run",
+            "one",
+            1,
+            1,
+            "tool.echo",
+            EffectClass::Pure,
+            Risk::Low,
+            Idempotency::Pure,
+            serde_json::json!({"value": "one"}),
+            "echo",
+            "trace",
+        );
+        store.record_effect_request(&request, now).expect("effect");
+        store
+            .mark_effect_started(&request.id, now)
+            .expect("started");
+        for (run_id, task_id, input_digest) in [
+            ("other-run", "one", request.input_digest.as_str()),
+            ("run", "other-task", request.input_digest.as_str()),
+            ("run", "one", "different-input"),
+        ] {
+            assert!(
+                store
+                    .start_tool_call(
+                        "same-call",
+                        run_id,
+                        task_id,
+                        &request.id,
+                        "echo",
+                        input_digest,
+                        now,
+                    )
+                    .is_err(),
+                "must reject mismatched tool call identity"
+            );
+        }
+        assert!(store.tool_calls("run").expect("calls").is_empty());
+        assert!(
+            store
+                .tool_calls("other-run")
+                .expect("other calls")
+                .is_empty()
+        );
+        store
+            .start_tool_call(
+                "same-call",
+                "run",
+                "one",
+                &request.id,
+                "echo",
+                &request.input_digest,
+                now,
+            )
+            .expect("matching identity");
+        assert!(
+            store
+                .complete_tool_effect(
+                    &request.id,
+                    "other-run",
+                    "same-call",
+                    Ok(&serde_json::json!({"ok": true})),
+                    Some("digest"),
+                    now,
+                )
+                .is_err()
+        );
+        assert!(store
+            .mark_tool_effect_uncertain(&request.id, "other-run", "same-call", "wrong run", now,)
+            .is_err());
+        assert_eq!(
+            store.load_effect(&request.id).expect("effect").status,
+            EffectStatus::Started
+        );
+        assert_eq!(store.tool_calls("run").expect("calls")[0].status, "started");
+    }
+
+    #[test]
+    fn repeated_tool_call_ids_have_a_stable_effect_order() {
+        let store = SqliteStore::open_memory().expect("store");
+        create(&store, "run");
+        let now = Utc::now();
+        let mut requests = (1..=3)
+            .map(|ordinal| {
+                EffectRequest::new(
+                    "run",
+                    "one",
+                    1,
+                    ordinal,
+                    "tool.echo",
+                    EffectClass::Pure,
+                    Risk::Low,
+                    Idempotency::Pure,
+                    serde_json::json!({"ordinal": ordinal}),
+                    "echo",
+                    "trace",
+                )
+            })
+            .collect::<Vec<_>>();
+        requests.sort_by(|left, right| right.id.cmp(&left.id));
+        for request in &requests {
+            store.record_effect_request(request, now).expect("effect");
+            store
+                .mark_effect_started(&request.id, now)
+                .expect("started");
+            store
+                .start_tool_call(
+                    "repeated",
+                    "run",
+                    "one",
+                    &request.id,
+                    "echo",
+                    &request.input_digest,
+                    now,
+                )
+                .expect("call");
+        }
+        let calls = store.tool_calls("run").expect("calls");
+        let expected = requests
+            .iter()
+            .rev()
+            .map(|request| request.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.effect_id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn migration_sixteen_preserves_populated_tool_call_evidence() {
+        let directory = tempdir().expect("directory");
+        let path = directory.path().join("populated-v15.db");
+        create_version_database(&path, 15);
+        let now = Utc::now().to_rfc3339();
+        let connection = Connection::open(&path).expect("legacy database");
+        connection
+            .execute(
+                "INSERT INTO runs
+             (run_id, runtime_state_version, workflow_digest, workflow_schema_version,
+              plan_digest, plan_format_version, workflow_json, plan_json, inputs_json,
+              working_memory_json, state, mode, created_at, updated_at)
+             VALUES ('retained', 1, 'workflow', 'agentctl.dev/v1', 'plan', 1,
+                     '{}', '{}', '{}', '{}', 'succeeded', 'execute', ?1, ?1)",
+                [&now],
+            )
+            .expect("legacy run");
+        connection
+            .execute(
+                "INSERT INTO effects
+             (effect_id, format_version, run_id, task_id, task_attempt, ordinal,
+              operation, effect_class, risk, idempotency, idempotency_key, input_digest,
+              input_json, expected_effect, trace_id, status, effect_attempt,
+              requested_at, started_at, completed_at, result_json, confirmed)
+             VALUES ('legacy-effect', 1, 'retained', 'one', 1, 1, 'tool.echo',
+                     'pure', 'low', 'pure', 'legacy-key', 'input-digest',
+                     '{\"text\":\"retained\"}', 'echo', 'trace', 'succeeded', 1,
+                     ?1, ?1, ?1, '{\"text\":\"retained\"}', 1)",
+                [&now],
+            )
+            .expect("legacy effect");
+        connection
+            .execute(
+                "INSERT INTO tool_calls
+             (call_id, run_id, task_id, effect_id, tool_id, input_digest, output_digest,
+              status, created_at, completed_at)
+             VALUES ('provider-call', 'retained', 'one', 'legacy-effect', 'echo',
+                     'input-digest', 'output-digest', 'succeeded', ?1, ?1)",
+                [&now],
+            )
+            .expect("legacy tool call");
+        drop(connection);
+        let store = SqliteStore::open(&path).expect("migrate");
+        let calls = store.tool_calls("retained").expect("retained calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "provider-call");
+        assert_eq!(calls[0].effect_id, "legacy-effect");
+        assert_eq!(calls[0].input_digest, "input-digest");
+        assert_eq!(calls[0].output_digest.as_deref(), Some("output-digest"));
+        assert_eq!(calls[0].status, "succeeded");
+        assert_eq!(calls[0].completed_at, Some(calls[0].created_at));
+        assert_eq!(
+            store.load_effect("legacy-effect").expect("effect").result,
+            Some(serde_json::json!({"text": "retained"}))
+        );
+    }
+
+    #[test]
+    fn repeated_provider_call_ids_are_scoped_to_the_durable_effect() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("v15.db");
+        create_version_database(&path, 15);
+        let store = SqliteStore::open(&path).unwrap();
+        assert_eq!(store.schema_version(), 16);
+        create(&store, "run");
+        let now = Utc::now();
+        let mut effects = Vec::new();
+        for ordinal in [1, 2] {
+            let request = EffectRequest::new(
+                "run",
+                "one",
+                1,
+                ordinal,
+                "tool.echo",
+                EffectClass::Pure,
+                Risk::Low,
+                Idempotency::Pure,
+                serde_json::json!({"ordinal":ordinal}),
+                "echo",
+                "trace",
+            );
+            store.record_effect_request(&request, now).unwrap();
+            store.mark_effect_started(&request.id, now).unwrap();
+            store
+                .start_tool_call(
+                    "repeated-id",
+                    "run",
+                    "one",
+                    &request.id,
+                    "echo",
+                    &request.input_digest,
+                    now,
+                )
+                .unwrap();
+            effects.push(request);
+        }
+        store
+            .complete_tool_effect(
+                &effects[0].id,
+                "run",
+                "repeated-id",
+                Ok(&serde_json::json!({"ok":true})),
+                Some("digest"),
+                now,
+            )
+            .unwrap();
+        let calls = store.tool_calls("run").unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.status == "succeeded")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls.iter().filter(|call| call.status == "started").count(),
+            1
+        );
+        store
+            .mark_tool_effect_uncertain(&effects[1].id, "run", "repeated-id", "interrupted", now)
+            .unwrap();
+        assert_eq!(
+            store.load_effect(&effects[0].id).unwrap().status,
+            EffectStatus::Succeeded
+        );
+        assert_eq!(
+            store.load_effect(&effects[1].id).unwrap().status,
+            EffectStatus::Uncertain
+        );
     }
 
     #[test]

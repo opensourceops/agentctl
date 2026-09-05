@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -8,18 +8,23 @@ use std::time::Duration;
 use agentctl_core::dsl::{
     ActionKind, PackReference, PackTrustDefinition, UnsignedPackPolicy, Workflow,
 };
+use agentctl_core::network::custom_ca_pem_is_valid;
 use agentctl_core::pack::{
     PACK_LOCK_API_VERSION, PackDependency, PackLock, PackLockEntry, PackManifest, PackSignature,
     PackSource, PackTrustRecord, digest_bytes, parse_pack,
 };
+use agentctl_core::policy::PolicyEngine;
+use agentctl_core::sources::SourceOrigins;
+use agentctl_runtime::secret::SecretResolver;
 use flate2::read::GzDecoder;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::redirect::Policy;
 use semver::{Version, VersionReq};
 use sigstore_trust_root::{SIGSTORE_PRODUCTION_TRUSTED_ROOT, TrustedRoot};
 use sigstore_types::Bundle;
 use sigstore_verify::{VerificationPolicy, verify};
 use tar::Archive;
+use tokio_util::sync::CancellationToken;
 
 const LOCK_FILE_NAME: &str = "agentctl.pack.lock";
 const CACHE_DIRECTORY: &str = ".agentctl/pack-cache";
@@ -36,6 +41,7 @@ pub struct PackOptions {
 }
 
 pub struct LoadedPacks {
+    pub origins: SourceOrigins,
     pub packs: Vec<(PackLockEntry, PackManifest)>,
     pub warnings: Vec<String>,
 }
@@ -53,8 +59,18 @@ pub fn generate_lock(
     workflow_path: &Path,
     offline: bool,
 ) -> Result<PackLock, String> {
+    let base = canonical_workflow_root(workflow_path)?;
+    generate_lock_with_policy_base(workflow, workflow_path, offline, &base)
+}
+
+fn generate_lock_with_policy_base(
+    workflow: &Workflow,
+    workflow_path: &Path,
+    offline: bool,
+    policy_base: &Path,
+) -> Result<PackLock, String> {
     let root = canonical_workflow_root(workflow_path)?;
-    let mut resolver = Resolver::new(root, offline);
+    let mut resolver = Resolver::new(root, offline, workflow.spec.policy.clone(), policy_base)?;
     for reference in &workflow.spec.packs {
         let (source, signature) = root_requirement(reference)?;
         let constraint = root_constraint(reference)?;
@@ -92,19 +108,30 @@ pub fn load_for_workflow(
     workflow_path: &Path,
     options: PackOptions,
 ) -> Result<LoadedPacks, String> {
+    let base = canonical_workflow_root(workflow_path)?;
+    load_for_workflow_with_policy_base(workflow, workflow_path, options, &base)
+}
+
+pub fn load_for_workflow_with_policy_base(
+    workflow: &Workflow,
+    workflow_path: &Path,
+    options: PackOptions,
+    policy_base: &Path,
+) -> Result<LoadedPacks, String> {
     if workflow.spec.packs.is_empty() {
         return Ok(LoadedPacks {
+            origins: SourceOrigins::default(),
             packs: Vec::new(),
             warnings: Vec::new(),
         });
     }
-    let path = lock_path(workflow_path);
+    let path = canonical_workflow_root(workflow_path)?.join(LOCK_FILE_NAME);
     if path.exists() {
         let bytes = read_bounded(&path, MAX_MANIFEST_BYTES)?;
         let lock: PackLock = serde_yaml_ng::from_slice(&bytes)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         lock.validate().map_err(|error| error.to_string())?;
-        return load_locked(workflow, workflow_path, &lock, options.offline);
+        return load_locked(workflow, workflow_path, &lock, options.offline, policy_base);
     }
     if options.locked {
         return Err(format!(
@@ -125,8 +152,9 @@ pub fn load_for_workflow(
             workflow_path.display()
         ));
     }
-    let lock = generate_lock(workflow, workflow_path, options.offline)?;
-    let mut loaded = load_locked(workflow, workflow_path, &lock, options.offline)?;
+    let lock =
+        generate_lock_with_policy_base(workflow, workflow_path, options.offline, policy_base)?;
+    let mut loaded = load_locked(workflow, workflow_path, &lock, options.offline, policy_base)?;
     loaded.warnings.push(format!(
         "legacy unlocked pack references are deprecated; generate and commit {}",
         path.display()
@@ -139,10 +167,17 @@ fn load_locked(
     workflow_path: &Path,
     lock: &PackLock,
     offline: bool,
+    policy_base: &Path,
 ) -> Result<LoadedPacks, String> {
     let root = canonical_workflow_root(workflow_path)?;
     verify_root_requirements(workflow, lock)?;
-    let resolver = Resolver::new(root.clone(), offline);
+    let resolver = Resolver::new(
+        root.clone(),
+        offline,
+        workflow.spec.policy.clone(),
+        policy_base,
+    )?;
+    let mut origins = SourceOrigins::default();
     let mut packs = Vec::with_capacity(lock.packs.len());
     let mut warnings = Vec::new();
     for entry in &lock.packs {
@@ -175,9 +210,36 @@ fn load_locked(
             &workflow.spec.pack_trust,
             &mut warnings,
         )?;
+        let manifest_path = resolver.manifest_path(&entry.source)?;
+        let manifest_parent = manifest_path
+            .parent()
+            .ok_or("pack manifest has no parent")?;
+        for (path, integrity) in &manifest.files {
+            // The core source reader verifies this digest on the bytes it captures.
+            let absolute = manifest_parent.join(path);
+            if let Some(previous) = origins.files.insert(absolute, integrity.clone())
+                && previous != *integrity
+            {
+                return Err(format!("conflicting pack file integrity for `{path}`"));
+            }
+        }
+        for name in manifest.agents.keys() {
+            origins
+                .agents
+                .insert(format!("{}.{}", manifest.name, name), manifest_path.clone());
+        }
+        for name in manifest.workflows.keys() {
+            origins
+                .subworkflows
+                .insert(format!("{}.{}", manifest.name, name), manifest_path.clone());
+        }
         packs.push((entry.clone(), manifest));
     }
-    Ok(LoadedPacks { packs, warnings })
+    Ok(LoadedPacks {
+        packs,
+        warnings,
+        origins,
+    })
 }
 
 fn verify_root_requirements(workflow: &Workflow, lock: &PackLock) -> Result<(), String> {
@@ -389,19 +451,27 @@ struct Resolver {
     root: PathBuf,
     cache: PathBuf,
     offline: bool,
+    policy: PolicyEngine,
     entries: BTreeMap<String, PackLockEntry>,
     visiting: BTreeSet<String>,
 }
 
 impl Resolver {
-    fn new(root: PathBuf, offline: bool) -> Self {
-        Self {
+    fn new(
+        root: PathBuf,
+        offline: bool,
+        policy: agentctl_core::dsl::PolicyDefinition,
+        policy_base: &Path,
+    ) -> Result<Self, String> {
+        let policy = PolicyEngine::new(policy, policy_base).map_err(|error| error.to_string())?;
+        Ok(Self {
             cache: root.join(CACHE_DIRECTORY),
             root,
             offline,
+            policy,
             entries: BTreeMap::new(),
             visiting: BTreeSet::new(),
-        }
+        })
     }
 
     fn resolve(
@@ -484,6 +554,36 @@ impl Resolver {
         Ok(manifest.version)
     }
 
+    fn manifest_path(&self, source: &PackSource) -> Result<PathBuf, String> {
+        match source {
+            PackSource::Path { path } => contained_path(&self.root, path, "pack path"),
+            PackSource::Git { git, rev, manifest } => {
+                let key = digest_bytes(format!("{git}\n{rev}").as_bytes())
+                    .trim_start_matches("sha256:")
+                    .to_owned();
+                contained_path(
+                    &self.cache.join("git").join(key),
+                    manifest,
+                    "Git pack manifest",
+                )
+            }
+            PackSource::Archive {
+                integrity,
+                manifest,
+                ..
+            } => {
+                let key = integrity
+                    .strip_prefix("sha256:")
+                    .ok_or("archive integrity must use sha256")?;
+                contained_path(
+                    &self.cache.join("archives").join(key),
+                    manifest,
+                    "archive pack manifest",
+                )
+            }
+        }
+    }
+
     fn fetch(&self, source: &PackSource) -> Result<Vec<u8>, String> {
         match source {
             PackSource::Path { path } => {
@@ -510,6 +610,13 @@ impl Resolver {
                 return Err(format!(
                     "offline pack cache miss for Git source `{git}` at `{rev}`"
                 ));
+            }
+            let target = url::Url::parse(git).map_err(|error| error.to_string())?;
+            if target.scheme() == "https" {
+                self.policy
+                    .authorize_network(&target)
+                    .map_err(|error| error.to_string())?;
+                return Err("fresh HTTPS Git pack fetches cannot enforce policy DNS pinning; use a digest-pinned HTTPS archive or an already populated exact-commit cache".to_owned());
             }
             fs::create_dir_all(directory.parent().expect("Git cache parent"))
                 .map_err(|error| error.to_string())?;
@@ -556,28 +663,30 @@ impl Resolver {
             .ok_or_else(|| "archive integrity must use sha256".to_owned())?;
         let archive_path = self.cache.join("archives").join(format!("{key}.tar.gz"));
         let directory = self.cache.join("archives").join(key);
-        if !archive_path.exists() {
+        let cache_miss = !archive_path.exists();
+        let bytes = if cache_miss {
             if self.offline {
                 return Err(format!("offline pack cache miss for archive `{url}`"));
             }
-            let bytes = download_archive(url)?;
-            let actual = digest_bytes(&bytes);
-            if actual != integrity {
-                return Err(format!(
-                    "archive `{url}` integrity mismatch: expected {integrity}, got {actual}"
-                ));
-            }
+            download_archive(url, &self.policy)?
+        } else {
+            read_bounded(&archive_path, MAX_ARCHIVE_BYTES)?
+        };
+        let actual = digest_bytes(&bytes);
+        if actual != integrity {
+            return Err(format!(
+                "archive `{url}` integrity mismatch: expected {integrity}, got {actual}"
+            ));
+        }
+        if cache_miss {
             fs::create_dir_all(archive_path.parent().expect("archive cache parent"))
                 .map_err(|error| error.to_string())?;
-            fs::write(&archive_path, bytes).map_err(|error| error.to_string())?;
-        } else {
-            let bytes = read_bounded(&archive_path, MAX_ARCHIVE_BYTES)?;
-            let actual = digest_bytes(&bytes);
-            if actual != integrity {
-                return Err(format!(
-                    "cached archive `{url}` integrity mismatch: expected {integrity}, got {actual}"
-                ));
-            }
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&archive_path)
+                .map_err(|error| format!("archive cache create: {error}"))?;
+            file.write_all(&bytes).map_err(|error| error.to_string())?;
         }
         if !directory.exists() {
             let temporary = directory.with_extension(format!("tmp-{}", std::process::id()));
@@ -585,7 +694,7 @@ impl Resolver {
                 fs::remove_dir_all(&temporary).map_err(|error| error.to_string())?;
             }
             fs::create_dir_all(&temporary).map_err(|error| error.to_string())?;
-            extract_archive(&archive_path, &temporary)?;
+            extract_archive(&bytes, &temporary)?;
             fs::rename(&temporary, &directory).map_err(|error| error.to_string())?;
         }
         let manifest = contained_path(&directory, manifest, "archive pack manifest")?;
@@ -702,14 +811,8 @@ fn contained_path(root: &Path, relative: &Path, label: &str) -> Result<PathBuf, 
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("{} is not a regular file", path.display()));
-    }
-    if metadata.len() > limit {
-        return Err(format!("{} exceeds the {limit}-byte limit", path.display()));
-    }
-    fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+    agentctl_core::pack::read_pack_input(path, limit)
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn validate_git_source(root: &Path, source: &str) -> Result<(), String> {
@@ -734,8 +837,37 @@ fn validate_git_source(root: &Path, source: &str) -> Result<(), String> {
     Err("Git pack source must be an absolute URL".to_owned())
 }
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command.env_clear();
+    for name in ["PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "file")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.file.allow=always",
+        ]);
+    command
+}
+
 fn git_status<const N: usize>(args: [&str; N], directory: &Path) -> Result<(), String> {
-    let status = Command::new("git")
+    let status = git_command()
         .args(args)
         .current_dir(directory)
         .stdin(Stdio::null())
@@ -751,7 +883,7 @@ fn git_status<const N: usize>(args: [&str; N], directory: &Path) -> Result<(), S
 }
 
 fn git_output<const N: usize>(args: [&str; N], directory: &Path) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(directory)
         .stdin(Stdio::null())
@@ -764,61 +896,103 @@ fn git_output<const N: usize>(args: [&str; N], directory: &Path) -> Result<Strin
     String::from_utf8(output.stdout).map_err(|error| format!("Git output was not UTF-8: {error}"))
 }
 
-fn download_archive(url: &str) -> Result<Vec<u8>, String> {
+// Pack loading is synchronous and is also invoked inside the CLI Tokio runtime.
+// A separate current-thread runtime avoids nested-runtime panics while reusing
+// the same DNS, address, CA and proxy policy preparation as provider traffic.
+fn download_archive(url: &str, policy: &PolicyEngine) -> Result<Vec<u8>, String> {
     let parsed = url::Url::parse(url).map_err(|error| format!("invalid archive URL: {error}"))?;
-    let local_http = parsed.scheme() == "http"
-        && parsed.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-    if parsed.scheme() != "https" && !local_http {
-        return Err("archive URL must use https; loopback http is fixture-only".to_owned());
-    }
-    let client = Client::builder()
-        .redirect(Policy::none())
-        .timeout(Duration::from_secs(30))
-        .build()
+    policy
+        .authorize_network(&parsed)
         .map_err(|error| error.to_string())?;
-    let response = client
-        .get(parsed)
-        .send()
-        .map_err(|error| format!("archive download failed: {error}"))?;
-    if response.status().is_redirection() {
-        return Err("archive redirects are not followed; lock the final immutable URL".to_owned());
-    }
-    if !response.status().is_success() {
-        return Err(format!(
-            "archive download returned HTTP {}",
-            response.status()
-        ));
-    }
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
-    {
-        return Err(format!(
-            "archive exceeds the {MAX_ARCHIVE_BYTES}-byte compressed limit"
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_ARCHIVE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("archive download failed: {error}"))?;
-    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
-        return Err(format!(
-            "archive exceeds the {MAX_ARCHIVE_BYTES}-byte compressed limit"
-        ));
-    }
-    Ok(bytes)
+    let policy = policy.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("pack transport runtime: {error}"))?;
+        let result = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                let cancellation = CancellationToken::new();
+                let secrets = SecretResolver::restricted(policy.clone());
+                let transport =
+                    super::prepare_http_transport(&policy, &parsed, &secrets, &cancellation)
+                        .await
+                        .map_err(|error| error.message)?;
+                let limit = MAX_ARCHIVE_BYTES.min(transport.max_response_bytes as u64);
+                let mut builder = Client::builder()
+                    .redirect(Policy::none())
+                    .user_agent(concat!("agentctl/", env!("CARGO_PKG_VERSION")))
+                    .connect_timeout(transport.connect_timeout)
+                    .timeout(Duration::from_secs(30));
+                if !transport.allow_proxy {
+                    builder = builder.no_proxy();
+                }
+                if let Some(host) = &transport.resolved_host {
+                    builder = builder.resolve_to_addrs(host, &transport.resolved_addresses);
+                }
+                if let Some(pem) = &transport.custom_ca_pem {
+                    if !custom_ca_pem_is_valid(pem.expose()) {
+                        return Err("network custom CA PEM is invalid".to_owned());
+                    }
+                    let certificate = reqwest::Certificate::from_pem(pem.expose().as_bytes())
+                        .map_err(|_| "network custom CA PEM is invalid".to_owned())?;
+                    builder = builder.add_root_certificate(certificate);
+                }
+                let client = builder.build().map_err(|error| error.to_string())?;
+                let mut response = client
+                    .get(parsed)
+                    .send()
+                    .await
+                    .map_err(|error| format!("archive download failed: {error}"))?;
+                if response.status().is_redirection() {
+                    return Err(
+                        "archive redirects are not followed; lock the final immutable URL"
+                            .to_owned(),
+                    );
+                }
+                if !response.status().is_success() {
+                    return Err(format!(
+                        "archive download returned HTTP {}",
+                        response.status()
+                    ));
+                }
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > limit)
+                {
+                    return Err(format!(
+                        "archive exceeds the {limit}-byte compressed/policy limit"
+                    ));
+                }
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|error| format!("archive download failed: {error}"))?
+                {
+                    if chunk.len() as u64 > limit.saturating_sub(bytes.len() as u64) {
+                        return Err(format!(
+                            "archive exceeds the {limit}-byte compressed/policy limit"
+                        ));
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(bytes)
+            })
+            .await
+            .map_err(|_| "archive download timed out after 30 seconds".to_owned())?
+        });
+        // Timed-out DNS work must not extend the bounded caller wait.
+        runtime.shutdown_background();
+        result
+    })
+    .join()
+    .map_err(|_| "pack transport worker failed".to_owned())?
 }
 
-fn extract_archive(archive_path: &Path, destination: &Path) -> Result<(), String> {
-    let file = fs::File::open(archive_path)
-        .map_err(|error| format!("{}: {error}", archive_path.display()))?;
-    let decoder = GzDecoder::new(file);
+fn extract_archive(bytes: &[u8], destination: &Path) -> Result<(), String> {
+    // Decompress exactly the bytes whose immutable archive digest was checked.
+    let decoder = GzDecoder::new(bytes);
     let mut archive = Archive::new(decoder);
     let entries = archive.entries().map_err(|error| error.to_string())?;
     let mut count = 0_usize;
@@ -884,6 +1058,7 @@ fn extract_archive(archive_path: &Path, destination: &Path) -> Result<(), String
 mod tests {
     use super::*;
     use agentctl_core::dsl::parse_workflow;
+    use std::io::Read;
     use tempfile::tempdir;
 
     fn write(path: &Path, value: &str) {
@@ -914,6 +1089,337 @@ spec:
             .expect("workflow")
             .workflow;
         (parsed, path)
+    }
+
+    fn asset_manifest(directory: &Path) -> String {
+        let instructions = "Review {{vars.environment}}.";
+        let variables = "environment: pack\n";
+        let task_variables = "environment: task\n";
+        write(&directory.join("prompts/review.md"), instructions);
+        write(&directory.join("vars/defaults.yaml"), variables);
+        write(&directory.join("vars/task.yaml"), task_variables);
+        let manifest = format!(
+            r#"
+apiVersion: agentctl.dev/pack/v1alpha1
+name: example.root
+version: 1.0.0
+agentctl: ">=0.3.0, <1.0.0"
+files:
+  prompts/review.md: {}
+  vars/defaults.yaml: {}
+  vars/task.yaml: {}
+actions:
+  assign: {{ kind: builtin.assign }}
+agents:
+  reviewer:
+    provider: fixture
+    model: fixture
+    instructionsFile: prompts/review.md
+    varsFiles: [vars/defaults.yaml]
+workflows:
+  review:
+    version: 1.0.0
+    inputSchema: {{ type: object }}
+    outputSchema: {{ type: object }}
+    tasks:
+      - id: inspect
+        uses: agent:reviewer
+        varsFiles: [vars/task.yaml]
+policyDefaults:
+  networkAllowlist: [evil.invalid]
+  toolsAllow: [filesystem.read]
+"#,
+            digest_bytes(instructions.as_bytes()),
+            digest_bytes(variables.as_bytes()),
+            digest_bytes(task_variables.as_bytes())
+        );
+        write(&directory.join("agentctl.pack.yaml"), &manifest);
+        manifest
+    }
+
+    fn capture_assets(workflow: &Workflow, path: &Path) -> Result<Workflow, String> {
+        let loaded = load_for_workflow(
+            workflow,
+            path,
+            PackOptions {
+                offline: true,
+                locked: true,
+            },
+        )?;
+        capture_loaded(workflow, path, loaded)
+    }
+
+    fn capture_loaded(
+        workflow: &Workflow,
+        path: &Path,
+        loaded: LoadedPacks,
+    ) -> Result<Workflow, String> {
+        let mut captured = workflow.clone();
+        super::super::load_packs(&mut captured, loaded.packs).map_err(|error| error.message)?;
+        agentctl_core::sources::resolve_workflow_sources(
+            &mut captured,
+            path,
+            path.parent().expect("workflow parent"),
+            &agentctl_core::sources::VariableOverrides::default(),
+            &loaded.origins,
+        )
+        .map_err(|errors| format!("{errors:?}"))?;
+        Ok(captured)
+    }
+
+    #[test]
+    fn local_pack_assets_bind_origins_digests_and_caller_read_policy() {
+        let directory = tempdir().expect("tempdir");
+        let pack_root = directory.path().join("pack");
+        asset_manifest(&pack_root);
+        write(
+            &directory.path().join("prompts/review.md"),
+            "wrong workflow origin",
+        );
+        let (workflow, path) = workflow(
+            directory.path(),
+            "    - name: example.root\n      version: \"1\"\n      source: { path: pack/agentctl.pack.yaml }",
+            "    unsigned: allow",
+        );
+        let lock = generate_lock(&workflow, &path, true).expect("lock");
+        write_lock(&path, &lock).expect("write lock");
+        let captured = capture_assets(&workflow, &path).expect("capture assets");
+        assert_eq!(
+            agentctl_core::sources::instruction_text(&captured, "example.root.reviewer"),
+            Some("Review {{vars.environment}}.")
+        );
+        assert_eq!(
+            captured.spec.agents["example.root.reviewer"].vars["environment"],
+            "pack"
+        );
+        assert_eq!(
+            captured.spec.subworkflows["example.root.review"].tasks[0].vars["environment"],
+            "task"
+        );
+        assert_eq!(
+            captured.spec.policy, workflow.spec.policy,
+            "pack defaults never grant authority"
+        );
+        let mut denied = workflow.clone();
+        denied.spec.policy.tools_deny = vec!["filesystem.read".to_owned()];
+        assert!(
+            capture_assets(&denied, &path)
+                .expect_err("caller deny wins")
+                .contains("explicitly denied")
+        );
+        let loaded = load_for_workflow(
+            &workflow,
+            &path,
+            PackOptions {
+                offline: true,
+                locked: true,
+            },
+        )
+        .expect("load before race");
+        write(
+            &pack_root.join("prompts/review.md"),
+            "tampered after manifest load",
+        );
+        assert!(
+            capture_loaded(&workflow, &path, loaded)
+                .expect_err("digest race rejected")
+                .contains("integrity")
+        );
+        std::fs::remove_dir_all(&pack_root).expect("remove mutable pack files");
+        let mut persisted: Workflow =
+            serde_json::from_value(serde_json::to_value(captured).expect("snapshot"))
+                .expect("stored snapshot");
+        let resolution = agentctl_core::sources::resolve_workflow_sources(
+            &mut persisted,
+            &path,
+            directory.path(),
+            &agentctl_core::sources::VariableOverrides::default(),
+            &SourceOrigins::default(),
+        )
+        .expect("persisted captures need no mutable pack inputs");
+        assert!(!resolution.origins.is_empty());
+    }
+
+    #[test]
+    fn archive_policy_denial_creates_no_request_or_cache() {
+        let directory = tempdir().expect("tempdir");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let roots = format!(
+            "    - name: example.root\n      version: \"1\"\n      source:\n        url: http://{}/pack.tar.gz\n        integrity: {}",
+            listener.local_addr().unwrap(),
+            digest_bytes(b"fixture")
+        );
+        let (mut workflow, path) = workflow(directory.path(), &roots, "    unsigned: allow");
+        let denied = generate_lock(&workflow, &path, false).expect_err("host denied");
+        assert!(
+            denied.contains("network destination is not authorized"),
+            "{denied}"
+        );
+        workflow.spec.policy.network_allowlist = vec!["127.0.0.1".to_owned()];
+        let denied = generate_lock(&workflow, &path, false).expect_err("private IP denied");
+        assert!(
+            denied.contains("network address is not authorized"),
+            "{denied}"
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        assert!(!directory.path().join(CACHE_DIRECTORY).exists());
+    }
+
+    #[test]
+    fn remote_git_fetch_is_rejected_before_cache_or_network() {
+        let directory = tempdir().expect("tempdir");
+        let roots = "    - name: example.root\n      version: \"1\"\n      source:\n        git: https://packs.example.invalid/project.git\n        rev: 0123456789abcdef0123456789abcdef01234567";
+        let (mut workflow, path) = workflow(directory.path(), roots, "    unsigned: allow");
+        assert!(
+            generate_lock(&workflow, &path, false)
+                .expect_err("host denied")
+                .contains("network destination is not authorized")
+        );
+        workflow.spec.policy.network_allowlist = vec!["packs.example.invalid".to_owned()];
+        assert!(
+            generate_lock(&workflow, &path, false)
+                .expect_err("unsupported pinned Git transport")
+                .contains("DNS pinning")
+        );
+        assert!(!directory.path().join(CACHE_DIRECTORY).exists());
+    }
+
+    #[tokio::test]
+    async fn archive_redirect_and_policy_response_bounds_hold_inside_cli_runtime() {
+        let directory = tempdir().expect("tempdir");
+        let redirect_target = std::net::TcpListener::bind("127.0.0.1:0").expect("target");
+        redirect_target.set_nonblocking(true).expect("nonblocking");
+        for response in [
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{}/forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                redirect_target.local_addr().unwrap()
+            ),
+            "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n".to_owned(),
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n64\r\n{}\r\n0\r\n\r\n",
+                "x".repeat(100)
+            ),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("server");
+            let address = listener.local_addr().expect("address");
+            let is_redirect = response.starts_with("HTTP/1.1 302");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("request");
+                let mut request = [0_u8; 1024];
+                assert!(stream.read(&mut request).expect("request bytes") > 0);
+                stream.write_all(response.as_bytes()).expect("response");
+            });
+            let mut definition = agentctl_core::dsl::PolicyDefinition {
+                network_allowlist: vec!["127.0.0.1".to_owned()],
+                ..Default::default()
+            };
+            definition.network.allow_private = true;
+            definition.network.max_response_bytes = 64;
+            let policy = PolicyEngine::new(definition, directory.path()).expect("policy");
+            let error = download_archive(&format!("http://{address}/pack"), &policy)
+                .expect_err("blocked response");
+            assert!(
+                error.contains(if is_redirect {
+                    "redirects are not followed"
+                } else {
+                    "64-byte"
+                }),
+                "{error}"
+            );
+            server.join().expect("server");
+        }
+        assert!(
+            matches!(redirect_target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn archive_transport_respects_explicit_proxy_setting() {
+        // Environment changes are isolated to a child test process, never shared
+        // with parallel tests or provider credentials in this process.
+        const CHILD: &str = "AGENTCTL_PACK_PROXY_TEST_URL";
+        if let Ok(url) = std::env::var(CHILD) {
+            let directory = tempdir().expect("child tempdir");
+            let mut definition = agentctl_core::dsl::PolicyDefinition {
+                network_allowlist: vec!["127.0.0.1".to_owned(), "127.0.0.2".to_owned()],
+                ..Default::default()
+            };
+            definition.network.allow_private = true;
+            definition.network.allow_proxy =
+                std::env::var("AGENTCTL_PACK_TRUST_PROXY").as_deref() == Ok("true");
+            let policy = PolicyEngine::new(definition, directory.path()).expect("policy");
+            assert_eq!(
+                download_archive(&url, &policy).expect("download"),
+                b"fixture"
+            );
+            return;
+        }
+        for trusted in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("server");
+            let address = listener.local_addr().expect("address");
+            let unused_proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("unused proxy");
+            unused_proxy.set_nonblocking(true).expect("nonblocking");
+            let server = std::thread::spawn(move || {
+                let (mut connection, _) = listener.accept().expect("request");
+                connection
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("timeout");
+                let mut request = [0_u8; 2048];
+                let count = connection.read(&mut request).expect("read request");
+                let request = std::str::from_utf8(&request[..count]).expect("request UTF8");
+                if trusted {
+                    assert!(request.starts_with("GET http://127.0.0.2:9/"), "{request}");
+                }
+                connection
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture",
+                    )
+                    .expect("response");
+            });
+            let url = if trusted {
+                "http://127.0.0.2:9/pack".to_owned()
+            } else {
+                format!("http://{address}/pack")
+            };
+            let proxy = format!(
+                "http://{}",
+                if trusted {
+                    address
+                } else {
+                    unused_proxy.local_addr().unwrap()
+                }
+            );
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "packs::tests::archive_transport_respects_explicit_proxy_setting",
+                    "--nocapture",
+                ])
+                .env(CHILD, url)
+                .env("AGENTCTL_PACK_TRUST_PROXY", trusted.to_string())
+                .env("HTTP_PROXY", &proxy)
+                .env("HTTPS_PROXY", &proxy)
+                .env("ALL_PROXY", &proxy)
+                .env("http_proxy", &proxy)
+                .env("https_proxy", &proxy)
+                .env("all_proxy", &proxy)
+                .env("NO_PROXY", "")
+                .env("no_proxy", "")
+                .output()
+                .expect("child test");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            server.join().expect("server");
+            assert!(
+                matches!(unused_proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
     }
 
     #[test]
@@ -1142,11 +1648,8 @@ actions:
         let repository = directory.path().join("repository");
         fs::create_dir(&repository).expect("repository");
         git_status(["init", "-q"], &repository).expect("git init");
-        write(
-            &repository.join("agentctl.pack.yaml"),
-            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.root\nversion: 1.0.0\nagentctl: \">=0.3.0, <1.0.0\"\nactions:\n  assign: { kind: builtin.assign }\n",
-        );
-        git_status(["add", "agentctl.pack.yaml"], &repository).expect("git add");
+        asset_manifest(&repository);
+        git_status(["add", "."], &repository).expect("git add");
         let status = Command::new("git")
             .args([
                 "-c",
@@ -1176,6 +1679,34 @@ actions:
         let online = generate_lock(&workflow, &path, false).expect("online lock");
         let offline = generate_lock(&workflow, &path, true).expect("offline lock");
         assert_eq!(online, offline);
+        write_lock(&path, &online).expect("write lock");
+        let captured = capture_assets(&workflow, &path).expect("pinned Git asset capture");
+        assert_eq!(
+            agentctl_core::sources::instruction_text(&captured, "example.root.reviewer"),
+            Some("Review {{vars.environment}}.")
+        );
+        let loaded = load_for_workflow(
+            &workflow,
+            &path,
+            PackOptions {
+                offline: true,
+                locked: true,
+            },
+        )
+        .expect("cached origins");
+        let cache_manifest = &loaded.origins.agents["example.root.reviewer"];
+        write(
+            &cache_manifest
+                .parent()
+                .expect("cache root")
+                .join("prompts/review.md"),
+            "tampered cached asset",
+        );
+        assert!(
+            capture_assets(&workflow, &path)
+                .expect_err("cached Git tamper")
+                .contains("integrity")
+        );
     }
 
     #[test]
@@ -1247,7 +1778,7 @@ actions:
         use std::net::TcpListener;
         use std::thread;
 
-        fn archive_with_manifest(manifest: &[u8]) -> Vec<u8> {
+        fn archive_with_manifest(directory: &Path, manifest: &[u8]) -> Vec<u8> {
             let encoder = GzEncoder::new(Vec::new(), Compression::default());
             let mut builder = tar::Builder::new(encoder);
             let mut header = tar::Header::new_gnu();
@@ -1256,6 +1787,15 @@ actions:
             header.set_mode(0o644);
             header.set_cksum();
             builder.append(&header, manifest).expect("manifest archive");
+            for name in ["prompts/review.md", "vars/defaults.yaml", "vars/task.yaml"] {
+                let bytes = fs::read(directory.join(name)).expect("asset");
+                let mut header = tar::Header::new_gnu();
+                header.set_path(name).expect("asset path");
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, &bytes[..]).expect("archive asset");
+            }
             builder
                 .into_inner()
                 .expect("encoder")
@@ -1263,8 +1803,9 @@ actions:
                 .expect("gzip")
         }
 
-        let manifest = b"apiVersion: agentctl.dev/pack/v1alpha1\nname: example.root\nversion: 1.0.0\nagentctl: \">=0.3.0, <1.0.0\"\nactions:\n  assign: { kind: builtin.assign }\n";
-        let archive = archive_with_manifest(manifest);
+        let asset_directory = tempdir().expect("asset fixture");
+        let manifest = asset_manifest(asset_directory.path());
+        let archive = archive_with_manifest(asset_directory.path(), manifest.as_bytes());
         let integrity = digest_bytes(&archive);
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
@@ -1285,13 +1826,44 @@ actions:
         let roots = format!(
             "    - name: example.root\n      version: \"1\"\n      source:\n        url: http://{address}/pack.tar.gz\n        integrity: {integrity}\n        manifest: agentctl.pack.yaml"
         );
-        let (workflow, path) = workflow(directory.path(), &roots, "    unsigned: allow");
+        let (mut workflow, path) = workflow(directory.path(), &roots, "    unsigned: allow");
+        workflow.spec.policy.network_allowlist = vec!["127.0.0.1".to_owned()];
+        workflow.spec.policy.network.allow_private = true;
         let online = generate_lock(&workflow, &path, false).expect("online archive");
         server.join().expect("server");
-        let offline = generate_lock(&workflow, &path, true).expect("offline archive");
+        workflow.spec.policy.network_allowlist.clear();
+        let offline =
+            generate_lock(&workflow, &path, true).expect("offline archive needs no network grant");
         assert_eq!(online, offline);
+        write_lock(&path, &online).expect("write archive lock");
+        let captured = capture_assets(&workflow, &path).expect("archive assets captured");
+        assert_eq!(
+            agentctl_core::sources::instruction_text(&captured, "example.root.reviewer"),
+            Some("Review {{vars.environment}}.")
+        );
+        let loaded = load_for_workflow(
+            &workflow,
+            &path,
+            PackOptions {
+                offline: true,
+                locked: true,
+            },
+        )
+        .expect("archive origins");
+        let cache_manifest = &loaded.origins.agents["example.root.reviewer"];
+        write(
+            &cache_manifest
+                .parent()
+                .expect("cache root")
+                .join("prompts/review.md"),
+            "tampered extracted asset",
+        );
+        assert!(
+            capture_assets(&workflow, &path)
+                .expect_err("cached archive asset tamper")
+                .contains("integrity")
+        );
 
-        let malicious = directory.path().join("malicious.tar.gz");
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut builder = tar::Builder::new(encoder);
         let mut header = tar::Header::new_gnu();
@@ -1311,10 +1883,9 @@ actions:
             .expect("encoder")
             .finish()
             .expect("gzip");
-        fs::write(&malicious, malicious_bytes).expect("malicious fixture");
         let extraction = directory.path().join("extraction");
         fs::create_dir(&extraction).expect("extraction");
-        let error = extract_archive(&malicious, &extraction).expect_err("link rejected");
+        let error = extract_archive(&malicious_bytes, &extraction).expect_err("link rejected");
         assert!(error.contains("symlinks"), "{error}");
     }
 }

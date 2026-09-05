@@ -3167,6 +3167,7 @@ pub fn container(root: &Path) -> Result<()> {
 
     container_durable_composite_acceptance(root, &engine)?;
     container_compensation_reconciliation_acceptance(&engine)?;
+    container_source_capture_acceptance(&engine)?;
 
     let missing_directory = tempfile::tempdir()?;
     let missing = container_layout(missing_directory.path(), false)?;
@@ -3184,8 +3185,177 @@ pub fn container(root: &Path) -> Result<()> {
 
     container_signal_acceptance(&engine, directory.path())?;
     println!(
-        "agentctl OCI acceptance passed: success, artifact, inspect, parallel matrix composite, approval, retry, repair, compensation reconciliation, network-disabled replay, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
+        "agentctl OCI acceptance passed: success, artifact, inspect, parallel matrix composite, approval, captured instruction/variable deletion and resume, retry, repair, compensation reconciliation, network-disabled replay, missing-secret, invalid-input, SIGTERM, non-root, read-only root, mounted state/artifacts"
     );
+    Ok(())
+}
+
+fn container_source_capture_acceptance(engine: &Path) -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let layout = container_layout(directory.path(), false)?;
+    let workflow = serde_json::json!({
+        "apiVersion":"agentctl.dev/v1", "kind":"Workflow", "metadata":{"name":"oci-captured-sources"},
+        "spec": {
+            "varsFiles":["variables.yaml"],
+            "policy":{"workspaceRoot":"/workspace", "approval":"always"},
+            "providers":{"fake":{"kind":"fake"}},
+            "agents":{"reviewer":{"provider":"fake", "model":"scripted", "instructionsFile":"instructions.md", "maxTurns":1}},
+            "tasks":[{"id":"review", "uses":"agent:reviewer", "with":{"prompt":"${{ vars.message }}"}}],
+            "outputs":{"verdict":"${{ tasks.review.output.text }}"}
+        }
+    });
+    write(
+        &layout.workspace.join("workflow.yaml"),
+        &serde_json::to_string(&workflow)?,
+    )?;
+    write(
+        &layout.workspace.join("variables.yaml"),
+        "message: captured-oci-source",
+    )?;
+    write(
+        &layout.workspace.join("instructions.md"),
+        "review ${{ vars.message }}",
+    )?;
+    let paused = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "run",
+            "/workspace/workflow.yaml",
+            "--workspace",
+            "/workspace",
+            "--db",
+            "/state/sources.db",
+            "--output",
+            "json",
+            "--color",
+            "never",
+        ],
+        3,
+        "OCI instruction observation approval",
+    )?;
+    let run_id = string_at(&paused, "/data/runId")?;
+    for name in ["workflow.yaml", "variables.yaml", "instructions.md"] {
+        fs::remove_file(layout.workspace.join(name))?;
+    }
+    for expected_code in [3, 0] {
+        let pending = container_agentctl(
+            engine,
+            &layout,
+            &[
+                "approvals",
+                "--db",
+                "/state/sources.db",
+                "list",
+                run_id,
+                "--output",
+                "json",
+            ],
+            0,
+            "OCI source approval list",
+        )?;
+        ensure!(array_len(&pending, "/data")? == 1);
+        let approval_id = string_at(&pending, "/data/0/approvalId")?;
+        container_agentctl(
+            engine,
+            &layout,
+            &[
+                "approvals",
+                "--db",
+                "/state/sources.db",
+                "approve",
+                approval_id,
+                "--actor",
+                "oci-source-fixture-reviewer",
+                "--reason",
+                "reviewed captured fixture bytes",
+                "--output",
+                "json",
+            ],
+            0,
+            "OCI captured-source approval",
+        )?;
+        let resumed = container_agentctl(
+            engine,
+            &layout,
+            &[
+                "resume",
+                run_id,
+                "--db",
+                "/state/sources.db",
+                "--output",
+                "json",
+            ],
+            expected_code,
+            "OCI source-independent resume",
+        )?;
+        if expected_code == 0 {
+            ensure_eq(
+                &resumed,
+                "/data/output/verdict",
+                "fake: captured-oci-source",
+            )?;
+        }
+    }
+    let inspection = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            run_id,
+            "--db",
+            "/state/sources.db",
+            "--output",
+            "json",
+        ],
+        0,
+        "OCI captured-source evidence",
+    )?;
+    let model = inspection
+        .pointer("/data/effects")
+        .and_then(Value::as_array)
+        .context("source effects")?
+        .iter()
+        .find(|effect| {
+            effect.pointer("/request/effectClass") == Some(&Value::String("model".to_owned()))
+        })
+        .context("captured model effect")?;
+    ensure_eq(
+        model,
+        "/request/input/instructions",
+        "review captured-oci-source",
+    )?;
+    let replay = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "replay",
+            run_id,
+            "--db",
+            "/state/sources.db",
+            "--output",
+            "json",
+        ],
+        0,
+        "OCI deleted-source networkless replay",
+    )?;
+    let replay_id = string_at(&replay, "/data/runId")?;
+    let replay_inspect = container_agentctl(
+        engine,
+        &layout,
+        &[
+            "inspect",
+            replay_id,
+            "--db",
+            "/state/sources.db",
+            "--output",
+            "json",
+        ],
+        0,
+        "OCI replay source evidence",
+    )?;
+    ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
+    ensure!(array_len(&replay_inspect, "/data/providerSessions")? == 0);
     Ok(())
 }
 
@@ -3605,16 +3775,21 @@ fn container_compensation_reconciliation_acceptance(engine: &Path) -> Result<()>
 }
 
 pub fn live_openai(root: &Path) -> Result<()> {
+    let (_, model) = super::live_config::settings()?;
     ensure!(
         env::var_os("OPENAI_API_KEY").is_some(),
         "OPENAI_API_KEY is required for the explicit live acceptance command"
     );
+    let engine = container_engine()?;
+    ensure_engine_ready(&engine)?;
+    build_image(root, &engine)?;
     super::package(root)?;
     let binary = packaged_binary(root)?;
     let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("local-live");
     copy_example(root, "examples/openai-live", &workspace)?;
     let workflow = workspace.join("workflow.yaml");
+    super::live_config::configure(&workflow)?;
     let db = workspace.join("runtime.db");
     successful_json(
         &binary,
@@ -3651,9 +3826,6 @@ pub fn live_openai(root: &Path) -> Result<()> {
     let replay_inspect = inspect(&binary, &workspace, &db, replay_id)?;
     ensure!(array_len(&replay_inspect, "/data/effects")? == 0);
 
-    let engine = container_engine()?;
-    ensure_engine_ready(&engine)?;
-    build_image(root, &engine)?;
     let container_directory = tempfile::tempdir()?;
     let layout = container_layout(container_directory.path(), true)?;
     let container_run = run_container(&engine, &layout, true, Some("OPENAI_API_KEY"))?;
@@ -3671,13 +3843,14 @@ pub fn live_openai(root: &Path) -> Result<()> {
     let container_requests = model_effects(&container_inspect);
     let usage = usage_totals(&live_evidence).plus(usage_totals(&container_inspect));
     println!(
-        "live OpenAI acceptance passed: model=gpt-5.6 localRequests={local_requests} containerRequests={container_requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls=verified continuations=verified keylessReplays=2",
+        "live OpenAI acceptance passed: model={model} localRequests={local_requests} containerRequests={container_requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls=verified continuations=verified keylessReplays=2",
         usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write,
     );
     Ok(())
 }
 
 pub fn live_openai_budget(root: &Path) -> Result<()> {
+    let (_, model) = super::live_config::settings()?;
     ensure!(
         env::var_os("OPENAI_API_KEY").is_some(),
         "OPENAI_API_KEY is required for the explicit live resource-budget command"
@@ -3690,6 +3863,7 @@ pub fn live_openai_budget(root: &Path) -> Result<()> {
     let workflow = workspace.join("workflow.yaml");
     let db = workspace.join("runtime.db");
     write(&workflow, OPENAI_RESOURCE_BUDGET_WORKFLOW)?;
+    super::live_config::configure(&workflow)?;
     successful_json(
         &binary,
         &workspace,
@@ -3715,7 +3889,7 @@ pub fn live_openai_budget(root: &Path) -> Result<()> {
     ensure_eq(&evidence, "/data/tasks/1/state", "failed")?;
     ensure_eq(&evidence, "/data/budget/usage/providerRequests", 1)?;
     ensure_eq(&evidence, "/data/budget/usage/turns", 1)?;
-    ensure_eq(&evidence, "/data/budget/usage/unpricedProviderRequests", 1)?;
+    ensure_eq(&evidence, "/data/budget/usage/unpricedProviderRequests", 0)?;
     ensure_eq(
         &evidence,
         "/data/budget/exceeded/dimension",
@@ -3730,19 +3904,24 @@ pub fn live_openai_budget(root: &Path) -> Result<()> {
     let usage = usage_totals(&evidence);
     guard_live_budget(1, &usage)?;
     println!(
-        "live OpenAI resource-budget verification passed: model=gpt-5.6 requests=1 inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} runId={run_id} termination=providerRequests replay=not-applicable-failed-source",
+        "live OpenAI resource-budget verification passed: model={model} requests=1 inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} runId={run_id} termination=providerRequests replay=not-applicable-failed-source",
         usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write,
     );
     Ok(())
 }
 
 pub fn examples_live_openai(root: &Path) -> Result<()> {
+    let (_, model) = super::live_config::settings()?;
     ensure!(
         env::var_os("OPENAI_API_KEY").is_some(),
         "OPENAI_API_KEY is required for the explicit live example command"
     );
     super::verify_example_matrix(root)?;
     let expected_live = BTreeSet::from([
+        "examples/devops/01-ci-diagnosis/openai.workflow.yaml".to_owned(),
+        "examples/devops/12-incident-timeline/openai.workflow.yaml".to_owned(),
+        "examples/devops/19-role-subworkflow/openai.workflow.yaml".to_owned(),
+        "examples/devops/20-bounded-remediation/openai.workflow.yaml".to_owned(),
         "examples/docs/provider-portability/openai.yaml".to_owned(),
         "examples/framework-completeness/live-composite.yaml".to_owned(),
         "examples/openai-live/workflow.yaml".to_owned(),
@@ -3778,6 +3957,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         let workflow = directory
             .path()
             .join(source.file_name().context("live example file name")?);
+        super::live_config::configure(&workflow)?;
         let db = directory.path().join("runtime.db");
         successful_json(
             &binary,
@@ -3878,7 +4058,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         }
         example_runs.push(serde_json::json!({
             "example": example,
-            "model": "gpt-5.6",
+            "model": model,
             "runId": run_id,
             "status": evidence.pointer("/data/run/state"),
             "requestCount": model_effects(&evidence),
@@ -3896,6 +4076,8 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     )?;
     let source_workflow = repair_workspace.join("source.workflow.yaml");
     let target_workflow = repair_workspace.join("repaired.workflow.yaml");
+    super::live_config::configure(&source_workflow)?;
+    super::live_config::configure(&target_workflow)?;
     let repair_db = repair_workspace.join("runtime.db");
     successful_json(
         &binary,
@@ -4130,7 +4312,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     guard_live_budget(requests, &usage)?;
     example_runs.push(serde_json::json!({
         "example": "examples/selective-repair-openai/source.workflow.yaml",
-        "model": "gpt-5.6",
+        "model": model,
         "runId": source_run_id,
         "status": "failed",
         "requestCount": model_effects(&source_before),
@@ -4139,7 +4321,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     example_runs.push(serde_json::json!({
         "example": "examples/selective-repair-openai/source.workflow.yaml",
         "scenario": "terminal retry after deterministic agent failure",
-        "model": "gpt-5.6",
+        "model": model,
         "runId": retry_run_id,
         "status": "failed-as-designed",
         "requestCount": model_effects(&retry_evidence),
@@ -4148,7 +4330,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     }));
     example_runs.push(serde_json::json!({
         "example": "examples/selective-repair-openai/repaired.workflow.yaml",
-        "model": "gpt-5.6",
+        "model": model,
         "runId": repair_run_id,
         "status": "succeeded",
         "requestCount": model_effects(&repair_evidence),
@@ -4160,6 +4342,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
 
     write_live_summary(
         root,
+        &model,
         &example_runs,
         requests,
         tool_calls,
@@ -4177,8 +4360,10 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     usage = usage.plus(container.usage);
     tool_calls = tool_calls.saturating_add(container.tool_calls);
     guard_live_budget(requests, &usage)?;
+    devops_live_openai(root, &binary)?;
     write_live_summary(
         root,
+        &model,
         &example_runs,
         requests,
         tool_calls,
@@ -4190,7 +4375,7 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
         Some(&container),
     )?;
     println!(
-        "live OpenAI example verification passed: examples=7 model=gpt-5.6 requests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
+        "live OpenAI example verification passed: legacyExamples=7 devopsExamples=4 model={model} legacyRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} sourceRunId={source_run_id} repairRunId={repair_run_id} replayRunId={replay_run_id} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
         usage.input,
         usage.output,
         usage.reasoning,
@@ -4203,7 +4388,24 @@ pub fn examples_live_openai(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn devops_live_openai(root: &Path, binary: &Path) -> Result<()> {
+    let (budget, _) = super::live_config::settings()?;
+    let mut devops = Command::new(if cfg!(windows) { "python" } else { "python3" });
+    devops
+        .current_dir(root)
+        .arg("examples/devops/run.py")
+        .arg("--agentctl")
+        .arg(binary)
+        .args(["--mode", "openai", "--model", "gpt-5-mini", "--live-budget"])
+        .arg(budget)
+        .arg("--report")
+        .arg(root.join(".release-evidence/devops-live.json"));
+    output_with_code(devops, 0, "four distinct live DevOps workflows")?;
+    Ok(())
+}
+
 pub fn examples_live_openai_container(root: &Path) -> Result<()> {
+    let (_, model) = super::live_config::settings()?;
     ensure!(
         env::var_os("OPENAI_API_KEY").is_some(),
         "OPENAI_API_KEY is required for the explicit live container continuation"
@@ -4215,7 +4417,7 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
             .with_context(|| format!("read prior live summary {}", summary_path.display()))?,
     )?;
     ensure_eq(&summary, "/status", "local-complete-container-pending")?;
-    ensure_eq(&summary, "/model", "gpt-5.6")?;
+    ensure_eq(&summary, "/model", model.as_str())?;
     let examples = summary["examples"]
         .as_array()
         .context("prior live summary examples")?
@@ -4238,8 +4440,10 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
     tool_calls = tool_calls.saturating_add(container.tool_calls);
     usage = usage.plus(container.usage);
     guard_live_budget(requests, &usage)?;
+    devops_live_openai(root, &packaged_binary(root)?)?;
     write_live_summary(
         root,
+        &model,
         &examples,
         requests,
         tool_calls,
@@ -4251,7 +4455,7 @@ pub fn examples_live_openai_container(root: &Path) -> Result<()> {
         Some(&container),
     )?;
     println!(
-        "live OpenAI container continuation passed: model=gpt-5.6 totalRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
+        "live OpenAI container continuation passed: model={model} totalRequests={requests} inputTokens={} outputTokens={} reasoningTokens={} cacheReadTokens={} cacheWriteTokens={} toolCalls={tool_calls} containerSourceRunId={} containerRepairRunId={} containerReplayRunId={}",
         usage.input,
         usage.output,
         usage.reasoning,
@@ -4302,6 +4506,8 @@ fn run_live_openai_container(root: &Path) -> Result<LiveContainerSummary> {
     )?;
     write(&layout.config.join("repair-source.yaml"), &source_container)?;
     write(&layout.config.join("repair-target.yaml"), &target_container)?;
+    super::live_config::configure(&layout.config.join("repair-source.yaml"))?;
+    super::live_config::configure(&layout.config.join("repair-target.yaml"))?;
     let source = container_agentctl_with_openai(
         &engine,
         &layout,
@@ -4964,7 +5170,19 @@ fn collect_openai_workflows(
             Some("yaml" | "yml")
         ) {
             let source = fs::read_to_string(&path)?;
-            if source.contains("apiVersion: agentctl.dev/v1") && source.contains("kind: openai") {
+            let parsed = serde_yaml_ng::from_str::<Value>(&source).ok();
+            let openai = parsed.as_ref().is_some_and(|value| {
+                value["apiVersion"] == "agentctl.dev/v1"
+                    && value
+                        .pointer("/spec/providers")
+                        .and_then(Value::as_object)
+                        .is_some_and(|providers| {
+                            providers
+                                .values()
+                                .any(|provider| provider["kind"] == "openai")
+                        })
+            });
+            if openai {
                 output.insert(
                     path.strip_prefix(root)
                         .context("OpenAI example outside repository")?
@@ -4980,6 +5198,7 @@ fn collect_openai_workflows(
 #[allow(clippy::too_many_arguments)]
 fn write_live_summary(
     root: &Path,
+    model: &str,
     examples: &[Value],
     requests: usize,
     tool_calls: usize,
@@ -4995,7 +5214,8 @@ fn write_live_summary(
     let mut value = serde_json::json!({
         "formatVersion": 1,
         "status": status,
-        "model": "gpt-5.6",
+        "scope": "legacy OpenAI workflows; four DevOps workflows have separate devops-live.json evidence",
+        "model": model,
         "requestCount": requests,
         "toolCallCount": tool_calls,
         "usage": {
@@ -5433,7 +5653,23 @@ fn json_with_env(
 }
 
 fn command_for(binary: &Path, cwd: &Path, args: &[String]) -> Command {
-    let mut command = Command::new(binary);
+    let mut command = if let Some(budget) = env::var_os("AGENTCTL_LIVE_BUDGET") {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask root");
+        let mut wrapper = Command::new(if cfg!(windows) { "python" } else { "python3" });
+        wrapper
+            .arg(root.join("scripts/live_command.py"))
+            .arg("--budget")
+            .arg(budget)
+            .arg("--model")
+            .arg(env::var("AGENTCTL_LIVE_MODEL").unwrap_or_default())
+            .arg("--")
+            .arg(binary);
+        wrapper
+    } else {
+        Command::new(binary)
+    };
     command.current_dir(cwd).args(args);
     command
 }
@@ -5739,6 +5975,9 @@ fn container_layout(root: &Path, live: bool) -> Result<ContainerLayout> {
             CONTAINER_MOCK_WORKFLOW
         },
     )?;
+    if live {
+        super::live_config::configure(&layout.config.join("workflow.yaml"))?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -5892,6 +6131,28 @@ fn run_container(
     live: bool,
     credential: Option<&str>,
 ) -> Result<Value> {
+    if live {
+        return container_agentctl_with_openai(
+            engine,
+            layout,
+            &[
+                "run",
+                "/config/workflow.yaml",
+                "--workspace",
+                "/workspace",
+                "--db",
+                "/state/runtime.db",
+                "--input",
+                "reportPath=/artifacts/report.txt",
+                "--output",
+                "json",
+                "--color",
+                "never",
+            ],
+            0,
+            "live OCI run",
+        );
+    }
     let mut command = container_base(engine, layout)?;
     if let Some(name) = credential {
         command.args(["--env", name]);
@@ -5991,9 +6252,30 @@ fn container_agentctl_with_openai(
     code: i32,
     label: &str,
 ) -> Result<Value> {
-    let mut command = container_base(engine, layout)?;
-    command.args(["--env", "OPENAI_API_KEY", "agentctl-acceptance:local"]);
-    command.args(args);
+    let (budget, model) = super::live_config::settings()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("repository root")?;
+    let base = container_base(engine, layout)?;
+    let configuration = serde_json::json!({
+        "program": base.get_program().to_str().context("container engine UTF-8")?,
+        "args": base.get_args().map(|arg| arg.to_str().context("container argument UTF-8"))
+            .collect::<Result<Vec<_>>>()?,
+    });
+    let mut command = Command::new("python3");
+    command
+        .arg(root.join("scripts/live_command.py"))
+        .arg("--budget")
+        .arg(budget)
+        .arg("--model")
+        .arg(model)
+        .arg("--")
+        .arg(root.join("scripts/container_agentctl.py"))
+        .args(args)
+        .env(
+            "AGENTCTL_LIVE_CONTAINER_COMMAND",
+            serde_json::to_string(&configuration)?,
+        );
     parse_output(&output_with_code(command, code, label)?)
 }
 
@@ -6792,6 +7074,7 @@ mod tests {
         };
         write_live_summary(
             root.path(),
+            "fixture-model",
             &[],
             5,
             3,
@@ -6812,6 +7095,7 @@ mod tests {
         )
         .expect("parse summary");
         assert_eq!(summary["status"], "local-and-container-complete");
+        assert_eq!(summary["model"], "fixture-model");
         assert_eq!(summary["container"]["sourceRunId"], "source");
         assert_eq!(summary["container"]["requestCount"], 5);
     }

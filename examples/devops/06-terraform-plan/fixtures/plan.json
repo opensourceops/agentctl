@@ -1,0 +1,17 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "local_file.fixture",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "filename": "artifacts/local-state.json",
+          "content": "fixture-only"
+        }
+      }
+    }
+  ]
+}

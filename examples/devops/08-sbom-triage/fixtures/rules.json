@@ -1,0 +1,15 @@
+{
+  "asOf": "2026-09-05",
+  "blockingSeverities": [
+    "critical",
+    "high"
+  ],
+  "exceptions": [
+    {
+      "id": "FIXTURE-HIGH-2",
+      "expires": "2026-09-30",
+      "owner": "fixture-security",
+      "reason": "isolated test-only component"
+    }
+  ]
+}

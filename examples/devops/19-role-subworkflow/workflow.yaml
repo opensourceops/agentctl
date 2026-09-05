@@ -1,0 +1,368 @@
+{
+  "apiVersion": "agentctl.dev/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "devops-role-subworkflow",
+    "description": "Connect planner, reviewer, and executor through typed handoffs in a reusable sub-workflow with distinct tool visibility."
+  },
+  "spec": {
+    "policy": {
+      "workspaceRoot": ".",
+      "writableRoots": [
+        "artifacts"
+      ],
+      "processAllowlist": [
+        "python3"
+      ],
+      "approval": "never"
+    },
+    "runtime": {
+      "maxConcurrency": 1,
+      "budgets": {
+        "maxProviderRequests": 8,
+        "maxTurns": 8,
+        "maxToolCalls": 4,
+        "maxTotalTokens": 16000,
+        "maxProcessOutputBytes": 1048576,
+        "maxArtifactBytes": 1048576,
+        "maxTasks": 32,
+        "maxWallTimeSeconds": 120
+      }
+    },
+    "actions": {
+      "fixture": {
+        "kind": "extension.process",
+        "command": "python3",
+        "args": [
+          "../fixture.py",
+          "19"
+        ],
+        "idempotency": "idempotent",
+        "protocolVersion": "agentctl.dev/process-extension/v1",
+        "inputSchema": {
+          "type": "object"
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "capabilities": [
+          "devops.fixture"
+        ],
+        "timeoutSeconds": 30,
+        "stdoutLimitBytes": 65536,
+        "stderrLimitBytes": 8192,
+        "combinedOutputLimitBytes": 73728
+      },
+      "write": {
+        "kind": "builtin.write"
+      },
+      "assign": {
+        "kind": "builtin.assign"
+      },
+      "assert": {
+        "kind": "builtin.assert"
+      },
+      "read": {
+        "kind": "builtin.read"
+      }
+    },
+    "tasks": [
+      {
+        "id": "roles",
+        "uses": "workflow:change",
+        "with": {
+          "request": "Read, review and execute the narrow local change."
+        }
+      },
+      {
+        "id": "analyze",
+        "uses": "action:fixture",
+        "needs": [
+          "roles"
+        ],
+        "with": {}
+      },
+      {
+        "id": "report",
+        "uses": "action:write",
+        "needs": [
+          "analyze"
+        ],
+        "with": {
+          "path": "artifacts/report.json",
+          "content": "${{ tasks.analyze.output.reportText }}"
+        }
+      }
+    ],
+    "providers": {
+      "fake": {
+        "kind": "fake"
+      }
+    },
+    "tools": {
+      "read_scope": {
+        "kind": "builtin.workspace.read",
+        "description": "Read the local change scope",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "enum": [
+                "fixtures/change.txt"
+              ]
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "capability": "filesystem.read",
+        "effectClass": "observe",
+        "risk": "low",
+        "idempotency": "idempotent",
+        "retrySafe": true,
+        "timeoutSeconds": 5,
+        "approval": "never"
+      },
+      "publish": {
+        "kind": "builtin.workspace.write",
+        "description": "Write the reviewed local change",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "path",
+            "content"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "enum": [
+                "artifacts/role-change.txt"
+              ]
+            },
+            "content": {
+              "type": "string",
+              "enum": [
+                "reviewed-local-change"
+              ]
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "capability": "filesystem.write",
+        "effectClass": "workspace_mutate",
+        "risk": "medium",
+        "idempotency": "idempotent",
+        "retrySafe": true,
+        "timeoutSeconds": 5,
+        "approval": "policy"
+      }
+    },
+    "agents": {
+      "planner": {
+        "provider": "fake",
+        "model": "scripted",
+        "instructionsFile": "instructions/planner.md",
+        "tools": [
+          "read_scope"
+        ],
+        "maxTurns": 2,
+        "maxToolCalls": 1,
+        "maxOutputTokens": 512,
+        "timeoutSeconds": 45,
+        "structuredOutput": {
+          "type": "object",
+          "required": [
+            "payload",
+            "ready"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "type": "string"
+            },
+            "ready": {
+              "type": "boolean"
+            }
+          }
+        },
+        "providerOptions": {
+          "finalText": "{\"payload\": \"reviewed-local-change\", \"ready\": true}",
+          "toolInput": {
+            "path": "fixtures/change.txt"
+          }
+        }
+      },
+      "reviewer": {
+        "provider": "fake",
+        "model": "scripted",
+        "instructionsFile": "instructions/reviewer.md",
+        "tools": [],
+        "maxTurns": 1,
+        "maxToolCalls": 0,
+        "maxOutputTokens": 512,
+        "timeoutSeconds": 45,
+        "structuredOutput": {
+          "type": "object",
+          "required": [
+            "approved",
+            "payload"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "approved": {
+              "type": "boolean"
+            },
+            "payload": {
+              "type": "string"
+            }
+          }
+        },
+        "providerOptions": {
+          "finalText": "{\"approved\": true, \"payload\": \"reviewed-local-change\"}"
+        }
+      },
+      "executor": {
+        "provider": "fake",
+        "model": "scripted",
+        "instructionsFile": "instructions/executor.md",
+        "tools": [
+          "publish"
+        ],
+        "maxTurns": 2,
+        "maxToolCalls": 1,
+        "maxOutputTokens": 512,
+        "timeoutSeconds": 45,
+        "structuredOutput": {
+          "type": "object",
+          "required": [
+            "executed"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "executed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "providerOptions": {
+          "finalText": "{\"executed\": true}",
+          "toolInput": {
+            "path": "artifacts/role-change.txt",
+            "content": "reviewed-local-change"
+          }
+        }
+      }
+    },
+    "subworkflows": {
+      "change": {
+        "version": "1.0.0",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "request"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "request": {
+              "type": "string"
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object",
+          "required": [
+            "executed"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "executed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "outputs": {
+          "executed": "${{ tasks.execute.output.executed }}"
+        },
+        "tasks": [
+          {
+            "id": "plan",
+            "uses": "agent:planner",
+            "with": {
+              "prompt": "${{ inputs.request }}"
+            }
+          },
+          {
+            "id": "review",
+            "uses": "agent:reviewer",
+            "needs": [
+              "plan"
+            ],
+            "with": {
+              "prompt": "${{ tasks.plan.output }}"
+            }
+          },
+          {
+            "id": "handoff",
+            "uses": "action:assign",
+            "needs": [
+              "review"
+            ],
+            "with": {
+              "payload": "${{ tasks.review.output.payload }}",
+              "approved": "${{ tasks.review.output.approved }}"
+            },
+            "outputSchema": {
+              "type": "object",
+              "required": [
+                "output"
+              ],
+              "properties": {
+                "output": {
+                  "type": "object",
+                  "required": [
+                    "payload",
+                    "approved"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "enum": [
+                        "reviewed-local-change"
+                      ]
+                    },
+                    "approved": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "id": "execute",
+            "uses": "agent:executor",
+            "needs": [
+              "handoff"
+            ],
+            "with": {
+              "prompt": "${{ tasks.handoff.output.output }}"
+            }
+          }
+        ]
+      }
+    },
+    "outputs": {
+      "report": "${{ tasks.analyze.output }}"
+    }
+  }
+}

@@ -50,9 +50,11 @@ mod process;
 pub mod secret;
 
 use process::{
-    BoundedProcessOutput, ProcessOutputLimits, ProcessRunError, container_invocation_name,
-    isolated_process_command, prepare_process_isolation, run_isolated_process,
+    BoundedProcessOutput, ProcessOutputLimits, container_invocation_name, isolated_process_command,
+    run_isolated_process,
 };
+
+pub use process::{PreparedProcessIsolation, ProcessRunError, prepare_process_isolation};
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
@@ -707,6 +709,42 @@ impl Runtime {
         options: RunOptions,
         cancellation: &CancellationToken,
     ) -> Result<RunOutcome, RuntimeError> {
+        // Embedders may compile an existing file-backed agent directly. Capture
+        // before creating durable state; CLI callers already capture precompile.
+        let captured = if agentctl_core::sources::needs_capture(workflow) {
+            let mut captured = workflow.clone();
+            agentctl_core::sources::resolve_workflow_sources(
+                &mut captured,
+                &self.base_path.join("workflow.yaml"),
+                &self.base_path,
+                &agentctl_core::sources::VariableOverrides::default(),
+                &agentctl_core::sources::SourceOrigins::default(),
+            )
+            .map_err(|errors| {
+                RuntimeError::InvalidState(
+                    errors
+                        .into_iter()
+                        .map(|e| e.message)
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+            })?;
+            let compiled = compile(&captured, "captured workflow").map_err(|errors| {
+                RuntimeError::InvalidState(
+                    errors
+                        .into_iter()
+                        .map(|e| e.message)
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+            })?;
+            Some((captured, compiled))
+        } else {
+            None
+        };
+        let (workflow, plan) = captured
+            .as_ref()
+            .map_or((workflow, plan), |(workflow, plan)| (workflow, plan));
         let run_id = self.ids.next_id("run");
         let trace_id = self.ids.next_id("trace");
         let mode = if options.check {
@@ -2899,6 +2937,8 @@ impl Runtime {
                 memory_writes: Vec::new(),
                 when: None,
                 vars: BTreeMap::new(),
+                vars_files: Vec::new(),
+                compiled_instructions: None,
                 input: input.into_iter().collect(),
                 retry: compensate.retry.clone(),
                 timeout_seconds: Some(compensate.timeout_seconds),
@@ -4771,6 +4811,8 @@ impl Runtime {
                     record,
                     name,
                     input,
+                    &context,
+                    task.instructions.as_deref(),
                     policy,
                     trace_id,
                     options.interactive,
@@ -6274,6 +6316,8 @@ impl Runtime {
         task: &TaskRecord,
         agent_name: &str,
         input: Value,
+        context: &EvalContext,
+        compiled_instructions: Option<&str>,
         policy: &PolicyEngine,
         trace_id: &str,
         interactive: bool,
@@ -6331,7 +6375,11 @@ impl Runtime {
         let instructions = match (&agent.instructions, &agent.instructions_file) {
             (Some(value), None) => value.clone(),
             (None, Some(path)) => {
-                let resolved = policy.resolve_read_path(path)?;
+                let captured = workflow
+                    .spec
+                    .source_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.instructions.get(agent_name));
                 ordinal = ordinal.saturating_add(1);
                 let request = EffectRequest::new(
                     &run.run_id,
@@ -6342,8 +6390,11 @@ impl Runtime {
                     EffectClass::Observe,
                     Risk::Low,
                     Idempotency::Idempotent,
-                    serde_json::json!({"path": path}),
-                    "read the agent instruction file",
+                    captured.map_or_else(
+                        || serde_json::json!({"path": path}),
+                        |source| serde_json::json!({"path": path, "contentDigest": source.digest}),
+                    ),
+                    "use the captured agent instruction file",
                     trace_id,
                 );
                 let output = match self.prepare_effect(
@@ -6359,7 +6410,15 @@ impl Runtime {
                     PreparedEffect::Execute => {
                         self.store
                             .mark_effect_started(&request.id, self.clock.now())?;
-                        match read_bounded_text(&resolved).await {
+                        let content = if let Some(captured) = captured {
+                            Ok(captured.content.clone())
+                        } else {
+                            // Legacy persisted runs may contain the old observation
+                            // effect; fresh runs always have a captured source.
+                            let resolved = policy.resolve_read_path(path)?;
+                            read_bounded_text(&resolved).await
+                        };
+                        match content {
                             Ok(content) => {
                                 let output = serde_json::json!({"content": content});
                                 self.store.complete_effect(
@@ -6396,6 +6455,11 @@ impl Runtime {
                 )));
             }
         };
+        let instructions = render(
+            &Value::String(compiled_instructions.unwrap_or(&instructions).to_owned()), context,
+        )?.as_str().ok_or_else(|| RuntimeError::InvalidState(
+            "agent instructions must render to text; objects and arrays are not instruction text".to_owned(),
+        ))?.to_owned();
         let prompt = input.get("prompt").and_then(Value::as_str).map_or_else(
             || serde_json::to_string(&input),
             |value| Ok(value.to_owned()),
@@ -7697,17 +7761,27 @@ fn task_definition_fingerprint(
                         .and_then(|result| result.get("content"))
                         .and_then(Value::as_str)
                 });
-                let content = recorded.map(ToOwned::to_owned).map_or_else(
-                    || read_bounded_text_sync(&policy.resolve_read_path(path)?),
-                    Ok,
-                )?;
+                let captured = workflow
+                    .spec
+                    .source_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.instructions.get(name));
+                let content = captured
+                    .map(|source| source.content.clone())
+                    .or_else(|| recorded.map(ToOwned::to_owned))
+                    .map_or_else(
+                        || read_bounded_text_sync(&policy.resolve_read_path(path)?),
+                        Ok,
+                    )?;
                 Some(format!("sha256:{}", digest(content.as_bytes())))
             } else {
                 None
             };
+            let mut definition_task = task.clone();
+            definition_task.instructions = None;
             serde_json::json!({
                 "kind": "agent",
-                "task": task,
+                "task": definition_task,
                 "agent": agent,
                 "provider": provider,
                 "tools": tools,
@@ -7784,13 +7858,19 @@ fn resolved_input_digest(
                 .map(|output| (dependency.clone(), output.clone()))
         })
         .collect::<BTreeMap<_, _>>();
-    versioned_json_digest(&serde_json::json!({
+    let mut identity = serde_json::json!({
         "formatVersion": 1,
         "input": input,
         "vars": context.vars,
         "workingMemory": memory,
         "dependencies": dependencies,
-    }))
+    });
+    if let Some(instructions) = &task.instructions
+        && instructions.contains("${{")
+    {
+        identity["instructions"] = render(&Value::String(instructions.clone()), &context)?;
+    }
+    versioned_json_digest(&identity)
 }
 
 fn state_delta(before: &Value, after: Option<&Value>) -> Result<Value, RuntimeError> {
@@ -9105,7 +9185,9 @@ fn provider_budget_actual(
 
 fn estimated_input_tokens(request: &ProviderRequest) -> Result<u64, RuntimeError> {
     let bytes = u64::try_from(serde_json::to_vec(request)?.len()).unwrap_or(u64::MAX);
-    Ok(bytes.saturating_add(3) / 4)
+    // A byte-level upper bound avoids under-reserving non-English and high-entropy
+    // text. Include framing allowance for provider-side message/tool wrappers.
+    Ok(bytes.saturating_add(256))
 }
 
 fn token_cost(tokens: u64, rate_microusd_per_million_tokens: u64) -> u64 {
@@ -9394,7 +9476,7 @@ mod tests {
                 }],
                 continuation: None,
                 usage: Usage {
-                    input_tokens: 600,
+                    input_tokens: 6_000,
                     output_tokens: 1,
                     ..Usage::default()
                 },
@@ -10463,7 +10545,7 @@ kind: Workflow
 metadata: { name: token-budget }
 spec:
   runtime:
-    budgets: { maxInputTokens: 500 }
+    budgets: { maxInputTokens: 5000 }
   policy: { approval: never }
   providers: { fake: { kind: fake } }
   agents:
@@ -10497,9 +10579,9 @@ spec:
             other => panic!("unexpected error: {other}"),
         };
         let budget = store.budget_snapshot(&run_id).expect("budget");
-        assert_eq!(budget.usage.input_tokens, 600);
+        assert_eq!(budget.usage.input_tokens, 6_000);
         assert_eq!(budget.usage.provider_requests, 1);
-        assert_eq!(budget.exceeded.expect("exceeded").attempted, 600);
+        assert_eq!(budget.exceeded.expect("exceeded").attempted, 6_000);
     }
 
     #[test]
@@ -14858,6 +14940,271 @@ spec:
                 .as_deref()
                 .is_some_and(|error| error.contains("task output contract failed"))
         );
+    }
+
+    #[derive(Default)]
+    struct InstructionCaptureProvider(Mutex<Vec<ProviderRequest>>);
+
+    #[async_trait]
+    impl ModelProvider for InstructionCaptureProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+        async fn complete(
+            &self,
+            request: &ProviderRequest,
+            _: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            self.0.lock().expect("requests").push(request.clone());
+            Ok(ProviderResponse {
+                response_id: Some("captured".to_owned()),
+                text: request.instructions.clone(),
+                tool_calls: Vec::new(),
+                assistant_content: vec![ContentBlock::Text {
+                    text: request.instructions.clone(),
+                }],
+                continuation: None,
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    ..Usage::default()
+                },
+                finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_instructions_survive_file_changes_approval_resume_replay_and_fork() {
+        let directory = tempdir().expect("tempdir");
+        let instruction_path = directory.path().join("instructions.txt");
+        std::fs::write(
+            &instruction_path,
+            "review ${{ vars.service }} / ${{ inputs.environment }}",
+        )
+        .unwrap();
+        let (mut workflow, _) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: immutable-instructions }
+spec:
+  policy: { approval: always }
+  providers: { fake: { kind: fake } }
+  agents:
+    reviewer:
+      provider: fake
+      model: fake
+      instructionsFile: instructions.txt
+      vars: { service: checkout }
+      maxTurns: 1
+  tasks: [{ id: review, uses: 'agent:reviewer' }]
+"#,
+        );
+        let variables_path = directory.path().join("variables.yaml");
+        std::fs::write(&variables_path, "service: captured-checkout").unwrap();
+        workflow.spec.vars_files = vec!["variables.yaml".to_owned()];
+        workflow
+            .spec
+            .agents
+            .get_mut("reviewer")
+            .unwrap()
+            .vars
+            .clear();
+        agentctl_core::sources::resolve_workflow_sources(
+            &mut workflow,
+            &directory.path().join("workflow.yaml"),
+            directory.path(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let plan = compile(&workflow, "workflow.yaml").unwrap();
+        std::fs::write(&instruction_path, "unreviewed replacement").unwrap();
+        let provider = Arc::new(InstructionCaptureProvider::default());
+        let store = SqliteStore::open_memory().unwrap();
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let mut outcome = runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({"environment":"fixture"}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.state, RunState::Paused);
+        assert!(provider.0.lock().unwrap().is_empty());
+        let approvals = store.pending_approvals(&outcome.run_id).unwrap();
+        let effect = store.load_effect(&approvals[0].effect_id).unwrap();
+        assert_eq!(
+            effect.request.input["contentDigest"],
+            workflow.spec.source_snapshot.as_ref().unwrap().instructions["reviewer"].digest
+        );
+        std::fs::remove_file(&instruction_path).unwrap();
+        std::fs::remove_file(&variables_path).unwrap();
+        for _ in 0..2 {
+            let approvals = store.pending_approvals(&outcome.run_id).unwrap();
+            assert_eq!(approvals.len(), 1);
+            store
+                .resolve_approval(
+                    &approvals[0].approval_id,
+                    ApprovalResolution::Approved,
+                    "instruction-fixture-reviewer",
+                    "reviewed captured bytes",
+                    Utc::now(),
+                )
+                .unwrap();
+            outcome = runtime
+                .resume(
+                    &outcome.run_id,
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(
+            provider.0.lock().unwrap()[0].instructions,
+            "review captured-checkout / fixture"
+        );
+        let replay = runtime.replay(&outcome.run_id).await.unwrap();
+        assert!(store.list_effects(&replay.run_id).unwrap().is_empty());
+        assert_eq!(provider.0.lock().unwrap().len(), 1);
+        let mut fork = runtime
+            .fork(
+                &outcome.run_id,
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let approvals = store.pending_approvals(&fork.run_id).unwrap();
+            assert_eq!(approvals.len(), 1);
+            store
+                .resolve_approval(
+                    &approvals[0].approval_id,
+                    ApprovalResolution::Approved,
+                    "instruction-fixture-reviewer",
+                    "explicit fresh fork",
+                    Utc::now(),
+                )
+                .unwrap();
+            fork = runtime
+                .resume(
+                    &fork.run_id,
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(fork.state, RunState::Succeeded);
+        assert_eq!(provider.0.lock().unwrap().len(), 2);
+        assert_eq!(
+            provider.0.lock().unwrap()[1].instructions,
+            "review captured-checkout / fixture"
+        );
+    }
+
+    #[tokio::test]
+    async fn instruction_templates_reject_missing_and_nonscalar_values_before_provider_dispatch() {
+        let directory = tempdir().unwrap();
+        for text in [
+            "review ${{ inputs.missing }}",
+            "review ${{ inputs.object }}",
+            "${{ inputs.object }}",
+        ] {
+            let source = format!(
+                "apiVersion: agentctl.dev/v1\nkind: Workflow\nmetadata: {{ name: invalid-instructions }}\nspec:\n  providers: {{ fake: {{ kind: fake }} }}\n  agents:\n    worker: {{ provider: fake, model: fake, instructions: '{text}' }}\n  tasks: [{{ id: work, uses: 'agent:worker' }}]\n"
+            );
+            let (workflow, plan) = compile_fixture(&source);
+            let provider = Arc::new(InstructionCaptureProvider::default());
+            let store = SqliteStore::open_memory().unwrap();
+            let result = runtime(store, directory.path())
+                .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()))
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({"object":{"key":"value"}}),
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await;
+            assert!(result.is_err());
+            assert!(provider.0.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn subworkflow_instruction_templates_use_local_typed_inputs_and_handoffs() {
+        let directory = tempdir().unwrap();
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: subworkflow-instructions }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    worker: { provider: fake, model: fake, instructions: 'review ${{ inputs.message }}', maxTurns: 1 }
+  subworkflows:
+    review:
+      version: 1.0.0
+      inputSchema: { type: object, required: [message], properties: { message: { type: string } } }
+      outputSchema: { type: object }
+      outputs: { result: '${{ tasks.worker.output.text }}' }
+      tasks: [{ id: worker, uses: 'agent:worker' }]
+  tasks: [{ id: call, uses: 'workflow:review', with: { message: local-boundary } }]
+"#,
+        );
+        let provider = Arc::new(InstructionCaptureProvider::default());
+        let outcome = runtime(SqliteStore::open_memory().unwrap(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()))
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({"message":"wrong-global"}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.state, RunState::Succeeded);
+        assert_eq!(
+            provider.0.lock().unwrap()[0].instructions,
+            "review local-boundary"
+        );
+    }
+
+    #[test]
+    fn instruction_only_input_changes_invalidate_reuse_identity() {
+        let (_, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: instruction-identity }
+spec:
+  providers: { fake: { kind: fake } }
+  agents:
+    worker: { provider: fake, model: fake, instructions: '${{ inputs.choice }}' }
+  tasks: [{ id: work, uses: 'agent:worker' }]
+"#,
+        );
+        let identity = |choice: &str| {
+            resolved_input_digest(
+                serde_json::json!({"choice":choice}).as_object().unwrap(),
+                &serde_json::json!({}),
+                &BTreeMap::new(),
+                &plan.tasks["work"],
+            )
+            .unwrap()
+        };
+        assert_ne!(identity("reviewed"), identity("changed"));
     }
 
     #[tokio::test]

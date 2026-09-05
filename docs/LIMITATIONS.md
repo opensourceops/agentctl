@@ -1,27 +1,36 @@
 # Supported boundaries and operational limits
 
-This classification is part of the product contract. Core runtime limitations
-are closed in the
-[framework limitation burn-down](execution/LIMITATION_BURNDOWN.md).
-Capabilities outside the product thesis are explicit non-goals, and
-environment-specific evidence is labeled separately from implementation.
+This classification is part of the product contract. The
+[framework limitation burn-down](execution/LIMITATION_BURNDOWN.md) retains the
+earlier completeness program, while the [current launch limitation
+review](execution/LAUNCH_LIMITATION_REVIEW.md) classifies the continuation's
+defects, developer-experience gaps, optional integrations, and evidence gates.
+Capabilities outside the product thesis remain explicit non-goals.
 
 ## Release blockers
 
-No known P0/P1 implementation defect remains for the stated local, scheduled,
-and OCI journeys. The local container build has a secure optional CA secret
-path, and exact-head pull-request gates execute Linux x64, hosted macOS arm64,
-Windows x64, container, security, package, and SBOM validation without
-provider credentials. Exact run and artifact digests belong to the independent
-candidate report. Version 0.3 publishes workflow API `agentctl.dev/v1`; the CLI
-and crates remain pre-1.0 and do not imply long-term support.
+The expanded launch-readiness task requires fresh evidence for its final
+source commit, all twenty DevOps examples, bounded live OpenAI workflows,
+hosted platform/security/container/package/SBOM gates, and the exact-source
+documentation build. The [execution ledger](execution/AUTONOMOUS_LAUNCH_READINESS.md)
+records completed checks, failures, and remaining requirements. Historical
+passing runs do not establish that this new candidate passes. Version 0.3 uses
+workflow API `agentctl.dev/v1`; the CLI and crates remain pre-1.0 and do not
+imply long-term support.
 
-## Required hardening completed for this release
+## Implemented controls
+
+The controls below describe implementation and executable test coverage.
+Current release evidence is scoped separately to the exact tested commit.
 
 - Provider-specific options are allowlisted, type-checked, included in plan capability negotiation, and either mapped or rejected. Streaming is explicit and capability-checked; programmatic tool calling is rejected rather than ignored.
 - Tool input/output schemas are strict; built-in tool kinds have compiler-checked capability/effect/idempotency contracts.
 - Provider calls, function-call IDs/results, continuations, effects, checkpoints, audit events, and redacted trace events are durable and publicly inspectable.
-- Timeout/transport ambiguity is not automatically retried; confirmed effects survive resume; call IDs are scoped by run; missing credentials fail before run/database creation.
+- Timeout/transport ambiguity is not automatically retried; confirmed effects survive resume; provider call IDs are scoped by run and model effect; missing credentials fail before run/database creation.
+- Workflow, agent, and task `varsFiles` apply documented replacement precedence;
+  typed inputs remain separate. Instruction and variable sources are captured
+  before compilation, bounded by read policy, and retained for recovery.
+  Source explanations show layer and effective-task origins without values.
 - Non-interactive approvals durably pause, signals cancel safely, JSON errors include available run/trace correlation, and SQLite uses WAL plus a bounded lock wait.
 - The packaged CLI, clean-directory quickstart, cron-like empty environment, and non-root/read-only OCI contract have executable acceptance coverage.
 - Successful bounded file outputs are atomically ingested into a local immutable content-addressed store with durable references, verification/export commands, lease-safe reachability GC, interrupted-GC recovery, and local/OCI acceptance coverage.
@@ -67,7 +76,7 @@ These are extension points, not incomplete core runtime behavior:
   reconciled after the response. Custom pricing is operator-maintained and is
   not automatically refreshed from public price pages.
 - Foreach and matrix expansion accepts only static workflow values, requires
-  `maxItems`, and is capped at 256 children. Runtime or model-controlled graph
+  a `maxItems` bound, and is capped at 256 children. Runtime or model-controlled graph
   growth is not supported.
 - Conditions support typed paths, equality, inequality, numeric ordering, and
   `not`; routers support exact typed selectors and enumerated destinations.
@@ -105,7 +114,18 @@ These are extension points, not incomplete core runtime behavior:
   dependency names one local, pinned Git, or immutable archive source. The
   checked-in lock is per workflow directory. Sigstore verification uses the
   trust root embedded in the installed agentctl version; rotate agentctl when
-  public-good trust material changes.
+  public-good trust material changes. Fresh archives require caller network
+  grants and pinned DNS checks. Fresh remote HTTPS Git is rejected because
+  its transport cannot enforce that boundary; use a digest-pinned archive or
+  an existing exact-commit cache. Contained local Git remains supported.
+- Configuration source paths are literals relative to their declaring workflow
+  or pack manifest; CLI variable-file paths use the invoking directory. Reads
+  still require the authorized workspace boundary. Each file is at most 1 MiB,
+  with at most 256 references and 16 MiB captured in total. Variables are
+  non-secret configuration, with no recursive includes or implicit environment
+  imports. New captured runs replay/resume/fork without current source files;
+  older histories without snapshots may require repair or an available previously
+  unrecorded file. See [Variables and instruction files](VARIABLES.md).
 - `extension.process` is a reviewed process contract, not a native ABI or OS
   sandbox. Handshake is a non-mutating protocol promise; invocation failures
   after dispatch remain uncertain. Set `isolation: container` or use a stronger
@@ -134,13 +154,18 @@ These are extension points, not incomplete core runtime behavior:
 - Automatic artifact ingestion covers regular files up to 16 MiB reported by successful built-in workspace-mutation results. Larger outputs and artifacts produced only by opaque external effects require an explicit bounded import/export integration. The local CAS must be backed up with SQLite; missing or corrupt blob bytes block repair before run creation and report the expected artifact identity.
 - An applied non-idempotent mutation in a repair closure remains blocked from duplicate execution unless a confirmed compensation is linked. Reconciliation supports immutable `applied`, `not_applied`, and `compensated` records, validated results, policy authorization, and operation-specific verification hooks; it does not provide exactly-once delivery.
 - Terminal retry requires an identical workflow digest and a terminal source. It creates a new source-linked run, reuses only proven compatible successful boundaries, and freshly executes the selected closure. Use repair for a changed definition, resume for a non-terminal run, replay for effect-free reconstruction, and fork for knowingly broad fresh execution.
-- Anthropic, Google, Azure OpenAI, MCP, and A2A are native and mock-tested in
-  this release, not live-tested. OpenAI GPT-5.6 has bounded live evidence for
-  basic and tool agents, parallel branches, matrix tasks, structured routing,
-  loops, sub-workflows, typed handoffs, retry, selective repair, artifact CAS
-  reuse, keyless replay, streaming, resource-budget termination, and native
-  Linux arm64 container execution.
-- Local OCI runtime evidence is Linux arm64. The hosted container runtime,
-  vulnerability scan, and image SBOM run on Linux x64 and are labeled
-  separately from that local evidence.
+- Anthropic, Google, Azure OpenAI, MCP, and A2A have native adapters and mock
+  coverage; an OpenAI credential does not provide live evidence for those
+  services. The [retained GPT-5.6 matrix](execution/LIVE_FRAMEWORK_VERIFICATION.md)
+  records its July 2026 scenarios and usage. Current model IDs, requests,
+  tokens, estimated cost, and final-source results must come from the current
+  execution ledger, not that historical matrix.
+- The DevOps catalog labels deterministic/fake-provider workflows, isolated
+  local services, and opt-in OpenAI variants separately. Its Terraform,
+  Kubernetes, canary, and deployment fixtures do not establish live cloud or
+  production deployment coverage. See the [suite catalog](../examples/devops/catalog.json)
+  and its [validation evidence](../examples/devops/validation.json).
+- Local Linux arm64 OCI evidence and hosted Linux x64 container, vulnerability,
+  and image-SBOM evidence are distinct. Each result applies only to its recorded
+  source, image digest, runtime, and architecture.
 - GitHub runner availability, organization action policy, branch protection, and required-check configuration are repository-owner operations and cannot be proven by repository-local lint.

@@ -1,0 +1,118 @@
+{
+  "apiVersion": "agentctl.dev/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "devops-retry-repair",
+    "description": "Demonstrate terminal failure, retry after fixture recovery, and selective repair while reusing a successful mutation."
+  },
+  "spec": {
+    "policy": {
+      "workspaceRoot": ".",
+      "writableRoots": [
+        "artifacts"
+      ],
+      "processAllowlist": [
+        "python3"
+      ],
+      "approval": "never"
+    },
+    "runtime": {
+      "maxConcurrency": 1,
+      "budgets": {
+        "maxProviderRequests": 8,
+        "maxTurns": 8,
+        "maxToolCalls": 4,
+        "maxTotalTokens": 16000,
+        "maxProcessOutputBytes": 1048576,
+        "maxArtifactBytes": 1048576,
+        "maxTasks": 32,
+        "maxWallTimeSeconds": 120
+      }
+    },
+    "actions": {
+      "fixture": {
+        "kind": "extension.process",
+        "command": "python3",
+        "args": [
+          "../fixture.py",
+          "16"
+        ],
+        "idempotency": "at_most_once",
+        "protocolVersion": "agentctl.dev/process-extension/v1",
+        "inputSchema": {
+          "type": "object"
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "capabilities": [
+          "devops.fixture"
+        ],
+        "timeoutSeconds": 30,
+        "stdoutLimitBytes": 65536,
+        "stderrLimitBytes": 8192,
+        "combinedOutputLimitBytes": 73728
+      },
+      "write": {
+        "kind": "builtin.write"
+      },
+      "assign": {
+        "kind": "builtin.assign"
+      },
+      "assert": {
+        "kind": "builtin.assert"
+      },
+      "test": {
+        "kind": "builtin.shell.exec",
+        "command": "python3",
+        "args": [
+          "../fixture.py",
+          "terminal-check"
+        ],
+        "timeoutSeconds": 5,
+        "stdoutLimitBytes": 1024,
+        "stderrLimitBytes": 1024,
+        "combinedOutputLimitBytes": 2048
+      }
+    },
+    "tasks": [
+      {
+        "id": "build",
+        "uses": "action:fixture",
+        "with": {}
+      },
+      {
+        "id": "test",
+        "uses": "action:test",
+        "needs": [
+          "build"
+        ],
+        "with": {}
+      },
+      {
+        "id": "analyze",
+        "uses": "action:assign",
+        "needs": [
+          "test"
+        ],
+        "with": {
+          "reportText": "{\"testsPassed\":true,\"expectedBuilds\":1}\n"
+        }
+      },
+      {
+        "id": "report",
+        "uses": "action:write",
+        "needs": [
+          "analyze"
+        ],
+        "with": {
+          "path": "artifacts/report.json",
+          "content": "${{ tasks.analyze.output.output.reportText }}"
+        }
+      }
+    ],
+    "outputs": {
+      "report": "${{ tasks.analyze.output.output }}"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "packageSha256": "25e4d649cbd4fa6d76805f54d9c397d56633b9ec765eacf99c6443235378815a",
+  "checks": [
+    {
+      "name": "tests",
+      "passed": true
+    },
+    {
+      "name": "security-review",
+      "passed": false
+    },
+    {
+      "name": "schema",
+      "passed": true
+    }
+  ]
+}

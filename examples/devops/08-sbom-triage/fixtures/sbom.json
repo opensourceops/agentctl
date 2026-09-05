@@ -1,0 +1,17 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "bom-ref": "pkg:fixture/api@1",
+      "name": "api",
+      "version": "1"
+    },
+    {
+      "bom-ref": "pkg:fixture/worker@1",
+      "name": "worker",
+      "version": "1"
+    }
+  ]
+}

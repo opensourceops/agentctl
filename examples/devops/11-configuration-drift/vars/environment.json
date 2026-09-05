@@ -1,0 +1,6 @@
+{
+  "replicas": 2,
+  "settings": {
+    "timeout": 20
+  }
+}

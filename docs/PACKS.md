@@ -20,26 +20,37 @@ packs:
 Supported sources are:
 
 - a contained local `path`;
-- a Git `https` URL with a full 40-character `rev` and contained `manifest`;
+- a cached Git source with a full 40-character `rev` and contained `manifest`;
 - an immutable `https` tar-gzip archive URL with SHA-256 `integrity` and a
   contained `manifest`.
 
-Loopback HTTP and contained `file:` Git URLs exist only for deterministic local
-fixtures. URLs with credentials, query parameters, or fragments are rejected.
+Fresh archive downloads use the invoking workflow's network policy, including
+scheme, host, effective port, and every resolved IP address. The client pins
+approved DNS answers, uses the policy's custom CA and connect/response limits,
+disables redirects, and ignores environment proxies unless `allowProxy: true`
+is explicit. A verified cached archive needs no new network grant.
+
+Fresh remote HTTPS Git acquisition is rejected because the Git transport does
+not enforce the same DNS-pinning contract. Use an immutable digest-pinned
+HTTPS archive or a previously populated exact-commit cache instead. Contained
+`file:` Git sources and existing pinned Git caches remain supported; inherited
+Git configuration and protocol rewrites are disabled. `--offline` requires a
+cache hit for remote sources.
+
+Loopback HTTP archives and contained `file:` Git URLs support deterministic
+local fixtures. URLs with credentials, query parameters, or fragments are rejected.
 Git branches and tags are not accepted as revisions. Archive redirects,
 symlinks, hardlinks, special files, path escapes, more than 1,024 entries,
 compressed content over 16 MiB, and expanded content over 64 MiB are rejected.
 
-Each dependency names its source and semantic constraint:
+Each dependency names its source and semantic constraint. For example:
 
 ```yaml
 dependencies:
   example.base:
     version: "^2.1"
     source:
-      git: https://github.com/example/base-pack.git
-      rev: 0123456789abcdef0123456789abcdef01234567
-      manifest: agentctl.pack.yaml
+      path: base/agentctl.pack.yaml
 ```
 
 Resolution is deterministic because every requirement identifies one immutable
@@ -69,6 +80,24 @@ workflow, source, graph, digest, compatibility, signature, trust, or unreachable
 entry drift. `--offline` permits local paths and requires Git/archive cache
 hits. Legacy exact `path` plus `integrity` references remain readable without a
 lock and emit a migration warning.
+
+## Configuration assets
+
+Pack instruction and variable files must appear in the manifest's `files` map.
+Each key is a normalized portable relative path and each value is the exact
+`sha256:` digest of that file. These assets are bounded text configuration:
+regular UTF-8 files of at most 1 MiB each, at most 256 declarations, and at most
+16 MiB in total. They do not provide a general binary-file packaging mechanism.
+
+`agentctl packs verify PACK_FILE --integrity sha256:MANIFEST_DIGEST` validates
+every declared asset, including
+unused entries, for containment, file type, size, encoding, and content digest.
+The lock and any publisher signature bind the manifest declarations. Workflow
+source capture verifies bytes used by `instructionsFile` and `varsFiles` and
+also applies the invoking workflow's workspace/read policy. A trusted pack
+cannot expand that policy. Resolve relative source paths from the declaring
+pack manifest; update its digests and the reviewed lock after changing assets.
+See [Variables and instruction files](VARIABLES.md).
 
 ## Integrity and trust
 
@@ -113,7 +142,8 @@ invoking workflow policy. Exported definitions are qualified as
 
 Unit fixtures cover semantic constraints, deterministic ordering, conflicts,
 cycles, path containment, tamper, locked drift, pinned Git cache reuse,
-offline misses, bounded archives, archive links, valid and invalid Sigstore
+offline misses, network-policy denials before acquisition, bounded archives,
+archive links, declared asset tampering, valid and invalid Sigstore
 bundles, identity policy, unsigned process denial, and dependency reachability.
 Packaged acceptance scenario 42 verifies the checked-in transitive example,
 locks an extension pack, proves that its process cannot start before explicit

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "FIXTURE-CRITICAL-1",
+    "component": "pkg:fixture/api@1",
+    "severity": "critical"
+  },
+  {
+    "id": "FIXTURE-HIGH-2",
+    "component": "pkg:fixture/worker@1",
+    "severity": "high"
+  },
+  {
+    "id": "FIXTURE-LOW-3",
+    "component": "pkg:fixture/api@1",
+    "severity": "low"
+  }
+]

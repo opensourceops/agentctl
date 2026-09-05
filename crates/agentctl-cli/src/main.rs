@@ -1,4 +1,5 @@
 mod packs;
+mod preflight;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -101,6 +102,10 @@ enum Command {
     Check(WorkflowFile),
     /// Print the deterministic compiled plan.
     Plan(WorkflowFile),
+    /// Check workflow prerequisites without dispatching effects.
+    Doctor(WorkflowFile),
+    /// Explain winning variable sources without exposing values.
+    Explain(WorkflowFile),
     /// Execute a workflow, or predict it with --check.
     Run(RunArgs),
     /// Continue an interrupted or approval-paused run.
@@ -154,11 +159,60 @@ enum Command {
 #[derive(Debug, Args)]
 struct WorkflowFile {
     file: PathBuf,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[command(flatten)]
+    variables: VariableArgs,
+}
+
+#[derive(Debug, Default, Args)]
+struct VariableArgs {
+    /// Ordered non-secret variable files; later files replace earlier keys.
+    #[arg(long = "vars-file", value_name = "FILE")]
+    files: Vec<PathBuf>,
+    /// Explicit global variable overrides, separate from typed inputs. Last key wins.
+    #[arg(long = "var", value_name = "KEY=JSON")]
+    values: Vec<String>,
+}
+
+impl VariableArgs {
+    fn resolve(&self) -> Result<agentctl_core::sources::VariableOverrides, CliError> {
+        let mut values = BTreeMap::new();
+        for pair in &self.values {
+            let (key, raw) = pair
+                .split_once('=')
+                .ok_or_else(|| CliError::validation("--var must use KEY=JSON syntax"))?;
+            if key.is_empty() {
+                return Err(CliError::validation("--var key cannot be empty"));
+            }
+            let value = serde_json::from_str(raw).map_err(|_| {
+                CliError::validation(format!(
+                    "--var `{key}` must contain valid JSON; quote string values"
+                ))
+            })?;
+            values.insert(key.to_owned(), value);
+        }
+        let cwd = current_dir()?;
+        let files = self
+            .files
+            .iter()
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    cwd.join(path)
+                }
+            })
+            .collect();
+        Ok(agentctl_core::sources::VariableOverrides { files, values })
+    }
 }
 
 #[derive(Debug, Args)]
 struct RunArgs {
     file: PathBuf,
+    #[command(flatten)]
+    variables: VariableArgs,
     #[arg(long, default_value = ".agentctl/runtime.db")]
     db: PathBuf,
     #[arg(long)]
@@ -219,6 +273,8 @@ struct ForkArgs {
 #[derive(Debug, Args)]
 struct RepairArgs {
     file: PathBuf,
+    #[command(flatten)]
+    variables: VariableArgs,
     source_run_id: String,
     #[arg(long = "from", required = true)]
     from: Vec<String>,
@@ -243,6 +299,8 @@ struct RepairArgs {
 #[derive(Debug, Args)]
 struct RetryArgs {
     file: PathBuf,
+    #[command(flatten)]
+    variables: VariableArgs,
     source_run_id: String,
     #[arg(long, conflicts_with = "from", required_unless_present = "from")]
     failed: bool,
@@ -734,7 +792,8 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
     let output = cli.output;
     match cli.command {
         Command::Check(args) => {
-            let (workflow, plan, diagnostics) = load_and_compile(&args.file)?;
+            let (workflow, plan, diagnostics) =
+                load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
             print_value(
                 output,
                 "CheckResult",
@@ -755,11 +814,26 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
             Ok(EXIT_OK)
         }
         Command::Plan(args) => {
-            let (_, plan, diagnostics) = load_and_compile(&args.file)?;
+            let (_, plan, diagnostics) =
+                load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
+            let mut display_plan = serde_json::to_value(&plan)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            if let Some(tasks) = display_plan.get_mut("tasks").and_then(Value::as_object_mut) {
+                for task in tasks.values_mut().filter_map(Value::as_object_mut) {
+                    if let Some(Value::String(instructions)) = task.remove("instructions") {
+                        task.insert(
+                            "instructionsDigest".to_owned(),
+                            Value::String(agentctl_core::pack::digest_bytes(
+                                instructions.as_bytes(),
+                            )),
+                        );
+                    }
+                }
+            }
             print_value(
                 output,
                 "Plan",
-                &plan,
+                &display_plan,
                 diagnostics,
                 format!(
                     "plan {}\norder: {}\nmax concurrency: {}\npredictability: {:?}\nproviders: {}\ntools: {}\neffects: {}\nprocess isolation: {}",
@@ -788,6 +862,27 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
                         })
                         .collect::<Vec<_>>()
                         .join(", "),
+                ),
+            )?;
+            Ok(EXIT_OK)
+        }
+        Command::Doctor(args) => preflight::doctor(output, &args).await,
+        Command::Explain(args) => {
+            let (workflow, plan, diagnostics) =
+                load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
+            let origins = agentctl_core::sources::explain_sources(&workflow);
+            print_value(
+                output,
+                "SourceExplanation",
+                &serde_json::json!({
+                    "workflow": workflow.metadata.name, "planDigest": plan.plan_digest, "variableOrigins": origins.origins, "effectiveOrigins": origins.effective_origins,
+                }),
+                diagnostics,
+                format!(
+                    "variable sources for {} (values redacted)\n{}",
+                    workflow.metadata.name,
+                    serde_json::to_string_pretty(&origins.effective_origins)
+                        .map_err(|error| CliError::validation(error.to_string()))?
                 ),
             )?;
             Ok(EXIT_OK)
@@ -1017,7 +1112,8 @@ async fn execute(cli: Cli) -> Result<u8, CliError> {
 
 async fn run_workflow(output: OutputFormat, args: RunArgs) -> Result<u8, CliError> {
     validate_interactive(args.interactive)?;
-    let (workflow, plan, diagnostics) = load_and_compile(&args.file)?;
+    let (workflow, plan, diagnostics) =
+        load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
     let mut inputs = workflow.spec.inputs.clone();
     let supplied = if let Some(path) = &args.inputs_file {
         parse_inputs(&read_text(path)?, "--inputs-file")?
@@ -1117,7 +1213,8 @@ async fn repair_workflow(output: OutputFormat, args: RepairArgs) -> Result<u8, C
     if !args.plan {
         validate_interactive(args.interactive)?;
     }
-    let (workflow, compiled, diagnostics) = load_and_compile(&args.file)?;
+    let (workflow, compiled, diagnostics) =
+        load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
     let default_base = args
         .file
         .parent()
@@ -1205,7 +1302,8 @@ async fn retry_workflow(output: OutputFormat, args: RetryArgs) -> Result<u8, Cli
     if !args.plan {
         validate_interactive(args.interactive)?;
     }
-    let (workflow, compiled, diagnostics) = load_and_compile(&args.file)?;
+    let (workflow, compiled, diagnostics) =
+        load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
     let default_base = args
         .file
         .parent()
@@ -1646,7 +1744,8 @@ async fn effect_command(output: OutputFormat, args: EffectArgs) -> Result<u8, Cl
 async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8, CliError> {
     match args.command {
         ProviderCommand::Inspect(args) => {
-            let (workflow, _, diagnostics) = load_and_compile(&args.file)?;
+            let (workflow, _, diagnostics) =
+                load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
             let base = resolve_base_path(
                 args.file
                     .parent()
@@ -1775,12 +1874,13 @@ async fn provider_command(output: OutputFormat, args: ProviderArgs) -> Result<u8
 
 fn auth_command(output: OutputFormat, args: AuthArgs) -> Result<u8, CliError> {
     let AuthCommand::Check(args) = args.command;
-    let (workflow, _, diagnostics) = load_and_compile(&args.file)?;
-    let base = resolve_base_path(
+    let (workflow, _, diagnostics) =
+        load_with_options(&args.file, args.workspace.as_deref(), &args.variables)?;
+    let base = resolve_base_path(args.workspace.as_deref().or_else(|| {
         args.file
             .parent()
-            .filter(|path| !path.as_os_str().is_empty()),
-    )?;
+            .filter(|path| !path.as_os_str().is_empty())
+    }))?;
     let policy =
         PolicyEngine::new(workflow.spec.policy.clone(), &base).map_err(|error| CliError {
             code: EXIT_POLICY,
@@ -2552,19 +2652,25 @@ fn gc_command(output: OutputFormat, args: GcArgs) -> Result<u8, CliError> {
     Ok(EXIT_OK)
 }
 
-fn load_and_compile(
+fn load_with_options(
     path: &Path,
+    workspace: Option<&Path>,
+    variables: &VariableArgs,
 ) -> Result<(Workflow, agentctl_core::CompiledPlan, Vec<Diagnostic>), CliError> {
+    let base = resolve_base_path(
+        workspace.or_else(|| path.parent().filter(|path| !path.as_os_str().is_empty())),
+    )?;
     let source = read_text(path)?;
     let parsed = parse_workflow(&source, &path.display().to_string()).map_err(diagnostics_error)?;
     let mut workflow = parsed.workflow;
-    let loaded = packs::load_for_workflow(
+    let loaded = packs::load_for_workflow_with_policy_base(
         &workflow,
         path,
         packs::PackOptions {
             offline: PACK_OFFLINE.load(Ordering::Relaxed),
             locked: PACK_LOCKED.load(Ordering::Relaxed),
         },
+        &base,
     )
     .map_err(CliError::validation)?;
     let mut diagnostics = parsed.diagnostics;
@@ -2583,7 +2689,16 @@ fn load_and_compile(
         ),
     }
     }));
+    let origins = loaded.origins;
     load_packs(&mut workflow, loaded.packs)?;
+    agentctl_core::sources::resolve_workflow_sources(
+        &mut workflow,
+        path,
+        &base,
+        &variables.resolve()?,
+        &origins,
+    )
+    .map_err(diagnostics_error)?;
     let plan = compile(&workflow, &path.display().to_string()).map_err(diagnostics_error)?;
     Ok((workflow, plan, diagnostics))
 }
@@ -3459,6 +3574,8 @@ mod tests {
         for expected in [
             "check",
             "plan",
+            "doctor",
+            "explain",
             "run",
             "resume",
             "replay",
@@ -3492,6 +3609,16 @@ mod tests {
         let error = Cli::try_parse_from(["agentctl", "run"]).expect_err("missing file");
         assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
         assert_eq!(error.exit_code(), i32::from(EXIT_VALIDATION));
+    }
+
+    #[test]
+    fn doctor_accepts_a_workflow_path() {
+        let cli =
+            Cli::try_parse_from(["agentctl", "doctor", "workflow.yaml"]).expect("doctor command");
+        let Command::Doctor(args) = cli.command else {
+            panic!("expected doctor command");
+        };
+        assert_eq!(args.file, PathBuf::from("workflow.yaml"));
     }
 
     #[test]

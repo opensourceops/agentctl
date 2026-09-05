@@ -1,0 +1,915 @@
+{
+  "schemaVersion": "agentctl.dev/devops-examples/v1",
+  "examples": [
+    {
+      "id": "01",
+      "directory": "01-ci-diagnosis",
+      "title": "Failed CI build diagnosis",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "structured-agent-output",
+        "source-citations"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic-fake-provider",
+      "openaiWorkflow": "openai.workflow.yaml",
+      "openaiRequestCeiling": 1,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "02",
+      "directory": "02-junit-triage",
+      "title": "JUnit test triage",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "deterministic-xml-parsing"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "03",
+      "directory": "03-pipeline-review",
+      "title": "Pipeline configuration review",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3",
+        "git"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "validated-patch",
+        "least-privilege"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/proposed.patch",
+        "artifacts/patch-workspace/pipeline.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "04",
+      "directory": "04-dockerfile-review",
+      "title": "Dockerfile improvement",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3",
+        "git"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "dockerfile-patch",
+        "optional-real-container-build"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/Dockerfile",
+        "artifacts/proposed.patch",
+        "artifacts/container-build.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": [
+        "Real container build requires --container-build and a usable Docker/Podman engine."
+      ]
+    },
+    {
+      "id": "05",
+      "directory": "05-kubernetes-review",
+      "title": "Kubernetes manifest review",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/deployment.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "06",
+      "directory": "06-terraform-plan",
+      "title": "Governed Terraform plan analysis",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "approval",
+        "plan-policy",
+        "durable-resume"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": 3,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/local-state.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "07",
+      "directory": "07-dependency-update",
+      "title": "Dependency update assessment",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3",
+        "git"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "sandbox-fixture-patch",
+        "behavioral-tests"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/proposed.patch",
+        "artifacts/test-before.txt",
+        "artifacts/test-after.txt"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "08",
+      "directory": "08-sbom-triage",
+      "title": "SBOM and vulnerability triage",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "09",
+      "directory": "09-release-notes",
+      "title": "Verified release notes",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3",
+        "git"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/CHANGELOG.md",
+        "artifacts/history/"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "10",
+      "directory": "10-release-readiness",
+      "title": "Release readiness decision",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "11",
+      "directory": "11-configuration-drift",
+      "title": "Configuration drift and variable precedence",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "varsFiles",
+        "variable-origins",
+        "flat-replacement",
+        "input-namespace"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "12",
+      "directory": "12-incident-timeline",
+      "title": "Incident timeline",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "structured-agent-output",
+        "source-citations"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic-fake-provider",
+      "openaiWorkflow": "openai.workflow.yaml",
+      "openaiRequestCeiling": 1,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "13",
+      "directory": "13-canary-evaluation",
+      "title": "Canary evaluation",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "typed-router",
+        "denied-branch-no-side-effect"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/promotion.json OR artifacts/rollback.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "14",
+      "directory": "14-local-deployment",
+      "title": "Approval-gated local deployment",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "approval",
+        "durable-resume",
+        "disposable-local-http-service"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": 3,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [
+        "disposable-local-http"
+      ],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/service.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "15",
+      "directory": "15-interrupted-deployment",
+      "title": "Interrupted deployment recovery",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "process-kill-failure-injection",
+        "resume",
+        "at-most-once-confirmed-effect"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": 3,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic-fake-provider",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/mutations.txt",
+        "artifacts/service.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "16",
+      "directory": "16-retry-repair",
+      "title": "Terminal retry and selective repair",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "terminal-retry",
+        "selective-repair",
+        "unaffected-boundary-reuse"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": 4,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/mutations.txt"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "17",
+      "directory": "17-compensated-rollout",
+      "title": "Compensated rollout",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "explicit-compensation",
+        "reconciliation"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": 4,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "artifacts/service.json",
+        "evidence/inspect.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "18",
+      "directory": "18-parallel-matrix",
+      "title": "Parallel service matrix",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "parallel",
+        "matrix",
+        "ordered-aggregation"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic",
+      "openaiWorkflow": null,
+      "openaiRequestCeiling": 0,
+      "services": [],
+      "artifacts": [
+        "evidence/inspect.json",
+        "evidence/run.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "19",
+      "directory": "19-role-subworkflow",
+      "title": "Typed role sub-workflow",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "typed-handoff",
+        "subworkflow",
+        "distinct-tool-visibility",
+        "agent-tool-loop"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": null
+      },
+      "mode": "deterministic-fake-provider",
+      "openaiWorkflow": "openai.workflow.yaml",
+      "openaiRequestCeiling": 5,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json",
+        "artifacts/role-change.txt"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    },
+    {
+      "id": "20",
+      "directory": "20-bounded-remediation",
+      "title": "Bounded remediation loop",
+      "workflow": "workflow.yaml",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "dependencies": [
+        "agentctl",
+        "python3"
+      ],
+      "features": [
+        "durable-effects",
+        "typed-dataflow",
+        "inspectable-artifact",
+        "process-extension",
+        "bounded-loop",
+        "tool-output-validation",
+        "request-token-cost-budgets",
+        "audit"
+      ],
+      "expectedExitCodes": {
+        "completed": 0,
+        "approvalPause": null,
+        "sourceFailure": null,
+        "policyDenial": 4,
+        "uncertainEffect": null,
+        "nonconvergingFailure": 4
+      },
+      "mode": "deterministic-fake-provider",
+      "openaiWorkflow": "openai.workflow.yaml",
+      "openaiRequestCeiling": 6,
+      "services": [],
+      "artifacts": [
+        "artifacts/report.json"
+      ],
+      "evidence": {
+        "status": "see source-labeled validation.json; final commit gates assessed separately",
+        "validationFile": "validation.json",
+        "report": "runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage"
+      },
+      "limitations": []
+    }
+  ]
+}

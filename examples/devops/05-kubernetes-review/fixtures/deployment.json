@@ -1,0 +1,30 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "fixture-api"
+  },
+  "spec": {
+    "replicas": "2",
+    "selector": {
+      "matchLabels": {
+        "app": "fixture-api"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "fixture-api"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "api",
+            "image": "example.invalid/fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    }
+  }
+}

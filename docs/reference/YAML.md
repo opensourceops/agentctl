@@ -20,6 +20,8 @@ Unknown fields fail. Documents, ordinary input files, packs, direct reads, exist
 | `spec` field | Default | Purpose |
 | --- | --- | --- |
 | `inputs` | `{}` | Default JSON values supplied to templates. |
+| `varsFiles` | `[]` | Ordered workflow variable files; later files replace earlier top-level values. |
+| `vars` | `{}` | Inline workflow variables overriding workflow files. Inputs remain a separate namespace. |
 | `outputs` | `{}` | Final values selected from inputs, memory, variables, or task outputs. |
 | `providers` | `{}` | Named fake, OpenAI, Azure OpenAI, Anthropic, or Google adapters. |
 | `agents` | `{}` | Named bounded model executors. |
@@ -73,7 +75,8 @@ Each task requires `id` and `uses`. `uses` is `action:name`, `agent:name`,
 | `loop` | none | Required `maxIterations` from 1 through 64, exact typed `while`, and optional typed `initial` value. Mutually exclusive with `when`, `foreach`, `matrix`, and `route`. |
 | `memoryWrites` | inferred or `[]` | Working-memory keys. Literal memory-write keys are inferred; templated keys require an explicit set. Unordered overlaps fail when concurrency is greater than one. |
 | `when` | true | Constrained boolean/equality expression. |
-| `vars` | `{}` | Task-local JSON values. |
+| `varsFiles` | `[]` | Ordered task variable files overriding workflow and selected-agent defaults. |
+| `vars` | `{}` | Task-local JSON values overriding task files. Explicit invocation variable overrides have higher priority. |
 | `with` | `{}` | Typed action or agent input. |
 | `outputSchema` | action-owned object or agent structured contract | Valid JSON Schema checked at task completion and selective-repair reuse. |
 | `retry` | bounded default | Only definitive retry-safe failures may repeat. |
@@ -98,7 +101,16 @@ order through an ordinary source-linked durable run.
 
 ## Agents
 
-An agent requires `provider` and `model`. Defaults are `maxTurns: 8`, `maxToolCalls: 16`, `maxOutputTokens: 2048`, and `timeoutSeconds: 120`. Set tighter values for known work. Optional fields include instructions or `instructionsFile`, variables, tools, retry, reasoning, structured output, usage limits, and provider-specific options.
+An agent requires `provider`, `model`, and exactly one of `instructions` or `instructionsFile`. Defaults are `maxTurns: 8`, `maxToolCalls: 16`, `maxOutputTokens: 2048`, and `timeoutSeconds: 120`. Set tighter values for known work. Optional fields include ordered `varsFiles`, inline `vars`, tools, retry, reasoning, structured output, usage limits, and provider-specific options.
+
+Agent file defaults override workflow variables; agent inline values override
+agent files. Task and explicit invocation variable layers follow. File paths
+are literal and relative to the declaring workflow or pack manifest, while the
+workspace read policy remains mandatory. Source bytes are captured before
+compilation for instructions, variables, and recovery compatibility.
+Instruction text expands the same templates as inline instructions. See
+[Variables and instruction files](../VARIABLES.md) for all eight precedence
+layers, limits, merge rules, and source diagnostics.
 
 `structuredOutput` asks the provider for typed JSON and becomes the default task output contract. A task-level `outputSchema` can define the complete task contract explicitly. An agent result that feeds downstream tasks must have one of these contracts before it can be reused by selective repair. Schema documents are compiled when the workflow is checked; values are validated both when completed and when reused.
 

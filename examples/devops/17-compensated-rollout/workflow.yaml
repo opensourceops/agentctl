@@ -1,0 +1,99 @@
+{
+  "apiVersion": "agentctl.dev/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "devops-compensated-rollout",
+    "description": "Fail after a local rollout, plan and execute its explicit inverse, and inspect linked reconciliation evidence."
+  },
+  "spec": {
+    "policy": {
+      "workspaceRoot": ".",
+      "writableRoots": [
+        "artifacts"
+      ],
+      "processAllowlist": [
+        "python3"
+      ],
+      "approval": "never"
+    },
+    "runtime": {
+      "maxConcurrency": 1,
+      "budgets": {
+        "maxProviderRequests": 8,
+        "maxTurns": 8,
+        "maxToolCalls": 4,
+        "maxTotalTokens": 16000,
+        "maxProcessOutputBytes": 1048576,
+        "maxArtifactBytes": 1048576,
+        "maxTasks": 32,
+        "maxWallTimeSeconds": 120
+      }
+    },
+    "actions": {
+      "fixture": {
+        "kind": "extension.process",
+        "command": "python3",
+        "args": [
+          "../fixture.py",
+          "17"
+        ],
+        "idempotency": "idempotent",
+        "protocolVersion": "agentctl.dev/process-extension/v1",
+        "inputSchema": {
+          "type": "object"
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "capabilities": [
+          "devops.fixture"
+        ],
+        "timeoutSeconds": 30,
+        "stdoutLimitBytes": 65536,
+        "stderrLimitBytes": 8192,
+        "combinedOutputLimitBytes": 73728
+      },
+      "write": {
+        "kind": "builtin.write"
+      },
+      "assign": {
+        "kind": "builtin.assign"
+      },
+      "assert": {
+        "kind": "builtin.assert"
+      }
+    },
+    "tasks": [
+      {
+        "id": "rollout",
+        "uses": "action:write",
+        "with": {
+          "path": "artifacts/service.json",
+          "content": "{\"version\":\"broken\"}\n"
+        },
+        "compensate": {
+          "uses": "action:write",
+          "with": {
+            "path": "artifacts/service.json",
+            "content": "{\"version\":\"restored\"}\n"
+          }
+        }
+      },
+      {
+        "id": "health",
+        "uses": "action:assert",
+        "needs": [
+          "rollout"
+        ],
+        "with": {
+          "that": false,
+          "message": "deliberate fixture rollout health failure"
+        }
+      }
+    ],
+    "compensation": {
+      "onFailure": "manual",
+      "approval": "policy"
+    }
+  }
+}

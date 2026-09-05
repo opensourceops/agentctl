@@ -1,6 +1,6 @@
 # Framework limitation burn-down
 
-This is the authoritative register for the framework-completeness program. It
+This is the retained register for the earlier framework-completeness program. It
 supersedes roadmap language that classified core durability, recovery,
 orchestration, security, or operability work as deferred merely because the
 workflow API is young.
@@ -14,9 +14,13 @@ complete, every entry must have exactly one final disposition:
 - `removed from supported surface`
 - `externally blocked`
 
-Closure count: 30 limitations, comprising 24 implemented, 2 redesigned, and 4
-removed from the supported surface. No limitation remains externally blocked.
-All 30 program states are verified.
+Historical closure count: 30 limitations, comprising 24 implemented, 2
+redesigned, and 4 removed from the supported surface. All 30 program states
+were recorded as verified in that program. These dispositions do not certify a
+new source commit or close the expanded September 2026 launch requirements.
+The [current limitation review](LAUNCH_LIMITATION_REVIEW.md) and
+[execution ledger](AUTONOMOUS_LAUNCH_READINESS.md) record discovered gaps,
+current evidence, and the release decision for the continuation.
 
 ## Dependency order
 

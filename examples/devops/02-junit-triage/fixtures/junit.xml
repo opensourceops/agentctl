@@ -1,0 +1,1 @@
+<testsuite tests="3" failures="1" errors="1"><testcase classname="api" name="health"/><testcase classname="api" name="total"><failure message="expected 4, got 3">assert total == 4</failure></testcase><testcase classname="worker" name="database"><error message="connection refused">fixture database unavailable</error></testcase></testsuite>

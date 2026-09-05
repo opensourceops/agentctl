@@ -1,0 +1,1 @@
+Reviewed scope: write exactly reviewed-local-change to artifacts/role-change.txt. No network or external deployment.

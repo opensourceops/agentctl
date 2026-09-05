@@ -45,6 +45,11 @@ spec:
 
 Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, `retry` to rerun failed boundaries of an identical terminal workflow, `repair` to reuse compatible successful task boundaries with a corrected workflow, and `fork` when a broader fresh execution is intentional.
 
+Use `explain` to inspect winning variable origins without values and `doctor`
+for non-dispatching prerequisite checks. [Variables and instruction
+files](docs/VARIABLES.md) documents ordered `varsFiles`, explicit `--var`
+overrides, instruction templates, and captured recovery inputs.
+
 Terminal retry and selective repair are planned before execution:
 
 ```text

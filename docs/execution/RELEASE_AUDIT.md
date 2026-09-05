@@ -2,8 +2,9 @@
 
 Audit date: 2026-07-22 (Asia/Kolkata)
 
-> Historical release-candidate checkpoint. The current framework result and
-> final evidence are in
+> Historical release-candidate checkpoint. The September 2026 continuation is
+> tracked in the [current execution ledger](AUTONOMOUS_LAUNCH_READINESS.md).
+> Later historical framework evidence is in
 > [Completeness verification](COMPLETENESS_VERIFICATION.md) and
 > [Live framework verification](LIVE_FRAMEWORK_VERIFICATION.md).
 

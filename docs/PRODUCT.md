@@ -10,11 +10,19 @@ Core use cases are local repository automation, approval-gated changes, structur
 
 ## Journeys
 
-- Local: author strict YAML, run `check`, inspect `plan`, preview with `run --check --diff`, execute, approve if required, and inspect the audit history.
+- Local: author strict YAML, run `check`, inspect `plan`, explain variable origins, check prerequisites with `doctor`, preview with `run --check --diff`, execute, approve if required, and inspect the audit history.
 - Scheduled: invoke the CLI without a TTY, use explicit database/workspace/artifact paths and an overall timeout, receive exit `3` for a durable pending approval, and resume through an operator-controlled invocation.
-- CI: mount config/workspace/state/artifacts into the generic OCI image, inject secrets only as environment variables, pass inputs by `--inputs-file` or repeated `--input`, and consume one versioned final JSON envelope on stdout.
+- CI: mount config/workspace/state/artifacts into the generic OCI image, use explicit environment, mounted-file, or policy-gated process secret references, pass inputs by `--inputs-file` or repeated `--input`, and consume one versioned final JSON envelope on stdout.
 - Embedded: construct core workflow and plan values, inject a store, providers, tools, clock, IDs, and tracing, then invoke the runtime with a cancellation token.
 - Repair: keep the failed terminal source immutable, compile a corrected target, plan one or more roots, reuse compatible successful boundaries, and execute only the roots and their affected descendants.
+
+[Ordered variables and instruction files](VARIABLES.md) make configuration
+reusable while preserving explicit authority. Workflow, agent, and task files
+have documented origins and precedence; explicit invocation variables are
+separate from typed inputs. Captured configuration binds fresh work and
+recovery to reviewed content. The [twenty DevOps examples](../examples/devops/README.md)
+turn these journeys into inspectable local artifacts and explicit fixture/live
+evidence rather than advice-only prompts.
 
 Provider portability means the internal message, tool, continuation, usage, and capability contracts do not expose provider SDK types. It does not mean every provider has identical features. Compilation rejects a requested feature absent from the chosen provider.
 
@@ -33,11 +41,13 @@ checkpoints, database schema, audit events, and protocol continuation all carry
 independent versions. Deprecations are documented for at least one compatibility
 window; incompatible durable state fails explicitly.
 
-Version 0.3 freezes the workflow schema as `agentctl.dev/v1` and has executable
-evidence for the stated local, scheduled, and generic-container journeys. The
-CLI and crates remain pre-1.0, so callers must still pin the binary or image
-version for runtime, provider, and storage behavior outside the workflow
-document contract.
+Version 0.3 uses workflow API `agentctl.dev/v1`, including compatible additive
+fields. The repository contains executable acceptance scenarios and historical
+evidence for local, scheduled, and generic-container journeys. A new release
+candidate still requires its own [current evidence and
+verdict](execution/AUTONOMOUS_LAUNCH_READINESS.md). The CLI and crates remain
+pre-1.0, so callers must pin the binary or image version for runtime, provider,
+and storage behavior outside the workflow document contract.
 
 ## Differentiation
 

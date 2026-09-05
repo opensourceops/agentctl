@@ -12,6 +12,8 @@ Usage: agentctl [OPTIONS] <COMMAND>
 Commands:
   check       Validate syntax, schema, references, capabilities, policy, and templates
   plan        Print the deterministic compiled plan
+  doctor      Check workflow prerequisites without dispatching effects
+  explain     Explain winning variable sources without exposing values
   run         Execute a workflow, or predict it with --check
   resume      Continue an interrupted or approval-paused run
   replay      Reconstruct a terminal run only from recorded state and results
@@ -58,12 +60,15 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --output <OUTPUT>        [default: human] [possible values: human, json, jsonl]
+      --workspace <WORKSPACE>
+      --color <COLOR>          [default: auto] [possible values: auto, always, never]
+      --vars-file <FILE>       Ordered non-secret variable files; later files replace earlier keys
+      --var <KEY=JSON>         Explicit global variable overrides, separate from typed inputs. Last key wins
       --verbose
-      --offline          Forbid pack network access and require cached Git/archive sources
-      --locked           Require agentctl.pack.lock and reject all source or graph drift
-  -h, --help             Print help
+      --offline                Forbid pack network access and require cached Git/archive sources
+      --locked                 Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help                   Print help
 ```
 
 ## `agentctl plan`
@@ -77,12 +82,59 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --output <OUTPUT>        [default: human] [possible values: human, json, jsonl]
+      --workspace <WORKSPACE>
+      --color <COLOR>          [default: auto] [possible values: auto, always, never]
+      --vars-file <FILE>       Ordered non-secret variable files; later files replace earlier keys
+      --var <KEY=JSON>         Explicit global variable overrides, separate from typed inputs. Last key wins
       --verbose
-      --offline          Forbid pack network access and require cached Git/archive sources
-      --locked           Require agentctl.pack.lock and reject all source or graph drift
-  -h, --help             Print help
+      --offline                Forbid pack network access and require cached Git/archive sources
+      --locked                 Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help                   Print help
+```
+
+## `agentctl doctor`
+
+```text
+Check workflow prerequisites without dispatching effects
+
+Usage: agentctl doctor [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>
+
+Options:
+      --output <OUTPUT>        [default: human] [possible values: human, json, jsonl]
+      --workspace <WORKSPACE>
+      --color <COLOR>          [default: auto] [possible values: auto, always, never]
+      --vars-file <FILE>       Ordered non-secret variable files; later files replace earlier keys
+      --var <KEY=JSON>         Explicit global variable overrides, separate from typed inputs. Last key wins
+      --verbose
+      --offline                Forbid pack network access and require cached Git/archive sources
+      --locked                 Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help                   Print help
+```
+
+## `agentctl explain`
+
+```text
+Explain winning variable sources without exposing values
+
+Usage: agentctl explain [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>
+
+Options:
+      --output <OUTPUT>        [default: human] [possible values: human, json, jsonl]
+      --workspace <WORKSPACE>
+      --color <COLOR>          [default: auto] [possible values: auto, always, never]
+      --vars-file <FILE>       Ordered non-secret variable files; later files replace earlier keys
+      --var <KEY=JSON>         Explicit global variable overrides, separate from typed inputs. Last key wins
+      --verbose
+      --offline                Forbid pack network access and require cached Git/archive sources
+      --locked                 Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help                   Print help
 ```
 
 ## `agentctl run`
@@ -96,24 +148,28 @@ Arguments:
   <FILE>
 
 Options:
-      --db <DB>
-          [default: .agentctl/runtime.db]
       --output <OUTPUT>
           [default: human] [possible values: human, json, jsonl]
+      --vars-file <FILE>
+          Ordered non-secret variable files; later files replace earlier keys
       --color <COLOR>
           [default: auto] [possible values: auto, always, never]
-      --inputs <INPUTS>
-
-      --inputs-file <INPUTS_FILE>
-
+      --var <KEY=JSON>
+          Explicit global variable overrides, separate from typed inputs. Last key wins
+      --db <DB>
+          [default: .agentctl/runtime.db]
       --verbose
 
-      --input <KEY=VALUE>
+      --inputs <INPUTS>
 
       --offline
           Forbid pack network access and require cached Git/archive sources
+      --inputs-file <INPUTS_FILE>
+
       --locked
           Require agentctl.pack.lock and reject all source or graph drift
+      --input <KEY=VALUE>
+
       --workspace <WORKSPACE>
 
       --timeout-seconds <TIMEOUT_SECONDS>
@@ -230,26 +286,30 @@ Arguments:
   <SOURCE_RUN_ID>
 
 Options:
-      --from <FROM>
-
       --output <OUTPUT>
           [default: human] [possible values: human, json, jsonl]
+      --vars-file <FILE>
+          Ordered non-secret variable files; later files replace earlier keys
       --color <COLOR>
           [default: auto] [possible values: auto, always, never]
-      --plan
-
-      --restart-successful
+      --var <KEY=JSON>
+          Explicit global variable overrides, separate from typed inputs. Last key wins
+      --from <FROM>
 
       --verbose
 
       --offline
           Forbid pack network access and require cached Git/archive sources
+      --plan
+
+      --locked
+          Require agentctl.pack.lock and reject all source or graph drift
+      --restart-successful
+
       --reason <REASON>
 
       --db <DB>
           [default: .agentctl/runtime.db]
-      --locked
-          Require agentctl.pack.lock and reject all source or graph drift
       --interactive
 
       --diff
@@ -274,24 +334,28 @@ Arguments:
   <SOURCE_RUN_ID>
 
 Options:
-      --failed
-
       --output <OUTPUT>
           [default: human] [possible values: human, json, jsonl]
+      --vars-file <FILE>
+          Ordered non-secret variable files; later files replace earlier keys
       --color <COLOR>
           [default: auto] [possible values: auto, always, never]
-      --from <FROM>
-
-      --plan
+      --var <KEY=JSON>
+          Explicit global variable overrides, separate from typed inputs. Last key wins
+      --failed
 
       --verbose
 
+      --from <FROM>
+
       --offline
           Forbid pack network access and require cached Git/archive sources
-      --restart-successful
-
       --locked
           Require agentctl.pack.lock and reject all source or graph drift
+      --plan
+
+      --restart-successful
+
       --reason <REASON>
 
       --db <DB>
@@ -650,12 +714,15 @@ Arguments:
   <FILE>
 
 Options:
-      --output <OUTPUT>  [default: human] [possible values: human, json, jsonl]
-      --color <COLOR>    [default: auto] [possible values: auto, always, never]
+      --output <OUTPUT>        [default: human] [possible values: human, json, jsonl]
+      --workspace <WORKSPACE>
+      --color <COLOR>          [default: auto] [possible values: auto, always, never]
+      --vars-file <FILE>       Ordered non-secret variable files; later files replace earlier keys
+      --var <KEY=JSON>         Explicit global variable overrides, separate from typed inputs. Last key wins
       --verbose
-      --offline          Forbid pack network access and require cached Git/archive sources
-      --locked           Require agentctl.pack.lock and reject all source or graph drift
-  -h, --help             Print help
+      --offline                Forbid pack network access and require cached Git/archive sources
+      --locked                 Require agentctl.pack.lock and reject all source or graph drift
+  -h, --help                   Print help
 ```
 
 ## `agentctl providers smoke-openai`
