@@ -22,8 +22,13 @@ for variant in bundle['images']:
         # Native execution already occurred in each architecture job. This checks
         # that the newly assembled exact index delivers each tested platform.
         subprocess.run(['docker', 'pull', '--platform', image['platform'], reference], check=True, timeout=180)
-        actual = json.loads(subprocess.check_output(['docker', 'image', 'inspect', reference]))[0]
-        if actual['Id'] != image['configDigest'] or actual['Os'] + '/' + actual['Architecture'] != image['platform']:
-            raise ValueError('registry index did not deliver the tested native platform/config')
-        results.append({'variant': variant['variant'], 'platform': image['platform'], 'manifestDigest': variant['manifestDigest'], 'imageId': actual['Id']})
+        try:
+            actual = json.loads(subprocess.check_output(['docker', 'image', 'inspect', reference]))[0]
+            if actual['Id'] != image['configDigest'] or actual['Os'] + '/' + actual['Architecture'] != image['platform']:
+                raise ValueError('registry index did not deliver the tested native platform/config')
+            results.append({'variant': variant['variant'], 'platform': image['platform'], 'manifestDigest': variant['manifestDigest'], 'imageId': actual['Id']})
+        finally:
+            # Docker's classic store maps one index reference to one local image.
+            # Release only this probe's reference before pulling another platform.
+            subprocess.run(['docker', 'image', 'rm', reference], check=True, timeout=60)
 write_json(args.output, {'passed': True, 'nativeExecution': 'separate native image jobs', 'pulls': results})
