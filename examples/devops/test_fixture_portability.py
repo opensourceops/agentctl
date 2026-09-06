@@ -64,16 +64,19 @@ class FixturePortabilityTests(unittest.TestCase):
                                "sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}}
             (root / "fixture-tools.json").write_text(json.dumps(support))
             script = (
-                f"import sys; sys.path.insert(0, {str(root)!r}); import fixture; "
+                f"import sys; assert sys.prefix == {sys.prefix!r}; "
+                f"sys.path.insert(0, {str(root)!r}); import fixture; "
                 "fixture.patch('sample.txt', 'before\\r\\n', 'after\\r\\n'); "
                 "assert fixture.path('artifacts/patch-workspace/sample.txt').read_bytes() == b'after\\r\\n'"
             )
-            child = subprocess.run(["python3", "-c", script], executable=sys.executable,
+            # The published setup uses the selected interpreter as argv[0]. A
+            # bare alias with env={} loses Linux virtual-environment discovery.
+            child = subprocess.run([sys.executable, "-c", script],
                                    cwd=root, env={}, capture_output=True, text=True, timeout=10)
             self.assertEqual(child.returncode, 0, child.stderr)
             support["git"]["sha256"] = "0" * 64
             (root / "fixture-tools.json").write_text(json.dumps(support))
-            rejected = subprocess.run(["python3", "-c", script], executable=sys.executable,
+            rejected = subprocess.run([sys.executable, "-c", script],
                                       cwd=root, env={}, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("Git installation changed after setup preflight", rejected.stderr)
@@ -104,12 +107,14 @@ class FixturePortabilityTests(unittest.TestCase):
             database.unlink()
 
     def test_nested_python_runs_with_empty_environment(self):
+        nested = f"import sys; assert sys.prefix == {sys.prefix!r}; print(42)"
         script = (
-            f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
+            f"import sys; assert sys.prefix == {sys.prefix!r}; "
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
             "import fixture; result = fixture.command([fixture.python_executable(), "
-            "'-c', 'print(42)']); print(result.stdout.strip())"
+            f"'-c', {nested!r}]); print(result.stdout.strip())"
         )
-        child = subprocess.run(["python3", "-c", script], executable=sys.executable,
+        child = subprocess.run([sys.executable, "-c", script],
                                env={}, capture_output=True, text=True, timeout=10)
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertEqual(child.stdout.strip(), "42")
