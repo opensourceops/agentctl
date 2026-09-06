@@ -25,7 +25,7 @@ def write_tool(filename, content):
 
 def build():
     workflow = {"apiVersion": "agentctl.dev/v1", "kind": "Workflow", "metadata": {"name": "container-dependency-remediation",
-                "description": "Two bounded model roles propose and stage a validated dependency fix; trusted outer CI rebuilds and rescans."}, "spec": {
+                "description": "Two bounded model roles stage a dependency fix for trusted CI rebuild and rescan."}, "spec": {
         "policy": {"workspaceRoot": ".", "writableRoots": ["patch", "state"], "processAllowlist": ["python3"], "networkAllowlist": ["api.openai.com"], "approval": "never"},
         "providers": {"openai": {"kind": "openai", "credential": {"env": "OPENAI_API_KEY"}}},
         "runtime": {"maxConcurrency": 1, "budgets": {"maxProviderRequests": 4, "maxTurns": 4, "maxToolCalls": 2, "maxTotalTokens": 20000,

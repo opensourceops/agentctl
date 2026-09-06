@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: container-dependency-remediation
-  description: Two bounded model roles propose and stage a validated dependency fix; trusted outer CI rebuilds and 
-    rescans.
+  description: Two bounded model roles stage a dependency fix for trusted CI rebuild and rescan.
 spec:
   policy:
     workspaceRoot: .
