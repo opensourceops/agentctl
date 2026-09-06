@@ -3922,6 +3922,10 @@ pub fn examples_live_openai(root: &Path, composites_only: bool) -> Result<()> {
         "examples/devops/12-incident-timeline/openai.workflow.yaml".to_owned(),
         "examples/devops/19-role-subworkflow/openai.workflow.yaml".to_owned(),
         "examples/devops/20-bounded-remediation/openai.workflow.yaml".to_owned(),
+        // These separately leased standalone workflows run in the demo's
+        // preflight/remediate jobs, not this older paid acceptance harness.
+        "examples/devops/21-container-remediation/agentctl/preflight.yaml".to_owned(),
+        "examples/devops/21-container-remediation/agentctl/remediate.yaml".to_owned(),
         "examples/docs/provider-portability/openai.yaml".to_owned(),
         "examples/framework-completeness/live-composite.yaml".to_owned(),
         "examples/openai-live/workflow.yaml".to_owned(),

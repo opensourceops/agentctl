@@ -27,11 +27,16 @@ Typical sequence (all paths absolute):
   execute --lease LEASE.json --execution-ledger JOB -- /abs/agentctl run ...
   receipt --lease LEASE.json --execution-ledger JOB
   reconcile --task-ledger TASK --receipt RECEIPT.json
+  reconcile-skipped --task-ledger TASK --lease LEASE.json --run-id ACTUAL_ID
   close --task-ledger TASK
 
 No command resets an existing allowance. Missing receipts, timeouts, outstanding
 runtime reservations, unknown prices, and uncertain effects keep charges intact.
 Reasoning tokens are already included in outputTokens and are never added twice.
+reconcile-skipped is separate operator evidence: it fetches the exact GitHub run
+attempt and verifies a completed, skipped job with no steps or assigned runner.
+The REST job name must equal the leased job ID (no custom names or matrix jobs).
+It never accepts a caller-supplied proof file or fabricates runtime usage.
 """
 import argparse
 from contextlib import closing, contextmanager
@@ -42,6 +47,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 
@@ -425,6 +431,8 @@ def reconcile(task_path, value):
         if len(rows) != 1 or rows[0]["metadata"].get("binding") != leased["binding"] or rows[0]["reserved"] != leased["limits"]:
             raise BudgetError("receipt does not match a reserved job lease")
         row = rows[0]
+        if row["metadata"].get("skippedProofSha256"):
+            raise BudgetError("lease already binds skipped-job evidence, not a runtime receipt")
         if row["status"] != "reserved":
             if row["status"] == "reconciled" and row["charged"] == charged and row["metadata"].get("receiptSha256") == digest(value):
                 return {"status": "already-reconciled", "leaseId": leased["leaseId"], "charged": charged}
@@ -438,11 +446,115 @@ def reconcile(task_path, value):
         return {"status": "reconciled", "leaseId": leased["leaseId"], "charged": charged}
 
 
+def github_json(endpoint, *, paginate=False):
+    command = ["gh", "api", "--hostname", "github.com", "--method", "GET",
+               "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28"]
+    if paginate:
+        command += ["--paginate", "--slurp"]
+    try:
+        result = subprocess.run(command + [endpoint], capture_output=True, timeout=60, check=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise BudgetError("GitHub skipped-job verification failed; retain reservation") from error
+    if len(result.stdout) > 2 * 1024 * 1024:
+        raise BudgetError("GitHub metadata exceeds 2 MiB; retain reservation")
+    return json.loads(result.stdout)
+
+
+def skipped_job_proof(leased, actual_run_id):
+    context = validate_lease(leased)["binding"]
+    if not re.fullmatch(r"[1-9][0-9]*", str(actual_run_id)):
+        raise BudgetError("actual GitHub run ID is required")
+    actual_run_id = str(actual_run_id)
+    if context["runId"] is not None and context["runId"] != actual_run_id:
+        raise BudgetError("actual GitHub run differs from leased run")
+    repository = context["repository"]
+    workflow, branch = context["workflowRef"].split("@refs/heads/", 1)
+    workflow = workflow.removeprefix(repository + "/")
+    endpoint = f"repos/{repository}/actions/runs/{actual_run_id}/attempts/{context['runAttempt']}"
+    run = github_json(endpoint)
+    if (not isinstance(run, dict) or str(run.get("id")) != actual_run_id
+            or str(run.get("run_attempt")) != context["runAttempt"]
+            or context["runNumber"] is not None and str(run.get("run_number")) != context["runNumber"]
+            or run.get("repository", {}).get("full_name") != repository
+            or run.get("head_repository", {}).get("full_name") != repository
+            or run.get("head_sha") != context["sourceSha"] or run.get("head_branch") != branch
+            or run.get("path") != workflow or run.get("event") != "workflow_dispatch"
+            or run.get("status") != "completed" or not run.get("conclusion")):
+        raise BudgetError("GitHub run attempt is incomplete or differs from leased identity")
+    pages = github_json(endpoint + "/jobs?per_page=100", paginate=True)
+    if not isinstance(pages, list) or not pages or any(not isinstance(p, dict) or not isinstance(p.get("jobs"), list) for p in pages):
+        raise BudgetError("GitHub job inventory is missing")
+    jobs = [job for page in pages for job in page["jobs"]]
+    if any(page.get("total_count") != len(jobs) for page in pages) or any(not isinstance(job, dict) for job in jobs):
+        raise BudgetError("GitHub job inventory is incomplete or inconsistent")
+    matches = [job for job in jobs if job.get("name") == context["jobId"]]
+    if len(matches) != 1:
+        raise BudgetError("leased job is missing or ambiguous in the exact GitHub attempt")
+    job = matches[0]
+    job_id = str(job.get("id", ""))
+    if (not re.fullmatch(r"[1-9][0-9]*", job_id) or str(job.get("run_id")) != actual_run_id
+            or str(job.get("run_attempt")) != context["runAttempt"]
+            or job.get("head_sha") != context["sourceSha"] or job.get("head_branch") != branch
+            or job.get("run_url") != f"https://api.github.com/repos/{repository}/actions/runs/{actual_run_id}"
+            or job.get("status") != "completed" or job.get("conclusion") != "skipped" or job.get("steps") != []
+            or not {"runner_id", "runner_name"} <= job.keys()
+            or job["runner_id"] not in (None, 0) or job["runner_name"] not in (None, "")):
+        raise BudgetError("leased job was started, is uncertain, or was not conclusively skipped before any steps")
+    return {"kind": "github-skipped-job", "version": VERSION, "binding": context,
+            "actualRunId": actual_run_id, "actualRunNumber": str(run["run_number"]), "githubJobId": job_id,
+            "attemptApi": "https://api.github.com/" + endpoint,
+            "runStatus": run["status"], "runConclusion": run["conclusion"],
+            "jobStatus": job["status"], "jobConclusion": job["conclusion"], "steps": [],
+            "runnerId": job["runner_id"], "runnerName": job["runner_name"]}
+
+
+def reconcile_skipped(task_path, leased, actual_run_id):
+    # Always re-read trusted REST evidence, including idempotent invocations.
+    # Exact-attempt endpoints cannot accidentally substitute a later paid rerun.
+    proof = skipped_job_proof(leased, actual_run_id)
+    proof_sha = digest(proof)
+    charged = {key: 0 for key in FIELDS}
+    with locked(existing(task_path)), LiveBudget(task_path) as task:
+        cfg = config(task)
+        rows = [row for row in reservation_rows(task) if row["id"] == leased["leaseId"]]
+        if (cfg["taskId"] != leased["taskId"] or cfg["envelopeId"] != leased["envelopeId"]
+                or len(rows) != 1 or rows[0]["metadata"].get("kind") != "release-job"
+                or rows[0]["metadata"].get("binding") != leased["binding"] or rows[0]["reserved"] != leased["limits"]):
+            raise BudgetError("skipped-job proof does not match a reserved task lease")
+        row = rows[0]
+        metadata = row["metadata"]
+        if metadata.get("receiptSha256") or metadata.get("skippedProofSha256", proof_sha) != proof_sha:
+            raise BudgetError("lease already binds different reconciliation evidence")
+        if row["status"] == "reconciled" and row["charged"] == charged and metadata.get("skippedProofSha256") == proof_sha:
+            return {"status": "already-reconciled", "leaseId": leased["leaseId"], "charged": charged, "skippedProofSha256": proof_sha}
+        if row["status"] != "reserved" or cfg["state"] != "active":
+            raise BudgetError("skipped-job lease is no longer reserved")
+        metadata = {**metadata, "skippedProof": proof, "skippedProofSha256": proof_sha, "actualRunId": proof["actualRunId"]}
+        task.connection.execute("UPDATE reservations SET metadata_json=? WHERE id=?", (encoded(metadata), leased["leaseId"]))
+        # A crash after recording proof retains the entire reservation. Retrying
+        # revalidates the same attempt and completes the existing transaction.
+        task.reconcile(leased["leaseId"], {"providerRequests": 0, "inputTokens": 0, "outputTokens": 0,
+                       "costMicrousd": 0, "unpricedProviderRequests": 0}, 0)
+        return {"status": "reconciled-skipped", "leaseId": leased["leaseId"], "charged": charged, "skippedProofSha256": proof_sha}
+
+
+def complete_reconciliation(row):
+    if row["status"] != "reconciled":
+        return False
+    metadata = row["metadata"]
+    if metadata.get("receiptSha256"):
+        return not metadata.get("skippedProofSha256")
+    proof = metadata.get("skippedProof")
+    return (isinstance(proof, dict) and proof.get("kind") == "github-skipped-job"
+            and metadata.get("skippedProofSha256") == digest(proof)
+            and row["charged"] == {key: 0 for key in FIELDS})
+
+
 def close(task_path):
     with locked(existing(task_path)), LiveBudget(task_path) as task:
         cfg = config(task)
         rows = reservation_rows(task)
-        if any(row["status"] != "reconciled" or not row["metadata"].get("receiptSha256") for row in rows):
+        if any(not complete_reconciliation(row) for row in rows):
             raise BudgetError("unreconciled jobs remain; entire original task envelope retained")
         charged = task.summary()["charged"]
         with LiveBudget(existing(cfg["originalLedger"])) as original:
@@ -490,6 +602,10 @@ def main(argv=None):
     resolve = sub.add_parser("reconcile")
     resolve.add_argument("--task-ledger", required=True)
     resolve.add_argument("--receipt", required=True)
+    skipped = sub.add_parser("reconcile-skipped")
+    skipped.add_argument("--task-ledger", required=True)
+    skipped.add_argument("--lease", required=True)
+    skipped.add_argument("--run-id", required=True)
     for name in ["status", "close"]:
         command = sub.add_parser(name)
         command.add_argument("--task-ledger", required=True)
@@ -507,6 +623,8 @@ def main(argv=None):
             result = receipt(read_json(args.lease), args.execution_ledger)
         elif args.command == "reconcile":
             result = reconcile(args.task_ledger, read_json(args.receipt))
+        elif args.command == "reconcile-skipped":
+            result = reconcile_skipped(args.task_ledger, read_json(args.lease), args.run_id)
         elif args.command == "close":
             result = close(args.task_ledger)
         else:

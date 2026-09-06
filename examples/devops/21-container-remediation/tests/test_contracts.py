@@ -41,6 +41,36 @@ class ContractTests(unittest.TestCase):
             (root/'one/requirements.in').write_text('tampered')
             with self.assertRaises(ValueError): export.verify(root/'one', True)
 
+    def test_already_exported_git_root_reexports_without_hashing_its_own_manifest(self):
+        framework_sha = runner.git('rev-parse', 'HEAD', cwd=ROOT)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            standalone = root/'standalone'
+            export.export(standalone, framework_sha, True)
+            original_manifest = (standalone/'package-manifest.json').read_bytes()
+            # This is an ordinary payload with the same basename, not the root
+            # exporter's own manifest. Its bytes must remain in the inventory.
+            (standalone/'metadata').mkdir()
+            (standalone/'metadata/package-manifest.json').write_text('{"fixture":"nested payload"}\n')
+            runner.git('init', '--initial-branch=main', cwd=standalone)
+            runner.git('add', '.', cwd=standalone)
+            runner.git('-c', 'user.name=Export fixture', '-c', 'user.email=fixture@example.invalid',
+                       'commit', '-m', 'Local standalone export fixture', cwd=standalone)
+            # Explicitly qualified previews keep the real framework identity;
+            # this local fixture's Git commit is not a framework release SHA.
+            with patch.object(export, 'SOURCE', standalone):
+                first = export.export(root/'again', framework_sha, True, root/'again.zip')
+                export.export(root/'repeat', framework_sha, True, root/'repeat.zip')
+            self.assertEqual((standalone/'package-manifest.json').read_bytes(), original_manifest)
+            self.assertNotIn('package-manifest.json', first['files'])
+            self.assertIn('metadata/package-manifest.json', first['files'])
+            self.assertEqual((root/'again.zip').read_bytes(), (root/'repeat.zip').read_bytes())
+            with zipfile.ZipFile(root/'again.zip') as archive:
+                manifest = json.loads(archive.read('21-container-remediation/package-manifest.json'))
+                for name, digest in manifest['files'].items():
+                    self.assertEqual(hashlib.sha256(archive.read('21-container-remediation/'+name)).hexdigest(), digest)
+            export.verify(root/'again', True)
+
     def test_archive_escape_and_symlink_are_rejected(self):
         import io, tarfile
         for name, kind in [('../escape', tarfile.REGTYPE), ('absolute', tarfile.SYMTYPE)]:

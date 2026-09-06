@@ -56,7 +56,7 @@ Under the demonstration repository's **Settings → Secrets and variables → Ac
 
 | Name | Kind | Scope |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | Secret | Provider calls in the `remediate` job only |
+| `OPENAI_API_KEY` | Secret | Provider calls in the separately leased `preflight` and `remediate` jobs only |
 | `GH_TOKEN` | Secret | Fine-grained token for Contents read/write and Pull requests read/write on this demo repository only; supplied only in the final publisher step |
 | `AGENTCTL_MODEL` | Variable | Exactly `gpt-6-astra`; mapped into each actual agent's model setting, with `reasoning.effort: high` configured separately |
 | `AGENTCTL_IMAGE` | Variable | Exact reviewed `docker.io/opensourceops/agentctl@sha256:…` tooling image after publication |
@@ -93,6 +93,8 @@ The final production-image smoke remains pending until that image exists; candid
 ## Execute the actual CI journey
 
 The trusted coordinator preallocates a source/run/job-bound, nonsecret budget lease before dispatch. It reserves from the existing suite ledger rather than creating an independent paid allowance. The live job receives only its slice. In the reviewed framework checkout, use `python3 scripts/release_live_budget.py --help` for `init`, `lease`, `receipt` and `reconcile`; a lease can bind the next workflow run number before dispatch. The workflow name, source SHA, attempt and job ID `remediate` must match. A concurrent dispatch fails closed.
+
+If an earlier credential-free gate fails and GitHub skips the leased job entirely, the coordinator's `reconcile-skipped --task-ledger TASK --lease LEASE.json --run-id RUN_ID` rechecks GitHub's exact source, workflow attempt and empty skipped-job record before releasing that unused lease. It requires read access to that run. Started, missing or uncertain jobs keep their reservations; a skipped-job proof is separate from a runtime usage receipt.
 
 Before the full paid journey, dispatch **Bounded container remediation** with `operation: preflight`, the intended candidate/published tooling selection, and a separate lease bound to job ID `preflight`. This small run uses the same requested Astra/high and `store: false` Responses configuration, calls one pure `echo` tool with a fixed `ok` value, validates strict `{echo: "ok"}` output and the recorded tool input/result, then replays keylessly with networking disabled. Its independent limits are at most three requests, 8,000 total tokens, 120 seconds and US$0.20 estimated cost; each response is capped at 512 output tokens. It retains a usage receipt and exact image/source/run identity. No application build, scan, publisher token or GitHub mutation is part of this probe. A model GET alone does not pass this compatibility gate. If the probe exhausts its cap or fails semantics, retain that failure; do not silently increase its allowance. High-reasoning output truncation is a bounded-output failure, not proof that the Responses tool/structured-output contract is unsupported.
 

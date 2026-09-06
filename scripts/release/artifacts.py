@@ -174,9 +174,28 @@ class OciArchive:
                 return
             annotations = descriptor.get("annotations", {})
             if annotations.get("vnd.docker.reference.type") == "attestation-manifest":
-                config = self.descriptor(document["config"])
-                if config.get("os") != "unknown" or config.get("architecture") != "unknown":
+                platform = descriptor.get("platform", {})
+                if platform.get("os") != "unknown" or platform.get("architecture") != "unknown":
                     raise ValueError("attestation descriptor claims a runnable platform")
+                config = self.descriptor(document["config"])
+                if "artifactType" in document:
+                    # BuildKit v0.32 uses OCI artifacts: the non-runnable platform
+                    # belongs to the index descriptor, and config is exactly {}.
+                    # https://docs.docker.com/build/metadata/attestations/attestation-storage/
+                    empty = document["config"]
+                    if (document["artifactType"] != "application/vnd.docker.attestation.manifest.v1+json"
+                            or empty.get("mediaType") != "application/vnd.oci.empty.v1+json"
+                            or empty.get("digest") != "sha256:" + sha256(b"{}")
+                            or empty.get("size") != 2 or empty.get("data", "e30=") != "e30=" or config != {}):
+                        raise ValueError("invalid OCI attestation artifact or empty config")
+                    subject = document.get("subject", {})
+                    if (subject.get("digest") != annotations.get("vnd.docker.reference.digest")
+                            or subject.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"):
+                        raise ValueError("OCI attestation subject differs from its runnable manifest")
+                    self.descriptor(subject)  # Validate the referenced bytes and size too.
+                elif (config.get("os") != "unknown" or config.get("architecture") != "unknown"
+                      or document["config"].get("mediaType") != "application/vnd.oci.image.config.v1+json"):
+                    raise ValueError("legacy attestation config claims a runnable platform")
                 layers = document.get("layers", [])
                 if not layers:
                     raise ValueError("attestation manifest has no provenance statements")

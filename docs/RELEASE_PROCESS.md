@@ -50,7 +50,7 @@ There is no broad major-zero tag. Prereleases receive only full-version tags. Ol
 
 ## Secrets and permissions
 
-Configure these in [framework Actions settings](https://github.com/opensourceops/agentctl/settings/secrets/actions):
+In the [framework repository](https://github.com/opensourceops/agentctl), open **Settings → Secrets and variables → Actions** and configure:
 
 - Variable `DOCKERHUB_USERNAME`: the login identity authorized for the opensourceops namespace.
 - Secret `DOCKERHUB_TOKEN`: an expiring token with push access to `opensourceops/agentctl`.

@@ -55,6 +55,121 @@ class ReleaseBudgetTests(unittest.TestCase):
         with budget.LiveBudget(path) as ledger:
             return ledger.summary()["charged"]
 
+    def skipped_evidence(self):
+        repository = self.context["repository"]
+        run = {"id": 1007, "run_number": 7, "run_attempt": 1, "event": "workflow_dispatch",
+               "head_sha": "a" * 40, "head_branch": "main", "path": ".github/workflows/remediate.yml",
+               "repository": {"full_name": repository}, "head_repository": {"full_name": repository},
+               "status": "completed", "conclusion": "failure"}
+        job = {"id": 9001, "run_id": 1007, "run_attempt": 1, "name": "remediate", "head_sha": "a" * 40,
+               "head_branch": "main", "run_url": f"https://api.github.com/repos/{repository}/actions/runs/1007",
+               "status": "completed", "conclusion": "skipped", "steps": [], "runner_id": None, "runner_name": None}
+        return run, [{"total_count": 1, "jobs": [job]}]
+
+    def test_skipped_job_reconciliation_fetches_exact_attempt_and_keeps_original_reserved(self):
+        leased = self.allocate()
+        run, jobs = self.skipped_evidence()
+        with patch.object(budget, "github_json", side_effect=[run, jobs, run, jobs]) as api:
+            result = budget.reconcile_skipped(self.task, leased, "1007")
+            self.assertEqual(result["status"], "reconciled-skipped")
+            self.assertEqual(budget.reconcile_skipped(self.task, leased, "1007")["status"], "already-reconciled")
+            self.assertEqual(api.call_count, 4)
+            self.assertEqual(api.call_args_list[0].args, ("repos/Ompragash/agentctl-remediation-demo/actions/runs/1007/attempts/1",))
+            self.assertTrue(api.call_args_list[1].kwargs["paginate"])
+        row = self.rows(self.task)[0]
+        self.assertEqual(row["charged"], {key: 0 for key in budget.FIELDS})
+        self.assertEqual(row["metadata"]["skippedProofSha256"], budget.digest(row["metadata"]["skippedProof"]))
+        self.assertNotIn("receiptSha256", row["metadata"])
+        self.assertEqual(self.rows(self.original)[-1]["charged"], budget.TASK_MAXIMUM)
+        self.assertEqual(budget.close(self.task)["original"]["charged"], self.old_uncertain)
+
+    def test_skipped_proof_requires_completed_exact_source_repository_workflow_ref_and_attempt(self):
+        leased = self.allocate()
+        run, jobs = self.skipped_evidence()
+        changes = [{"id": 1008}, {"run_number": 8}, {"run_attempt": 2}, {"head_sha": "b" * 40},
+                   {"head_branch": "other"}, {"path": ".github/workflows/other.yml"}, {"event": "pull_request"},
+                   {"repository": {"full_name": "Other/repo"}}, {"head_repository": {"full_name": "Other/repo"}},
+                   {"status": "in_progress"}, {"conclusion": None}]
+        for change in changes:
+            with self.subTest(change=change), patch.object(budget, "github_json", side_effect=[{**run, **change}, jobs]):
+                with self.assertRaisesRegex(ValueError, "run attempt"):
+                    budget.reconcile_skipped(self.task, leased, "1007")
+                self.assertEqual(self.totals(self.task), self.job_limits)
+        direct = copy.deepcopy(leased)
+        direct["binding"].update(runId="1008", runNumber=None)
+        with patch.object(budget, "github_json") as api, self.assertRaisesRegex(ValueError, "differs from leased"):
+            budget.reconcile_skipped(self.task, direct, "1007")
+        api.assert_not_called()
+
+    def test_started_failed_missing_ambiguous_or_other_attempt_job_never_releases_lease(self):
+        leased = self.allocate()
+        run, pages = self.skipped_evidence()
+        job = pages[0]["jobs"][0]
+        variants = [[{**job, **change}] for change in [
+            {"status": "in_progress"}, {"conclusion": "failure"}, {"conclusion": "cancelled"},
+            {"steps": [{"name": "Set up job", "conclusion": "skipped"}]}, {"steps": None},
+            {"runner_id": 12}, {"runner_name": "assigned"}, {"run_attempt": 2}, {"run_id": 1008},
+            {"head_sha": "b" * 40}, {"head_branch": "other"}, {"name": "other-job"},
+            {"run_url": "https://api.github.com/repos/Other/repo/actions/runs/1007"}]]
+        variants += [[], [job, dict(job, id=9002)]]
+        for jobs in variants:
+            with self.subTest(jobs=jobs), patch.object(budget, "github_json", side_effect=[run, [{"total_count": len(jobs), "jobs": jobs}]]):
+                with self.assertRaises(ValueError):
+                    budget.reconcile_skipped(self.task, leased, "1007")
+                self.assertEqual(self.totals(self.task), self.job_limits)
+                self.assertNotIn("skippedProofSha256", self.rows(self.task)[0]["metadata"])
+
+    def test_missing_pages_wrong_lease_and_unavailable_github_keep_full_reservation(self):
+        leased = self.allocate()
+        run, pages = self.skipped_evidence()
+        bad_pages = [[], {}, [{"total_count": 2, "jobs": pages[0]["jobs"]}], [{"total_count": 0}]]
+        for value in bad_pages:
+            with patch.object(budget, "github_json", side_effect=[run, value]), self.assertRaises(ValueError):
+                budget.reconcile_skipped(self.task, leased, "1007")
+        for field in ["taskId", "envelopeId", "leaseId"]:
+            other = {**leased, field: "another"}
+            with patch.object(budget, "github_json", side_effect=[run, pages]), self.assertRaisesRegex(ValueError, "reserved task lease"):
+                budget.reconcile_skipped(self.task, other, "1007")
+        with patch.object(budget, "github_json", side_effect=budget.BudgetError("unavailable")), self.assertRaisesRegex(ValueError, "unavailable"):
+            budget.reconcile_skipped(self.task, leased, "1007")
+        self.assertEqual(self.totals(self.task), self.job_limits)
+
+    def test_skipped_reconciliation_crash_keeps_charges_until_verified_retry(self):
+        leased = self.allocate()
+        run, pages = self.skipped_evidence()
+        with patch.object(budget, "github_json", side_effect=[run, pages]), \
+             patch.object(budget.LiveBudget, "reconcile", side_effect=RuntimeError("interrupted")), self.assertRaisesRegex(RuntimeError, "interrupted"):
+            budget.reconcile_skipped(self.task, leased, "1007")
+        self.assertEqual(self.totals(self.task), self.job_limits)
+        self.assertIn("skippedProofSha256", self.rows(self.task)[0]["metadata"])
+        with self.assertRaisesRegex(ValueError, "entire original"):
+            budget.close(self.task)
+        with patch.object(budget, "github_json", side_effect=[run, pages]):
+            budget.reconcile_skipped(self.task, leased, "1007")
+        self.assertEqual(self.totals(self.task), {key: 0 for key in budget.FIELDS})
+
+    def test_skipped_proof_never_replaces_existing_paid_receipt_or_permits_lease_reuse(self):
+        leased = self.allocate()
+        self.dispatch(leased)
+        budget.reconcile(self.task, budget.receipt(leased, self.execution, self.environment))
+        before = self.totals(self.task)
+        run, pages = self.skipped_evidence()
+        with patch.object(budget, "github_json", side_effect=[run, pages]), self.assertRaisesRegex(ValueError, "different reconciliation"):
+            budget.reconcile_skipped(self.task, leased, "1007")
+        self.assertEqual(self.totals(self.task), before)
+        with self.assertRaisesRegex(ValueError, "cannot be resized or dispatched again"):
+            budget.lease(self.task, self.context, self.job_limits)
+
+    def test_github_reader_uses_only_explicit_github_get_and_redacts_failures(self):
+        response = subprocess.CompletedProcess([], 0, b'{"id":1007}', b'')
+        with patch.object(budget.subprocess, "run", return_value=response) as call:
+            self.assertEqual(budget.github_json("repos/Owner/repo/actions/runs/1007"), {"id": 1007})
+        self.assertEqual(call.call_args.args[0][:7], ["gh", "api", "--hostname", "github.com", "--method", "GET", "-H"])
+        for error in [subprocess.TimeoutExpired([], 60), subprocess.CalledProcessError(1, [], stderr=b'sensitive diagnostic')]:
+            with patch.object(budget.subprocess, "run", side_effect=error), self.assertRaisesRegex(ValueError, "retain reservation") as failure:
+                budget.github_json("repos/Owner/repo/actions/runs/1007")
+            self.assertNotIn("sensitive", str(failure.exception))
+
     def inspection(self, state="succeeded", status="succeeded", reserved=False, requests=1):
         usage = {"providerRequests": requests, "inputTokens": 10 * requests, "outputTokens": 20 * requests,
             "reasoningTokens": 15 * requests, "wallTimeSeconds": 2 * requests,

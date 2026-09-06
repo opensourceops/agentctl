@@ -26,7 +26,7 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def layout(architecture="amd64", variant="minimal", source=None, subject=None, annotation=None, user="65532:65532"):
+def layout(architecture="amd64", variant="minimal", source=None, subject=None, annotation=None, user="65532:65532", oci_artifact=False):
     """Describe synthetic content-addressed blobs, never a runnable image."""
     files = {"oci-layout": b'{"imageLayoutVersion":"1.0.0"}'}
 
@@ -49,8 +49,19 @@ def layout(architecture="amd64", variant="minimal", source=None, subject=None, a
         "subject": [{"name": "fixture", "digest": {"sha256": (subject or image["digest"])[7:]}}],
         "predicate": {"buildType": "https://mobyproject.org/buildkit@v1", "materials": []}}, "application/vnd.in-toto+json")
     statement["annotations"] = {"in-toto.io/predicate-type": PROVENANCE}
-    attestation_config = blob({"os": "unknown", "architecture": "unknown"}, CONFIG)
-    attestation = blob({"schemaVersion": 2, "mediaType": MANIFEST, "config": attestation_config, "layers": [statement]}, MANIFEST)
+    if oci_artifact:
+        # BuildKit v0.32.2 exporter/containerimage/writer.go:578-608, 631-642.
+        # Exact published OCI empty descriptor; synthetic provenance body above.
+        attestation_config = blob(b"{}", "application/vnd.oci.empty.v1+json")
+        attestation_config["data"] = "e30="
+    else:
+        attestation_config = blob({"os": "unknown", "architecture": "unknown"}, CONFIG)
+    manifest = {"schemaVersion": 2, "mediaType": MANIFEST, "config": attestation_config, "layers": [statement]}
+    if oci_artifact:
+        manifest.update(artifactType="application/vnd.docker.attestation.manifest.v1+json",
+                        subject={key: image[key] for key in ["mediaType", "digest", "size"]})
+    attestation = blob(manifest, MANIFEST)
+    attestation["platform"] = {"os": "unknown", "architecture": "unknown"}
     attestation["annotations"] = {"vnd.docker.reference.type": "attestation-manifest",
         "vnd.docker.reference.digest": annotation or image["digest"]}
     files["index.json"] = encoded({"schemaVersion": 2, "mediaType": INDEX, "manifests": [image, attestation]})
@@ -226,9 +237,42 @@ class OciTests(unittest.TestCase):
                 with artifacts.OciArchive(path) as archive, self.assertRaisesRegex(ValueError, "provenance|attestation|subject"):
                     archive.images(IDENTITY, "minimal")
 
+    def test_buildkit_032_empty_config_artifact_retains_nonrunnable_platform_and_subject_binding(self):
+        files, image, _ = layout(oci_artifact=True)
+        path = write_layout(self.root / "buildkit-032.tar", files)
+        with artifacts.OciArchive(path) as archive:
+            result = archive.images(IDENTITY, "minimal")
+            self.assertEqual(len(result["images"]), 1)
+            self.assertEqual(len(result["attestations"]), 1)
+            statement = archive.descriptor(result["attestations"][0])
+            self.assertEqual(statement["subject"]["digest"], image["digest"])
+            self.assertEqual(archive.descriptor(statement["config"]), {})
+
+    def test_modern_attestation_cannot_hide_runnable_config_or_wrong_artifact_subject(self):
+        for case in ["platform", "artifactType", "config", "inlineData", "subject", "subjectSize", "missingSubject"]:
+            with self.subTest(case=case):
+                files, image, _ = layout(oci_artifact=True)
+                index = json.loads(files["index.json"])
+                descriptor = index["manifests"][-1]
+                manifest = json.loads(files["blobs/sha256/" + descriptor["digest"][7:]])
+                if case == "platform": descriptor["platform"] = {"os": "linux", "architecture": "amd64"}
+                elif case == "artifactType": manifest["artifactType"] = "application/unreviewed"
+                elif case == "config": manifest["config"] = json.loads(files["blobs/sha256/" + image["digest"][7:]])["config"]
+                elif case == "inlineData": manifest["config"]["data"] = "bnVsbA=="
+                elif case == "subject": manifest["subject"]["digest"] = "sha256:" + "b" * 64
+                elif case == "subjectSize": manifest["subject"]["size"] += 1
+                else: del manifest["subject"]
+                payload = encoded(manifest)
+                descriptor.update(digest="sha256:" + artifacts.sha256(payload), size=len(payload))
+                files["blobs/sha256/" + descriptor["digest"][7:]] = payload
+                files["index.json"] = encoded(index)
+                path = write_layout(self.root / (case + ".tar"), files)
+                with artifacts.OciArchive(path) as archive, self.assertRaises(ValueError):
+                    archive.images(IDENTITY, "minimal")
+
     def test_merge_preserves_exact_platform_manifests_layers_and_provenance(self):
         left, left_image, left_layer = self.image("amd64.tar")
-        right, right_image, right_layer = self.image("arm64.tar", architecture="arm64")
+        right, right_image, right_layer = self.image("arm64.tar", architecture="arm64", oci_artifact=True)
         output = self.root / "combined.tar"
         result = artifacts.merge_oci_archives([left, right], output, IDENTITY, "minimal")
         self.assertEqual(result["sha256"], artifacts.file_digest(output))

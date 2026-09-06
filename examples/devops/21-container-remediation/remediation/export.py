@@ -29,7 +29,7 @@ def export(destination, framework_sha, allow_dirty_preview=False, archive=None):
     destination.mkdir(parents=True)
     for source in sorted(SOURCE.rglob('*')):
         relative = source.relative_to(SOURCE)
-        if any(part in IGNORED for part in relative.parts) or source.suffix == '.pyc': continue
+        if relative == Path('package-manifest.json') or any(part in IGNORED for part in relative.parts) or source.suffix == '.pyc': continue
         if source.is_symlink(): raise ValueError('package cannot contain symlinks')
         if source.is_file():
             target = destination/relative
@@ -63,7 +63,7 @@ def verify(root, allow_dirty_preview=False):
     if manifest.get('sourceDirty') is not False and not allow_dirty_preview:
         raise ValueError('dirty preview export is not committed source evidence')
     actual = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*')
-              if p.is_file() and p.name != 'package-manifest.json' and not any(part in IGNORED for part in p.relative_to(root).parts) and p.suffix != '.pyc'}
+              if p.is_file() and p.relative_to(root) != Path('package-manifest.json') and not any(part in IGNORED for part in p.relative_to(root).parts) and p.suffix != '.pyc'}
     if actual != manifest['files']: raise ValueError('export differs from its recorded package contents')
     return manifest
 
