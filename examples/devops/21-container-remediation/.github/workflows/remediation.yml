@@ -6,7 +6,7 @@ on:
       operation:
         description: Remediate with a new lease, or reconcile an exact previously validated artifact without model calls
         type: choice
-        options: [remediate, reconcile]
+        options: [preflight, remediate, reconcile]
         default: remediate
         required: true
       prior_run_id:
@@ -220,4 +220,54 @@ jobs:
           path: |
             ${{ runner.temp }}/reconciliation-source.json
             ${{ runner.temp }}/publication-result.json
+          if-no-files-found: warn
+  preflight:
+    if: inputs.operation == 'preflight' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'Ompragash/agentctl-remediation-demo'
+    needs: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      AGENTCTL_MODEL: ${{ vars.AGENTCTL_MODEL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Prepare trusted preflight helpers
+        run: |
+          test "$AGENTCTL_MODEL" = gpt-6-astra
+          python -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install -r remediation/requirements-tools.txt
+          "$RUNNER_TEMP/tools/bin/python" remediation/export.py --verify .
+      - name: Select the exact candidate or published tooling image
+        id: tooling
+        env:
+          IMAGE_MODE: ${{ inputs.image_mode }}
+          FRAMEWORK_SHA: ${{ inputs.framework_sha }}
+          AGENTCTL_IMAGE: ${{ vars.AGENTCTL_IMAGE }}
+        run: |
+          if [ "$IMAGE_MODE" = candidate ]; then REF="$FRAMEWORK_SHA"; else REF="$AGENTCTL_IMAGE"; fi
+          "$RUNNER_TEMP/tools/bin/python" remediation/bootstrap.py --mode "$IMAGE_MODE" --reference "$REF" --output "$RUNNER_TEMP/preflight-tooling.json"
+      - name: Exercise actual Responses tool calling and strict output with a separate preflight lease
+        env:
+          TOOLING_IMAGE: ${{ steps.tooling.outputs.image }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LEASE_JSON: ${{ inputs.budget_lease }}
+        run: |
+          umask 077
+          printf '%s\n' "$LEASE_JSON" > "$RUNNER_TEMP/preflight-lease.json"
+          "$RUNNER_TEMP/tools/bin/python" remediation/preflight.py --out "$GITHUB_WORKSPACE/state/preflight" --tooling-image "$TOOLING_IMAGE" --lease "$RUNNER_TEMP/preflight-lease.json"
+      - name: Retain preflight identity, tool result, structured output, replay and budget receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: responses-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            state/preflight
+            ${{ runner.temp }}/preflight-tooling.json
+          retention-days: 7
           if-no-files-found: warn

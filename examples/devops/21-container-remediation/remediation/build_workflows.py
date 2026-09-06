@@ -56,6 +56,28 @@ def build():
         "actions": {"eligibility": action("eligibility")}, "tasks": [{"id": "eligibility", "uses": "action:eligibility", "with": {}}],
         "outputs": {"publication": "${{ tasks.eligibility.output }}"}}}
     dump(ROOT / "agentctl/eligibility.yaml", eligibility)
+    probe_schema = schemas.obj({"echo": {"type": "string", "enum": ["ok"]}})
+    echo_schema = schemas.obj({"text": {"type": "string", "enum": ["ok"]}})
+    preflight = {"apiVersion": "agentctl.dev/v1", "kind": "Workflow", "metadata": {
+        "name": "responses-tool-preflight", "description": "One scoped echo and strict output before the full live journey."}, "spec": {
+        "policy": {"workspaceRoot": ".", "writableRoots": ["state"], "networkAllowlist": ["api.openai.com"], "approval": "never"},
+        "providers": {"openai": {"kind": "openai", "credential": {"env": "OPENAI_API_KEY"}}},
+        "runtime": {"maxConcurrency": 1, "budgets": {"maxProviderRequests": 3, "maxTurns": 3, "maxToolCalls": 1,
+                    "maxTotalTokens": 8000, "maxWallTimeSeconds": 120, "maxCostMicrousd": 200000},
+                    "pricing": workflow["spec"]["runtime"]["pricing"]},
+        "tools": {"echo": {"kind": "builtin.echo", "description": "Echo ok", "inputSchema": echo_schema, "outputSchema": echo_schema,
+                  "capability": "internal", "effectClass": "pure", "risk": "low", "idempotency": "pure", "retrySafe": True,
+                  "timeoutSeconds": 5, "approval": "policy"}},
+        "agents": {"probe": {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
+                   "instructionsFile": "instructions/preflight.md", "tools": ["echo"], "maxTurns": 3, "maxToolCalls": 1,
+                   "maxOutputTokens": 512, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
+        "actions": {"verify": {"kind": "builtin.assert"}},
+        "tasks": [{"id": "probe", "uses": "agent:probe", "with": {"prompt": "Run the echo preflight."}},
+                  {"id": "verify", "uses": "action:verify", "needs": ["probe"],
+                   "with": {"that": '${{ tasks.probe.output.echo == "ok" }}', "message": "Preflight structured echo differs"}}],
+        "outputs": {"preflight": "${{ tasks.probe.output }}"}}}
+    dump(ROOT / "agentctl/preflight.yaml", preflight)
+
 
 
 if __name__ == "__main__":

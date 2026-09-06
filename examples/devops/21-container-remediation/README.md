@@ -24,7 +24,7 @@ A successful eligible result may retain unrelated baseline findings. Every resid
 ## Package contents
 
 - [Application](app.py), [Dockerfile](Dockerfile), [direct manifest](requirements.in), [hash lock](requirements.lock), [application tests](tests/test_app.py).
-- [Two-role workflow](agentctl/remediate.yaml), [eligibility workflow](agentctl/eligibility.yaml), [analyzer instructions](agentctl/instructions/analyze.md), [implementer instructions](agentctl/instructions/implement.md).
+- [Two-role workflow](agentctl/remediate.yaml), [eligibility workflow](agentctl/eligibility.yaml), [Responses preflight](agentctl/preflight.yaml), [analyzer instructions](agentctl/instructions/analyze.md), [implementer instructions](agentctl/instructions/implement.md).
 - [Adapter and validator](remediation/adapter.py), [reviewed dependency/scan contract](remediation/contract.json), [typed schemas](remediation/schemas.py).
 - [Trusted runner](remediation/runner.py), [candidate/published tooling selection](remediation/bootstrap.py), [publisher](remediation/publisher.py), [GitHub Actions workflow](.github/workflows/remediation.yml).
 - [Synthetic CLI contract runner](remediation/contract_check.py), [adapter tests](tests/test_adapter.py), [package and publication tests](tests/test_contracts.py).
@@ -94,7 +94,11 @@ The final production-image smoke remains pending until that image exists; candid
 
 The trusted coordinator preallocates a source/run/job-bound, nonsecret budget lease before dispatch. It reserves from the existing suite ledger rather than creating an independent paid allowance. The live job receives only its slice. In the reviewed framework checkout, use `python3 scripts/release_live_budget.py --help` for `init`, `lease`, `receipt` and `reconcile`; a lease can bind the next workflow run number before dispatch. The workflow name, source SHA, attempt and job ID `remediate` must match. A concurrent dispatch fails closed.
 
-Dispatch **Bounded container remediation** with:
+Before the full paid journey, dispatch **Bounded container remediation** with `operation: preflight`, the intended candidate/published tooling selection, and a separate lease bound to job ID `preflight`. This small run uses the same requested Astra/high and `store: false` Responses configuration, calls one pure `echo` tool with a fixed `ok` value, validates strict `{echo: "ok"}` output and the recorded tool input/result, then replays keylessly with networking disabled. Its independent limits are at most three requests, 8,000 total tokens, 120 seconds and US$0.20 estimated cost; each response is capped at 512 output tokens. It retains a usage receipt and exact image/source/run identity. No application build, scan, publisher token or GitHub mutation is part of this probe. A model GET alone does not pass this compatibility gate. If the probe exhausts its cap or fails semantics, retain that failure; do not silently increase its allowance. High-reasoning output truncation is a bounded-output failure, not proof that the Responses tool/structured-output contract is unsupported.
+
+Reserve a new lease bound to job ID `remediate` for the full journey. Do not reuse the preflight lease: the coordinator permits one fresh run per lease.
+
+Dispatch the full **Bounded container remediation** journey with `operation: remediate` and:
 
 - `image_mode: candidate` and the exact allowlisted `framework_sha` before publication, or `image_mode: published` after configuring the exact digest.
 - `budget_lease`: the coordinator's nonsecret JSON lease bound to this invocation.

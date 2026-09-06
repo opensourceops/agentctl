@@ -187,6 +187,17 @@ jobs:
           python3 scripts/release/image_smoke.py --image 127.0.0.1:5000/agentctl:native \
             --variant "$VARIANT" --source "$SOURCE_SHA" --version "$VERSION" \
             --work "$RUNNER_TEMP/image-smoke" --output "release-image/$VARIANT-$ARCH.smoke.json"
+      - name: Execute container remediation, denial, recovery and replay contracts
+        if: matrix.variant == 'tooling'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/example-tools"
+          "$RUNNER_TEMP/example-tools/bin/python" -m pip install -r examples/devops/21-container-remediation/remediation/requirements-tools.txt
+          image_id="$(docker image inspect 127.0.0.1:5000/agentctl:native --format '{{.Id}}')"
+          "$RUNNER_TEMP/example-tools/bin/python" examples/devops/21-container-remediation/remediation/contract_check.py \
+            --tooling-image "$image_id" --out "$RUNNER_TEMP/example-contract"
+          cp "$RUNNER_TEMP/example-contract/report.json" "release-image/tooling-$ARCH.example-contract.json"
       - name: Block fixed HIGH and CRITICAL vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -213,10 +224,12 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
+          contract=()
+          if [[ "$VARIANT" = tooling ]]; then contract=(--example-contract "release-image/$VARIANT-$ARCH.example-contract.json"); fi
           python3 scripts/release/bundle.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" image \
             --archive "release-image/$VARIANT-$ARCH.oci.tar" --variant "$VARIANT" --platform "linux/$ARCH" \
             --scan "release-image/$VARIANT-$ARCH.scan.json" --sbom "release-image/$VARIANT-$ARCH.cdx.json" \
-            --smoke "release-image/$VARIANT-$ARCH.smoke.json" --output "release-image/$VARIANT-$ARCH.record.json"
+            --smoke "release-image/$VARIANT-$ARCH.smoke.json" --output "release-image/$VARIANT-$ARCH.record.json" "${contract[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-image-${{ matrix.variant }}-${{ matrix.arch }}

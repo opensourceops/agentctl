@@ -87,9 +87,16 @@ class BundleTests(unittest.TestCase):
             "Results": [{"Target": "fixture (debian 12)", "Class": "os-pkgs", "Type": "debian", "Vulnerabilities": findings or []}]})
         write_json(sbom, cdx(image=config_digest))
         write_json(smoke, {"imageId": config_digest, "platform": platform, "passed": passed})
+        contract = folder / (name + ".example-contract.json")
+        write_json(contract, {"status": "passed", "toolingImage": config_digest, "toolCalls": 2,
+            "providerNetworkRequests": 0, "replayFreshEffects": 0, "preflight": {"replayFreshEffects": 0},
+            "recovery": {"reusedTasks": ["capture", "analyze"], "freshAnalyzerEffects": 0, "replayFreshEffects": 0,
+                         "failedValidations": [{"gate": gate, "exitCode": 4, "publicationFileExists": False}
+                            for gate in ["testsPassed", "buildSucceeded", "scanSucceeded"]]}})
         record = folder / (name + ".record.json")
         args = SimpleNamespace(archive=str(archive), variant=variant, platform=platform,
-                               scan=str(scan), sbom=str(sbom), smoke=str(smoke), output=str(record))
+                               scan=str(scan), sbom=str(sbom), smoke=str(smoke), output=str(record),
+                               example_contract=str(contract) if variant == "tooling" else None)
         bundle.image(args, IDENTITY)
         return record
 
@@ -168,6 +175,20 @@ class BundleTests(unittest.TestCase):
     def test_smoke_requires_literal_success_not_truthy_strings(self):
         with self.assertRaisesRegex(ValueError, "evidence"):
             self.image("minimal", "linux/amd64", passed="false")
+
+    def test_tooling_contract_rejects_wrong_image_or_publication_after_failed_validation(self):
+        record = bundle.load(self.image("tooling", "linux/amd64"))
+        path = self.incoming / "tooling-amd64" / record["exampleContract"]
+        with self.assertRaisesRegex(ValueError, "remediation contract"):
+            bundle.example_contract(path, "sha256:" + "f" * 64)
+        value = bundle.load(path)
+        value["recovery"]["failedValidations"][0]["publicationFileExists"] = True
+        write_json(path, value)
+        # Recompute transport hash: semantic failure must still block assembly.
+        record["exampleContractSha256"] = artifacts.file_digest(path)
+        write_json(path.parent / "tooling-amd64.record.json", record)
+        with self.assertRaisesRegex(ValueError, "remediation contract"):
+            bundle.example_contract(path, record["image"]["configDigest"])
 
     def test_complete_four_package_four_native_image_bundle_verifies_exact_identities(self):
         self.inputs()

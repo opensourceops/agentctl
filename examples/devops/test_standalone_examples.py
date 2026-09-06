@@ -14,7 +14,7 @@ class StandaloneExamplesTests(unittest.TestCase):
         self.assertEqual([entry['id'] for entry in entries], ['21'])
         for entry in entries:
             folder = ROOT / entry['directory']
-            for field in ['workflow', 'eligibilityWorkflow', 'exporter']:
+            for field in ['workflow', 'preflightWorkflow', 'eligibilityWorkflow', 'exporter']:
                 self.assertTrue((folder / entry[field]).is_file(), field)
             self.assertTrue((folder / 'README.md').is_file())
             for pattern in entry['contractTests']:

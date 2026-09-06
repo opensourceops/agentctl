@@ -48,6 +48,26 @@ def scan(path, config_digest):
         raise ValueError("fixed HIGH/CRITICAL image vulnerabilities block release")
 
 
+def example_contract(path, config_digest):
+    value = load(path)
+    recovery = value.get("recovery", {})
+    failures = recovery.get("failedValidations", [])
+    if (value.get("status") != "passed" or value.get("toolingImage") != config_digest
+            or value.get("toolCalls") != 2 or value.get("providerNetworkRequests") != 0
+            or value.get("replayFreshEffects") != 0
+            or value.get("preflight", {}).get("replayFreshEffects") != 0
+            or recovery.get("reusedTasks") != ["capture", "analyze"]
+            or recovery.get("freshAnalyzerEffects") != 0 or recovery.get("replayFreshEffects") != 0
+            or len(failures) != 3
+            or {item.get("gate") for item in failures} != {"testsPassed", "buildSucceeded", "scanSucceeded"}
+            or any(item.get("exitCode") != 4 or item.get("publicationFileExists") is not False for item in failures)):
+        raise ValueError("container remediation contract evidence failed or does not match the tested image")
+
+
+def image_evidence_fields(record):
+    return ["scan", "sbom", "smoke"] + (["exampleContract"] if record["variant"] == "tooling" else [])
+
+
 def package(args, release):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -94,6 +114,12 @@ def image(args, release):
               "image": tested, "scan": Path(args.scan).name, "sbom": Path(args.sbom).name,
               "smoke": Path(args.smoke).name, "provenance": verified["attestations"],
               "scanSha256": file_digest(args.scan), "sbomSha256": file_digest(args.sbom), "smokeSha256": file_digest(args.smoke)}
+    if args.variant == "tooling":
+        if not args.example_contract:
+            raise ValueError("tooling images require the container remediation contract gate")
+        example_contract(args.example_contract, tested["configDigest"])
+        record.update(exampleContract=Path(args.example_contract).name,
+                      exampleContractSha256=file_digest(args.example_contract))
     write_json(args.output, record)
 
 
@@ -126,12 +152,14 @@ def assemble(args, release):
             raise ValueError("OCI transport checksum mismatch")
         scan(files[record["scan"]], record["image"]["configDigest"])
         sbom(files[record["sbom"]])
-        for field in ["scan", "sbom", "smoke"]:
+        for field in image_evidence_fields(record):
             if file_digest(files[record[field]]) != record[field + "Sha256"]:
                 raise ValueError("image evidence transport checksum mismatch")
         smoke = load(files[record["smoke"]])
         if smoke.get("passed") is not True or smoke.get("platform") != record["platform"] or smoke.get("imageId") != record["image"]["configDigest"]:
             raise ValueError("native runtime evidence failed or changed")
+        if record["variant"] == "tooling":
+            example_contract(files[record["exampleContract"]], record["image"]["configDigest"])
     # Individual archives are replaced by one complete OCI archive per variant.
     for name, path in files.items():
         if not name.endswith(".oci.tar"):
@@ -195,7 +223,7 @@ def verify(directory, release):
     for record in native:
         if record.get("identity") != release:
             raise ValueError("native image evidence uses different source identity")
-        for field in ["scan", "sbom", "smoke"]:
+        for field in image_evidence_fields(record):
             if record[field] not in names or file_digest(directory / record[field]) != record[field + "Sha256"]:
                 raise ValueError("native image evidence checksum mismatch")
         scan(directory / record["scan"], record["image"]["configDigest"])
@@ -203,6 +231,8 @@ def verify(directory, release):
         smoke = load(directory / record["smoke"])
         if smoke.get("passed") is not True or smoke.get("platform") != record["platform"] or smoke.get("imageId") != record["image"]["configDigest"]:
             raise ValueError("native runtime evidence failed or changed")
+        if record["variant"] == "tooling":
+            example_contract(directory / record["exampleContract"], record["image"]["configDigest"])
         combined = next(r for r in bundle["images"] if r["variant"] == record["variant"])
         expected = next(p for p in combined["platforms"] if p["platform"] == record["platform"])
         if expected["configDigest"] != record["image"]["configDigest"] or expected["manifestDigest"] != record["image"]["descriptor"]["digest"]:
@@ -224,6 +254,7 @@ def main():
     command = commands.add_parser("image")
     for field in ["archive", "variant", "platform", "scan", "sbom", "smoke", "output"]:
         command.add_argument("--" + field, required=True)
+    command.add_argument("--example-contract")
     command = commands.add_parser("assemble")
     command.add_argument("--incoming", required=True)
     command.add_argument("--output", required=True)

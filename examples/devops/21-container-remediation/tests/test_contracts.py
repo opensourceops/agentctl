@@ -15,6 +15,7 @@ import export
 import publisher
 import runner
 import reconcile_guard
+import preflight
 from yaml_io import load
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +131,33 @@ class ContractTests(unittest.TestCase):
         remote.pulls = lambda *_: [{'html_url': 'https://github.com/fixture/demo/pull/1', 'state': 'closed'}]
         self.assertEqual(publisher.reconcile_pull(remote, 'branch', 'main', {})['status'], 'closed_no_duplicate')
         self.assertEqual(remote.calls, 1)
+
+    def test_preflight_has_its_own_tiny_lease_boundary(self):
+        workflow = load(ROOT/'agentctl/preflight.yaml')['spec']
+        budget = workflow['runtime']['budgets']
+        self.assertEqual((budget['maxProviderRequests'], budget['maxTotalTokens'], budget['maxCostMicrousd']), (3, 8000, 200000))
+        self.assertEqual(workflow['agents']['probe']['model'], 'gpt-6-astra')
+        self.assertEqual(workflow['agents']['probe']['reasoning'], {'effort': 'high'})
+        self.assertEqual(workflow['agents']['probe']['maxToolCalls'], 1)
+        self.assertEqual(workflow['tools']['echo']['effectClass'], 'pure')
+        self.assertFalse(workflow['policy'].get('processAllowlist'))
+        job = load(ROOT/'.github/workflows/remediation.yml')['jobs']['preflight']
+        self.assertIn("inputs.operation == 'preflight'", job['if'])
+        self.assertNotIn('GH_TOKEN', json.dumps(job))
+        self.assertNotIn('runner.py prepare', json.dumps(job))
+        self.assertNotIn('publisher.py', json.dumps(job))
+
+    def test_preflight_checks_actual_tool_result_and_strict_output(self):
+        good = {'run': {'state': 'succeeded', 'output': {'preflight': {'echo': 'ok'}}},
+                'toolCalls': [{'toolId': 'echo', 'status': 'succeeded', 'effectId': 'fixture-effect'}],
+                'effects': [{'request': {'id': 'fixture-effect', 'input': {'text': 'ok'}}, 'result': {'text': 'ok'}, 'status': 'succeeded'}],
+                'budget': {'usage': {'providerRequests': 2, 'inputTokens': 100, 'outputTokens': 50, 'costMicrousd': 3500}}}
+        preflight.assert_compatibility(good)
+        for field, value in [('toolCalls', []), ('effects', []), ('run', {'state': 'succeeded', 'output': {'preflight': {'echo': 'different'}}})]:
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError): preflight.assert_compatibility({**good, field: value})
+        exceeded = copy.deepcopy(good); exceeded['budget']['usage']['inputTokens'] = 8000
+        with self.assertRaises(ValueError): preflight.assert_compatibility(exceeded)
 
     def test_publisher_git_cannot_fall_back_to_inherited_credentials(self):
         result = publisher.git_environment({'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'credential.helper',

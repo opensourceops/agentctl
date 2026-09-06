@@ -6,15 +6,16 @@
       "directory": "21-container-remediation",
       "title": "Container vulnerability remediation with a reviewed source PR",
       "platforms": ["linux/amd64", "linux/arm64"],
-      "dependencies": ["Docker or Podman", "Python 3.11+", "Git", "pinned Trivy image"],
+      "dependencies": ["Docker or Podman", "Python 3.12+", "Git", "pinned Trivy image"],
       "workflow": "agentctl/remediate.yaml",
+      "preflightWorkflow": "agentctl/preflight.yaml",
       "eligibilityWorkflow": "agentctl/eligibility.yaml",
       "exporter": "remediation/export.py",
       "contractTests": ["test_contracts.py", "test_adapter.py"],
       "credentialFree": "Adapter, policy, export, publisher reconciliation and fake-provider contracts",
       "liveMode": "Opt-in gpt-6-astra high; real before/after image scans and demo-repository draft PR",
       "repository": "https://github.com/Ompragash/agentctl-remediation-demo",
-      "expectedExitCodes": {"completed": 0, "invalidSource": 2, "policyDenied": 3},
+      "expectedExitCodes": {"completed": 0, "invalidSource": 2, "policyDenied": 3, "runtimeToolDenied": 4},
       "evidence": "../../docs/execution/RELEASE_REMEDIATION_20260906.md"
     }
   ]
