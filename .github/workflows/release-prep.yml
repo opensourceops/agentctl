@@ -41,6 +41,11 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
           cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
 
+      - name: Select cookbook Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
       - name: Install pinned example authoring dependencies
         run: |
           set -euo pipefail

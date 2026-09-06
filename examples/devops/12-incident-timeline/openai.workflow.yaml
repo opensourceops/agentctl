@@ -32,18 +32,100 @@ spec:
           inputMicrousdPerMillionTokens: 250000
           outputMicrousdPerMillionTokens: 2000000
   actions:
-    fixture:
+    build-timeline:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '12'
+        - helper.py
+        - incident-timeline
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - logPath
+        properties:
+          logPath:
+            type: string
+          windowStart:
+            type: string
+          windowEnd:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - timeline
+          - durationSeconds
+          - supportedActions
+          - suggestedDecision
+          - window
+          - validationScope
+          - reportText
+        properties:
+          timeline:
+            type: array
+          durationSeconds:
+            type: number
+          supportedActions:
+            type: object
+          suggestedDecision:
+            type: object
+          window:
+            type: object
+          validationScope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    verify-decision:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - verify-incident-decision
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+          - semanticValidation
+          - validationScope
+          - advisory
+          - reportText
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+          semanticValidation:
+            type: boolean
+          validationScope:
+            type: string
+          advisory:
+            type: object
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -52,14 +134,13 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
+      uses: action:build-timeline
+      with:
+        logPath: '${{ inputs.logPath }}'
+        windowStart: '${{ inputs.windowStart }}'
+        windowEnd: '${{ inputs.windowEnd }}'
     - id: advise
       uses: agent:analyst
       needs:
@@ -67,12 +148,11 @@ spec:
       with:
         prompt: '${{ tasks.analyze.output }}'
     - id: verify
-      uses: action:fixture
+      uses: action:verify-decision
       needs:
         - analyze
         - advise
       with:
-        phase: verify-model
         report: '${{ tasks.analyze.output }}'
         analysis: '${{ tasks.advise.output }}'
     - id: report
@@ -82,6 +162,10 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.verify.output.reportText }}'
+  inputs:
+    logPath: fixtures/incident.log
+    windowStart: ''
+    windowEnd: ''
   providers:
     openai:
       kind: openai
@@ -102,18 +186,22 @@ spec:
         required:
           - durationSeconds
           - evidence
-          - recommendation
+          - action
         additionalProperties: false
         properties:
           durationSeconds:
-            type: integer
+            type: number
           evidence:
             type: array
             items:
               type: string
             minItems: 1
-          recommendation:
+          action:
             type: string
+            enum:
+              - inspect_connection_pool
+              - check_service_connectivity
+              - investigate_incident
       providerOptions:
         store: false
       reasoning:

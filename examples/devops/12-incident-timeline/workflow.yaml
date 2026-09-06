@@ -14,27 +14,105 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    build-timeline:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '12'
+        - helper.py
+        - incident-timeline
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - logPath
+        properties:
+          logPath:
+            type: string
+          windowStart:
+            type: string
+          windowEnd:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - timeline
+          - durationSeconds
+          - supportedActions
+          - suggestedDecision
+          - window
+          - validationScope
+          - reportText
+        properties:
+          timeline:
+            type: array
+          durationSeconds:
+            type: number
+          supportedActions:
+            type: object
+          suggestedDecision:
+            type: object
+          window:
+            type: object
+          validationScope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    verify-decision:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - verify-incident-decision
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+          - semanticValidation
+          - validationScope
+          - advisory
+          - reportText
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+          semanticValidation:
+            type: boolean
+          validationScope:
+            type: string
+          advisory:
+            type: object
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -43,29 +121,20 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
-    - id: advise
-      uses: agent:analyst
-      needs:
-        - analyze
+      uses: action:build-timeline
       with:
-        prompt: '${{ tasks.analyze.output }}'
+        logPath: '${{ inputs.logPath }}'
+        windowStart: '${{ inputs.windowStart }}'
+        windowEnd: '${{ inputs.windowEnd }}'
     - id: verify
-      uses: action:fixture
+      uses: action:verify-decision
       needs:
         - analyze
-        - advise
       with:
-        phase: verify-model
         report: '${{ tasks.analyze.output }}'
-        analysis: '${{ tasks.advise.output }}'
+        analysis: '${{ tasks.analyze.output.suggestedDecision }}'
     - id: report
       uses: action:write
       needs:
@@ -73,37 +142,9 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.verify.output.reportText }}'
-  providers:
-    fake:
-      kind: fake
-  agents:
-    analyst:
-      provider: fake
-      model: scripted
-      instructionsFile: instructions/analyst.md
-      tools: []
-      maxTurns: 1
-      maxToolCalls: 0
-      maxOutputTokens: 512
-      timeoutSeconds: 45
-      structuredOutput:
-        type: object
-        required:
-          - durationSeconds
-          - evidence
-          - recommendation
-        additionalProperties: false
-        properties:
-          durationSeconds:
-            type: integer
-          evidence:
-            type: array
-            items:
-              type: string
-            minItems: 1
-          recommendation:
-            type: string
-      providerOptions:
-        finalText: '{"durationSeconds": 120, "evidence": ["fixtures/incident.log:2", "fixtures/incident.log:1"], "recommendation": "Check database connection-pool capacity before restarting the API."}'
+  inputs:
+    logPath: fixtures/incident.log
+    windowStart: ''
+    windowEnd: ''
   outputs:
     report: '${{ tasks.verify.output }}'

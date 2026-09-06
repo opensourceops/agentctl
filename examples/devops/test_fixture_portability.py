@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import fixture
+from package import SUPPORT
 from run import cleanup_workspace, latest_run_id
 
 
@@ -54,7 +55,11 @@ class FixturePortabilityTests(unittest.TestCase):
         executable = Path(executable).resolve()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            shutil.copy2(fixture.__file__, root / "fixture.py")
+            for source, target in SUPPORT.items():
+                # This legacy regression imports fixture by name; retain that
+                # module name while copying its complete declared dependencies.
+                shutil.copy2(Path(fixture.__file__).parent / source,
+                             root / ("fixture.py" if source == "fixture.py" else target))
             support = {"git": {"executable": str(executable),
                                "sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}}
             (root / "fixture-tools.json").write_text(json.dumps(support))
@@ -71,7 +76,7 @@ class FixturePortabilityTests(unittest.TestCase):
             rejected = subprocess.run(["python3", "-c", script], executable=sys.executable,
                                       cwd=root, env={}, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("Git installation changed after runner preflight", rejected.stderr)
+            self.assertIn("Git installation changed after setup preflight", rejected.stderr)
 
     def test_package_digest_rejects_changed_line_endings(self):
         source = Path(__file__).resolve().parent / "10-release-readiness/fixtures"

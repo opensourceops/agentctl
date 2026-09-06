@@ -7,6 +7,8 @@
   "exceptions": [
     {
       "id": "FIXTURE-HIGH-2",
+      "component": "pkg:fixture/worker@1",
+      "status": "approved",
       "expires": "2026-09-30",
       "owner": "fixture-security",
       "reason": "isolated test-only component"

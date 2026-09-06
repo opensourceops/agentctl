@@ -15,15 +15,9 @@ cargo run -p agentctl-cli -- plan examples/v1/hello.yaml
 cargo run -p agentctl-cli -- run examples/v1/hello.yaml --db .agentctl/quickstart.db
 ```
 
-The last command is credential-free and deterministic. Install from crates.io with:
+The last command is credential-free and deterministic. Install this reviewed checkout with `cargo install --locked --path crates/agentctl-cli`. The [installation guide](docs/guides/INSTALLATION.md) explains exact candidate revisions; an older published crate may not contain these features.
 
-```console
-cargo install --locked agentctl-cli
-```
-
-For local development, use `cargo install --locked --path crates/agentctl-cli`.
-
-For a tool-using credential-free journey, copy `examples/acceptance/mock-tool` to a clean directory and run its `workflow.yaml`. The repository acceptance suite executes that exact journey outside the source tree.
+The CLI and crates remain **pre-1.0**. Workflow API `agentctl.dev/v1` names the document format. Use [Getting started](docs/guides/GETTING_STARTED.md) for complete copyable YAML that works with an installed binary and no source checkout. Then choose a complete package from the [DevOps cookbook](examples/devops/README.md).
 
 ## Workflow
 

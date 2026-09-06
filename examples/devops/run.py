@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Execute the catalog through the real CLI from isolated clean directories."""
 import argparse
-import copy
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
-import http.server
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -43,7 +42,7 @@ def digest(filename):
 
 def artifact_digests(workspace):
     return {str(file.relative_to(workspace)): digest(file) for file in sorted((workspace / "artifacts").rglob("*"))
-            if file.is_file()}
+            if file.is_file() and file != workspace / "artifacts/.lock"}
 
 
 def run_id(envelope):
@@ -56,6 +55,36 @@ def latest_run_id(database):
     with closing(sqlite3.connect(database, timeout=1)) as connection:
         row = connection.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
         return row[0] if row else None
+
+
+def complete_live_usage(inspection):
+    """Release a suite reservation only after all runtime accounting is settled.
+
+    Inspect usage alone excludes in-flight reservations. Keep the entire suite
+    allowance charged when any counter or provider outcome remains uncertain.
+    This terminal-run check mirrors scripts/live_command.py's durable guard.
+    """
+    require(inspection.get("run", {}).get("state") in {"succeeded", "failed", "cancelled"},
+            "run is not durably terminal; full live reservation retained")
+    counters = ("providerRequests", "inputTokens", "outputTokens", "wallTimeSeconds", "costMicrousd")
+    budget = inspection.get("budget", {})
+    usage, reserved = budget.get("usage"), budget.get("reserved")
+    require(isinstance(usage, dict) and all(type(usage.get(key)) is int and usage[key] >= 0 for key in counters),
+            "durable usage is incomplete; full live reservation retained")
+    require(isinstance(reserved, dict) and all(key in reserved for key in counters)
+            and all(type(value) is int and value == 0 for value in reserved.values()),
+            "runtime budget reservations are outstanding or incomplete; full live reservation retained")
+    require(type(usage.get("unpricedProviderRequests")) is int and usage["unpricedProviderRequests"] == 0,
+            "provider usage is unpriced or unknown; full live reservation retained")
+    effects = inspection.get("effects")
+    require(isinstance(effects, list), "durable effects are unavailable; full live reservation retained")
+    providers = set(inspection.get("run", {}).get("workflow", {}).get("spec", {}).get("providers", {}))
+    for effect in effects:
+        request = effect.get("request", {})
+        model = request.get("effectClass") == "model" or request.get("operation") in providers
+        require(not model or effect.get("status") in {"succeeded", "failed", "requested", "waiting_for_approval"},
+                "provider effect is uncertain or unfinished; full live reservation retained")
+    return usage
 
 
 def cleanup_workspace(base):
@@ -77,30 +106,42 @@ class Case:
         self.workspace = self.base / "workflow"
         self.cwd = self.base / "unrelated-invoking-directory"
         self.cwd.mkdir()
-        shutil.copytree(ROOT / entry["directory"], self.workspace)
-        shutil.copy2(ROOT / "fixture.py", self.base / "fixture.py")
-        self.fixture_tools = {}
-        if "git" in entry["dependencies"]:
-            executable = shutil.which("git")
-            require(executable, "Git is required by this fixture")
-            executable = Path(executable).resolve()
-            self.fixture_tools["git"] = {"executable": str(executable), "sha256": digest(executable)}
-            save(self.base / "fixture-tools.json", self.fixture_tools)
-        self.db = self.workspace / "runtime.db"
-        self.evidence = self.workspace / "evidence"
-        self.evidence.mkdir()
         self.commands = []
         self.child_runs = []
         self.environment = os.environ.copy()
         if args.mode == "deterministic":
             self.environment.pop("OPENAI_API_KEY", None)
-        self.workflow = self.workspace / (entry["openaiWorkflow"] if args.mode == "openai" else "workflow.yaml")
-        self.workflow_value = load_yaml(self.workflow)
-        if args.mode == "openai":
-            for definition in self.workflow_value["spec"]["agents"].values():
-                require(definition["model"] == args.model, "model override needs a matching reviewed pricing entry; regenerate or explicitly edit the live fixture")
         self.start = time.monotonic()
         self.reservation = None
+        self.fixture_tools = {}
+        self.db = self.workspace / "runtime.db"
+        self.evidence = self.workspace / "evidence"
+        self.workflow = self.workspace / ("local." + (entry["openaiWorkflow"] if args.mode == "openai" else "workflow.yaml"))
+
+    def package_workspace(self, workspace):
+        """Exercise the published package and setup commands without hidden parent helpers."""
+        for argv in ([sys.executable, str(ROOT / "package.py"), "--example", self.entry["id"], "--output", str(workspace)],
+                     [sys.executable, str(workspace / "setup.py")]):
+            completed = subprocess.run(argv, cwd=self.cwd, env=self.environment, capture_output=True, text=True, timeout=90)
+            self.commands.append({"argv": argv, "exitCode": completed.returncode, "envelope": {},
+                                  "stdout": completed.stdout, "stderr": completed.stderr})
+            require(completed.returncode == 0, "published package/setup failed: " + completed.stderr[-2400:])
+        (workspace / "evidence").mkdir(exist_ok=True)
+        save(workspace / "evidence/package-setup.json", self.commands[-2:])
+
+    @contextmanager
+    def isolated_variant(self, label, workflow="local.workflow.yaml"):
+        """Give negative/recovery fixtures fresh published packages and independent state."""
+        original = self.workspace, self.workflow, self.workflow_value, self.db, self.evidence
+        workspace = self.base / label
+        self.package_workspace(workspace)
+        self.workspace, self.workflow = workspace, workspace / workflow
+        self.workflow_value = load_yaml(self.workflow)
+        self.db, self.evidence = workspace / "runtime.db", workspace / "evidence"
+        try:
+            yield
+        finally:
+            self.workspace, self.workflow, self.workflow_value, self.db, self.evidence = original
 
     def cli(self, command, expected=0, filename=None, credential_free=False):
         argv = [str(self.args.agentctl)] + [str(value) for value in command] + ["--output", "json", "--color", "never"]
@@ -213,11 +254,11 @@ class Case:
         retry_inspection = self.inspect(run_id(retried), "retry-inspect.json")
         require(any(task["taskId"] == "build" and task["disposition"] == "reused" for task in retry_inspection["tasks"]),
                 "retry failed to reuse upstream build")
-        repaired = self.workspace / "repaired.workflow.yaml"
+        repaired = self.workspace / "local.repaired.workflow.yaml"
         self.cli(["repair", repaired, source_id, "--from", "test", "--plan", "--db", self.db])
         result = self.cli(["repair", repaired, source_id, "--from", "test", "--db", self.db, "--workspace", self.workspace])
         require((self.workspace / "artifacts/mutations.txt").read_text() == "1", "retry or repair duplicated upstream mutation")
-        self.child_runs.append(run_id(retried))
+        self.child_runs.append({"label": "retry", "runId": run_id(retried), "usage": retry_inspection["budget"]["usage"]})
         return result
 
     def compensation(self):
@@ -228,15 +269,17 @@ class Case:
         outcome = self.cli(["compensate", source_id, "--db", self.db, "--workspace", self.workspace])
         source = self.inspect(source_id, "source-reconciled.json")
         require(any(row["status"] == "compensated" for row in source["effectReconciliations"]), "missing compensated reconciliation")
-        require(json.loads((self.workspace / "artifacts/service.json").read_text())["version"] == "restored", "inverse did not restore service")
-        return outcome
+        require((self.workspace / "artifacts/service.json").read_bytes() == (self.workspace / "artifacts/prior-service.json").read_bytes(),
+                "inverse did not restore the captured prior bytes")
+        self.child_runs.append({"label": "compensation", "sourceRunId": source_id, "runId": run_id(outcome)})
+        return self.run(workflow=self.workspace / "local.reconcile.workflow.yaml")
 
     def replay(self, identifier):
         before = self.inspect(identifier, "before-replay.json")
         hashes = artifact_digests(self.workspace)
         # Remove mutable instruction/variable sources to prove snapshots drive replay.
         moved = []
-        for name in ("instructions", "vars"):
+        for name in ("instructions", "vars", "fixtures"):
             source = self.workspace / name
             if source.exists():
                 renamed = source.with_name(name + ".hidden-for-replay")
@@ -254,25 +297,24 @@ class Case:
         require(len(before["effects"]) == len(after["effects"]), "replay changed source effects")
 
     def denial(self):
-        value = load_yaml(self.workspace / "workflow.yaml")
-        value["spec"]["policy"]["toolsDeny"] = ["extension.process", "filesystem.write"] + list(value["spec"].get("tools", {}))
-        value["spec"]["policy"]["approval"] = "never"
-        denied_root = self.base / "denied"
-        shutil.copytree(ROOT / self.entry["directory"], denied_root)
-        filename = denied_root / "denied.workflow.yaml"
-        save(filename, value)
-        outcome = self.cli(["run", filename, "--workspace", denied_root, "--db", denied_root / "runtime.db"],
-                           expected=4, credential_free=True, filename="denial.json")
-        require(not any(file.is_file() and file.name != ".lock" for file in (denied_root / "artifacts").rglob("*")), "denied workflow wrote forbidden artifacts")
-        require(run_id(outcome), "denial did not retain auditable run identity")
-        inspection = self.cli(["inspect", run_id(outcome), "--db", denied_root / "runtime.db"],
-                              credential_free=True, filename="denial-inspect.json")["data"]
-        denied_events = [row for row in inspection["audit"] if row["eventType"] == "task.transition"
-                         and row["payload"].get("to") == "failed"
-                         and "denied" in (row["payload"].get("error") or "").lower()]
-        trace_ids = {row["traceId"] for row in inspection["traces"]}
-        require(denied_events and all(row["traceId"] in trace_ids for row in denied_events),
-                "denial lost correlated failure audit/trace evidence")
+        with self.isolated_variant("denied"):
+            value = load_yaml(self.workflow)
+            value["spec"]["policy"]["toolsDeny"] = ["extension.process", "filesystem.write"] + list(value["spec"].get("tools", {}))
+            value["spec"]["policy"]["approval"] = "never"
+            filename = self.workspace / "denied.workflow.yaml"
+            save(filename, value)
+            before = artifact_digests(self.workspace)
+            outcome = self.run(workflow=filename, expected=4)
+            require(artifact_digests(self.workspace) == before, "denied workflow changed forbidden artifact bytes")
+            require(run_id(outcome), "denial did not retain auditable run identity")
+            inspection = self.inspect(run_id(outcome), "denial-inspect.json")
+            denied_events = [row for row in inspection["audit"] if row["eventType"] == "task.transition"
+                             and row["payload"].get("to") == "failed"
+                             and "denied" in (row["payload"].get("error") or "").lower()]
+            trace_ids = {row["traceId"] for row in inspection["traces"]}
+            require(denied_events and all(row["traceId"] in trace_ids for row in denied_events),
+                    "denial lost correlated failure audit/trace evidence")
+            require(inspection["budget"]["usage"]["providerRequests"] == 0, "denial dispatched a provider request")
 
     def semantics(self, inspection):
         case = self.entry["id"]
@@ -293,13 +335,13 @@ class Case:
             "11": lambda: report["desired"] == {"replicas": 4, "region": "fixture", "settings": {"timeout": 20}} and report["inputEnvironment"] == "disposable",
             "12": lambda: report["semanticValidation"] and report["analysis"]["durationSeconds"] == 120,
             "13": lambda: report["route"] == "promote" and (self.workspace / "artifacts/promotion.json").exists() and not (self.workspace / "artifacts/rollback.json").exists(),
-            "14": lambda: json.loads((self.workspace / "artifacts/service.json").read_text())["version"] == "2.0.0",
-            "15": lambda: (self.workspace / "artifacts/mutations.txt").read_text() == "1",
-            "16": lambda: (self.workspace / "artifacts/mutations.txt").read_text() == "1" and any(task["taskId"] == "build" and task["disposition"] == "reused" for task in inspection["tasks"]),
-            "17": lambda: json.loads((self.workspace / "artifacts/service.json").read_text())["version"] == "restored",
+            "14": lambda: report["verified"] and report["httpStatus"] == 200 and json.loads((self.workspace / "artifacts/service.json").read_text())["version"] == "2.0.0",
+            "15": lambda: report["verified"] and (self.workspace / "artifacts/mutations.txt").read_text() == "1",
+            "16": lambda: report["verified"] and (self.workspace / "artifacts/mutations.txt").read_text() == "1" and any(task["taskId"] == "build" and task["disposition"] == "reused" for task in inspection["tasks"]),
+            "17": lambda: json.loads((self.workspace / "artifacts/reconciliation.json").read_text())["verified"] and (self.workspace / "artifacts/service.json").read_bytes() == (self.workspace / "artifacts/prior-service.json").read_bytes(),
             "18": lambda: len(output["items"]) == 4,
-            "19": lambda: report["executed"] and len(inspection["toolCalls"]) == 2,
-            "20": lambda: report["validated"] and report["configuration"] == {"timeoutSeconds": 30},
+            "19": lambda: report["executed"] and report["originalPreserved"] and len(inspection["toolCalls"]) == (2 if self.args.mode == "openai" else 0),
+            "20": lambda: report["validated"] and report["configuration"]["timeoutSeconds"] == 30,
         }
         require(checks[case](), "case-specific semantic assertion failed: " + case)
         require(inspection["audit"] and inspection["traces"], "missing audit/trace evidence")
@@ -307,19 +349,56 @@ class Case:
         if case == "18":
             items = output["items"]
             require([item["output"]["index"] for item in items] == list(range(4)), "matrix aggregation order is unstable")
+        if case in {"19", "20"}:
+            original = json.loads((self.workspace / "fixtures/configuration.json").read_text())
+            expected = {**original, "timeoutSeconds": 30}
+            require(report["configuration"] == expected, "configuration changed unrelated source fields")
+            artifact = "reviewed-configuration.json" if case == "19" else "remediation.json"
+            require(json.loads((self.workspace / "artifacts" / artifact).read_text()) == expected,
+                    "actual configuration artifact disagrees with the reviewed report")
         if case == "20":
-            require((self.workspace / "artifacts/timeout-seconds.txt").read_bytes() == b"30",
-                    "model tool staged bytes outside the approved decimal contract")
-            require((self.workspace / "artifacts/remediation.json").read_bytes() == b'{"timeoutSeconds":30}\n',
-                    "deterministic remediation serialization changed the approved configuration")
-            loop = next(task for task in inspection["tasks"] if task["taskId"] == "remediate")
-            require(loop["output"]["iterations"] == 1, "completion guard failed to stop bounded loop")
-            require(inspection["budget"]["usage"]["providerRequests"] == 2, "unexpected remediation requests")
+            loop = next(task for task in inspection["tasks"] if task["taskId"] == "repair")
+            require(loop["output"]["iterations"] == 3, "actual repair did not converge at its third bounded step")
+            require([item["output"]["timeoutSeconds"] for item in loop["output"]["items"]] == [180, 60, 30],
+                    "repair did not apply the three input-derived reductions in order")
+            require([item["output"]["done"] for item in loop["output"]["items"]] == [False, False, True],
+                    "actual repair claimed completion before reaching its threshold")
+            requests = inspection["budget"]["usage"]["providerRequests"]
+            require(requests == (2 if self.args.mode == "openai" else 0), "unexpected remediation provider requests")
+            if self.args.mode == "openai":
+                require((self.workspace / "artifacts/timeout-seconds.txt").read_bytes() == b"30",
+                        "model proposal staged bytes outside the validated decimal contract")
 
     def alternate_cases(self):
         case = self.entry["id"]
+        if case in {"08", "10"}:
+            for passing in (False, True):
+                with self.isolated_variant("gate-pass" if passing else "gate-block", "local.gate.workflow.yaml"):
+                    inputs = []
+                    if passing and case == "08":
+                        rules = json.loads((self.workspace / "fixtures/rules.json").read_text())
+                        rules["exceptions"].append({"id": "FIXTURE-CRITICAL-1", "component": "pkg:fixture/api@1",
+                            "status": "approved", "expires": "2026-09-30", "owner": "fixture-security",
+                            "reason": "Explicit isolated fixture exception"})
+                        save(self.workspace / "fixtures/passing-rules.json", rules)
+                        inputs = ["--input", "rulesPath=fixtures/passing-rules.json"]
+                    if passing and case == "10":
+                        gates = json.loads((self.workspace / "fixtures/gates.json").read_text())
+                        for gate in gates["checks"]:
+                            gate["passed"] = True
+                        save(self.workspace / "fixtures/passing-gates.json", gates)
+                        inputs = ["--input", "gatesPath=fixtures/passing-gates.json"]
+                    outcome = self.run(inputs, expected=0 if passing else 4)
+                    inspection = self.inspect(run_id(outcome))
+                    require((self.workspace / "artifacts/release-authorized.json").exists() == passing,
+                            "CI decision gate produced the wrong authorization marker")
+                    require(json.loads((self.workspace / "artifacts/report.json").read_text())["decision"] == ("go" if passing else "no-go"),
+                            "CI gate lost its inspectable pre-gate analysis report")
+                    if not passing:
+                        require(not any(effect["request"]["taskId"] == "release-authorized" for effect in inspection["effects"]),
+                                "blocked CI gate dispatched a downstream marker effect")
         if case in {"01", "12"}:
-            malformed = load_yaml(self.workspace / "workflow.yaml")
+            malformed = load_yaml(self.workspace / "local.contract.workflow.yaml")
             response = json.loads(malformed["spec"]["agents"]["analyst"]["providerOptions"]["finalText"])
             label = "classification" if case == "01" else "citations"
             response["rootCause" if case == "01" else "evidence"] = "The requests package is missing." if case == "01" else []
@@ -337,25 +416,25 @@ class Case:
             require(not any(effect["request"]["taskId"] == "verify" for effect in inspection["effects"]),
                     f"malformed {label} reached the downstream verification action")
         if case == "19":
-            malformed = load_yaml(self.workspace / "workflow.yaml")
-            reviewer = malformed["spec"]["agents"]["reviewer"]
-            reviewer["providerOptions"]["finalText"] = json.dumps({"approved": True, "payload": "unreviewed-change"})
-            # Negative fixture only: permit malformed fake model data through
-            # its schema to test the independently enforced typed handoff.
-            reviewer["structuredOutput"]["properties"]["payload"].pop("enum")
-            filename = self.workspace / "invalid-handoff.workflow.yaml"
-            database = self.workspace / "invalid-handoff.db"
-            save(filename, malformed)
-            before = artifact_digests(self.workspace)
-            failed = self.cli(["run", filename, "--workspace", self.workspace, "--db", database],
-                              expected=4, credential_free=True, filename="invalid-handoff.json")
-            inspection = self.cli(["inspect", run_id(failed), "--db", database], credential_free=True,
-                                  filename="invalid-handoff-inspect.json")["data"]
-            require(any(task["taskId"] == "roles--handoff" and task["state"] == "failed" for task in inspection["tasks"]),
-                    "invalid reviewer payload did not reach and fail the typed handoff")
-            require(not any(effect["request"]["taskId"] == "roles--execute" for effect in inspection["effects"]),
-                    "invalid handoff dispatched an executor effect")
-            require(artifact_digests(self.workspace) == before, "invalid handoff changed artifact bytes")
+            with self.isolated_variant("out-of-range-review"):
+                failed = self.run(["--input", "proposedTimeout=90"], expected=4)
+                inspection = self.inspect(run_id(failed))
+                require(any(task["taskId"] == "roles--require-approval" and task["state"] == "failed" for task in inspection["tasks"]),
+                        "out-of-range proposal bypassed the explicit review gate")
+                require(not (self.workspace / "artifacts/reviewed-configuration.json").exists(), "rejected review produced an executed configuration")
+                require(not any(effect["request"]["taskId"] == "analyze" for effect in inspection["effects"]), "rejected review reached apply-change")
+            with self.isolated_variant("invalid-handoff", "local.contract.workflow.yaml"):
+                malformed = load_yaml(self.workflow)
+                reviewer = malformed["spec"]["agents"]["reviewer"]
+                reviewer["providerOptions"]["finalText"] = json.dumps({"approved": True, "timeoutSeconds": 45, "rationale": "Mismatched proposal."})
+                save(self.workflow, malformed)
+                failed = self.run(expected=4)
+                inspection = self.inspect(run_id(failed))
+                require(any(task["taskId"] == "roles--validate-review" and task["state"] == "failed" for task in inspection["tasks"]),
+                        "inconsistent reviewer value bypassed independent typed review validation")
+                require(not any(effect["request"]["taskId"] in {"roles--execute", "analyze"} for effect in inspection["effects"]),
+                        "invalid handoff dispatched an executor effect")
+                require(not (self.workspace / "artifacts/reviewed-configuration.json").exists(), "invalid handoff created the final configuration")
         if case == "11":
             explanation = self.cli(["explain", self.workflow, "--workspace", self.workspace],
                                    filename="explain-defaults.json")["data"]
@@ -383,20 +462,75 @@ class Case:
             self.run(["--input", "errorLimit=0.001"], database=self.workspace / "rollback.db")
             require((self.workspace / "artifacts/rollback.json").exists() and not (self.workspace / "artifacts/promotion.json").exists(),
                     "typed rollback route dispatched the wrong branch")
+            for label, samples, expected in (("insufficient-samples", [{"requests": 10, "errors": 0}], 0),
+                                             ("invalid-counts", [{"requests": 100, "errors": -1}], (3, 4))):
+                with self.isolated_variant(label):
+                    save(self.workspace / "fixtures/user-metrics.json", samples)
+                    outcome = self.run(["--input", "metricsPath=fixtures/user-metrics.json"], expected=expected)
+                    inspection = self.inspect(run_id(outcome))
+                    require(not (self.workspace / "artifacts/promotion.json").exists() and not (self.workspace / "artifacts/rollback.json").exists(),
+                            "insufficient or invalid metrics triggered promotion/rollback")
+                    if expected == 0:
+                        require((self.workspace / "artifacts/hold.json").exists(), "insufficient samples did not hold")
+                    else:
+                        require(not any(effect["request"]["taskId"] in {"promote", "rollback", "hold"} for effect in inspection["effects"]),
+                                "invalid samples dispatched a routing effect")
 
+        if case == "18":
+            with self.isolated_variant("failing-matrix-child"):
+                outcome = self.run(["--input", "maxReplicas=1"], expected=(3, 4))
+                inspection = self.inspect(run_id(outcome))
+                require(any(task["taskId"].startswith("checks") and task["state"] == "failed" for task in inspection["tasks"]),
+                        "over-limit service configuration did not fail a matrix child")
+                require(not (self.workspace / "artifacts/report.json").exists(), "failing matrix produced a success report")
+
+        if case == "15":
+            with self.isolated_variant("interruption", "local.fault.workflow.yaml"):
+                # Keep the manual 30-second fault recipe usable, but shorten only
+                # this explicitly injected fake delay before its plan is captured.
+                value = load_yaml(self.workflow)
+                value["spec"]["agents"]["pause"]["providerOptions"]["delayMs"] = 3000
+                save(self.workflow, value)
+                self.cli(["check", self.workflow, "--workspace", self.workspace])
+                self.cli(["plan", self.workflow, "--workspace", self.workspace])
+                outcome = self.crash_recovery()
+                inspection = self.inspect(run_id(outcome))
+                require(inspection["run"]["state"] == "succeeded", "reconciled interruption failed to finish")
+                require(inspection["run"]["output"]["report"]["verified"], "recovered deployment failed actual health validation")
+                self.child_runs.append({"label": "interruption", "runId": run_id(outcome), "usage": inspection["budget"]["usage"]})
+                self.replay(run_id(outcome))
         if case == "20":
-            nonconverging = load_yaml(self.workspace / "workflow.yaml")
-            nonconverging["spec"]["agents"]["remediator"]["providerOptions"]["finalText"] = json.dumps({"done": False, "timeoutSeconds": 30})
-            filename = self.workspace / "nonconverging.workflow.yaml"
-            database = self.workspace / "nonconverging.db"
-            save(filename, nonconverging)
-            failed = self.run(expected=4, workflow=filename, database=database)
-            require("loop" in failed["error"]["message"].lower(), "nonconverging loop failed for an unrelated reason")
-            inspection = self.cli(["inspect", run_id(failed), "--db", database], credential_free=True,
-                                  filename="nonconverging-inspect.json")["data"]
-            usage = inspection["budget"]["usage"]
-            require(usage["providerRequests"] == 6 and usage["toolCalls"] <= 3,
-                    "nonconverging loop did not stop at its declared iteration/request limits")
+            with self.isolated_variant("nonconverging"):
+                failed = self.run(["--input", "maxReduction=1"], expected=4)
+                require("loop" in failed["error"]["message"].lower(), "nonconverging repair failed for an unrelated reason")
+                inspection = self.inspect(run_id(failed))
+                require(inspection["budget"]["usage"]["providerRequests"] == 0,
+                        "offline bounded repair unexpectedly dispatched a model")
+                require(not (self.workspace / "artifacts/report.json").exists(), "nonconverged repair published a success report")
+                require(json.loads((self.workspace / "artifacts/remediation.json").read_text())["timeoutSeconds"] == 297,
+                        "repair exceeded or skipped its three declared one-unit steps")
+            with self.isolated_variant("false-model-completion", "local.contract.workflow.yaml"):
+                value = load_yaml(self.workflow)
+                value["spec"]["agents"]["remediator"]["providerOptions"].update({
+                    "finalText": json.dumps({"done": True, "timeoutSeconds": 31}),
+                    "toolInput": {"path": "artifacts/timeout-seconds.txt", "content": "31"}})
+                save(self.workflow, value)
+                failed = self.run(expected=4)
+                inspection = self.inspect(run_id(failed))
+                require(any(task["taskId"] == "validate-target" and task["state"] == "failed" for task in inspection["tasks"]),
+                        "model completion bypassed deterministic target validation")
+                require(not (self.workspace / "artifacts/remediation.json").exists(), "false model completion applied a repair")
+                require(not (self.workspace / "artifacts/report.json").exists(), "false model completion published a report")
+            with self.isolated_variant("nonconverging-proposal", "local.contract.workflow.yaml"):
+                value = load_yaml(self.workflow)
+                value["spec"]["agents"]["remediator"]["providerOptions"]["finalText"] = json.dumps({"done": False, "timeoutSeconds": 30})
+                save(self.workflow, value)
+                failed = self.run(expected=4)
+                inspection = self.inspect(run_id(failed))
+                usage = inspection["budget"]["usage"]
+                require("loop" in failed["error"]["message"].lower() and usage["providerRequests"] == 6 and usage["toolCalls"] <= 3,
+                        "fake proposal loop did not stop at its declared iteration/request limits")
+                require(not (self.workspace / "artifacts/remediation.json").exists(), "unfinished proposal reached actual repair")
 
     def container_build(self):
         engine = self.args.container_engine or shutil.which("docker") or shutil.which("podman")
@@ -433,21 +567,27 @@ class Case:
         identifier = None
         live_start = None
         result = {"id": self.entry["id"], "directory": self.entry["directory"], "mode": self.args.mode,
-                  "workspace": str(self.workspace), "workflowSha256": digest(self.workflow),
-                  "fixtureTools": self.fixture_tools}
+                  "workspace": str(self.workspace)}
         try:
-            self.cli(["check", self.workflow], filename="check.json")
-            self.cli(["plan", self.workflow], filename="plan.json")
-            if self.entry["id"] == "14":
-                (self.workspace / "artifacts").mkdir()
-                shutil.copy2(self.workspace / "fixtures/service.json", self.workspace / "artifacts/service.json")
-                folder = str(self.workspace / "artifacts")
-                class Handler(http.server.SimpleHTTPRequestHandler):
-                    def __init__(self, *args, **kwargs):
-                        super().__init__(*args, directory=folder, **kwargs)
-                    def log_message(self, *args):
-                        pass
-                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            self.package_workspace(self.workspace)
+            self.fixture_tools = json.loads((self.workspace / "fixture-tools.json").read_text())
+            self.workflow_value = load_yaml(self.workflow)
+            result.update({"workflowSha256": digest(self.workflow), "fixtureTools": self.fixture_tools,
+                           "package": json.loads((self.workspace / "example.json").read_text()),
+                           "setup": json.loads((self.workspace / "setup-report.json").read_text())})
+            if self.args.mode == "openai":
+                for definition in self.workflow_value["spec"]["agents"].values():
+                    require(definition["model"] == self.args.model,
+                            "model override needs a matching reviewed pricing entry; regenerate or explicitly edit the live fixture")
+            self.cli(["check", self.workflow, "--workspace", self.workspace], filename="check.json")
+            self.cli(["plan", self.workflow, "--workspace", self.workspace], filename="plan.json")
+            if self.entry["id"] in {"14", "17"}:
+                # Load the copied public service fixture, exactly as its documented
+                # standalone command does; setup has already prepared prior state.
+                spec = importlib.util.spec_from_file_location("cookbook_local_service", self.workspace / "local_service.py")
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                server = module.create_server(self.workspace)
                 threading.Thread(target=server.serve_forever, daemon=True).start()
             if ledger:
                 limits = self.workflow_value["spec"]["runtime"]["budgets"]
@@ -455,9 +595,7 @@ class Case:
                     {"workflowSha256": digest(self.workflow), "model": self.args.model, "workspace": str(self.workspace)})
                 live_start = time.monotonic()
             case = self.entry["id"]
-            if case == "15":
-                outcome = self.crash_recovery()
-            elif case == "16":
+            if case == "16":
                 outcome = self.retry_repair()
             elif case == "17":
                 outcome = self.compensation()
@@ -474,13 +612,13 @@ class Case:
             require(outcome.get("data", {}).get("state") == "succeeded", "final workflow outcome is not success")
             inspection = self.inspect(identifier)
             if ledger:
-                ledger.reconcile(self.reservation, inspection["budget"]["usage"], time.monotonic() - live_start)
+                ledger.reconcile(self.reservation, complete_live_usage(inspection), time.monotonic() - live_start)
                 self.reservation = None
             self.semantics(inspection)
             if server:
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 with opener.open(f"http://127.0.0.1:{server.server_port}/service.json", timeout=3) as response:
-                    require(json.load(response)["version"] == "2.0.0", "local HTTP service did not serve deployed version")
+                    require(response.read() == (self.workspace / "artifacts/service.json").read_bytes(), "local HTTP service did not serve the verified deployed/restored bytes")
             self.replay(identifier)
             self.denial()
             self.alternate_cases()
@@ -505,11 +643,8 @@ class Case:
                 if candidates:
                     try:
                         partial = self.inspect(candidates[-1], "partial-failure-inspect.json")
-                        if partial["run"]["state"] in {"failed", "succeeded", "cancelled"} and not any(
-                            effect["request"]["effectClass"] == "model" and effect["status"] in {"started", "uncertain", "requested"}
-                            for effect in partial["effects"]):
-                            ledger.reconcile(self.reservation, partial["budget"]["usage"], time.monotonic() - live_start)
-                            result["reservationRetained"] = None
+                        ledger.reconcile(self.reservation, complete_live_usage(partial), time.monotonic() - live_start)
+                        result["reservationRetained"] = None
                     except Exception as reconciliation_error:
                         result["reconciliationError"] = str(reconciliation_error)
         finally:
@@ -518,6 +653,7 @@ class Case:
                 server.server_close()
         result["wallSeconds"] = round(time.monotonic() - self.start, 3)
         result["commands"] = [{"argv": item["argv"], "exitCode": item["exitCode"]} for item in self.commands]
+        result["childRuns"] = self.child_runs
         if not self.args.keep and result["status"] == "passed":
             try:
                 cleanup_workspace(self.base)
@@ -564,7 +700,7 @@ def main():
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True)
         report = {"schemaVersion": "agentctl.dev/devops-evidence/v1", "sourceSha": source.stdout.strip(),
                   "sourceWorktreeDirty": bool(dirty.stdout.strip()),
-                  "supportSha256": {name: digest(ROOT / name) for name in ["run.py", "fixture.py", "live_budget.py"]},
+                  "supportSha256": {name: digest(ROOT / name) for name in ["run.py", "fixture.py", "live_budget.py", "package.py", "setup_example.py", "yaml_io.py", "requirements.txt", "operations.py", "format_operations.py", "service_operations.py", "local_service.py"]},
                   "binarySha256": digest(args.agentctl), "catalogSha256": digest(ROOT / "catalog.json"),
                   "mode": args.mode, "results": []}
         for entry in catalog:

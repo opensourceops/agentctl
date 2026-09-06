@@ -1,38 +1,160 @@
-# 15. Interrupted deployment recovery
+# 15. Recover an interrupted deployment
 
-Interrupt a run after a non-idempotent local mutation and prove resume does not repeat its confirmed effect.
+**For:** SRE. **Level and evidence:** Advanced; local recovery contract demonstration. Fault injection is a separate test aid.
 
-## Run
+Inspect durable evidence after execution stops and resume confirmed work without duplicating an uncertain mutation.
 
-From the framework checkout:
+## Get the complete example
+
+Install the [matching candidate binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
 
 ```sh
-cargo build -p agentctl-cli --locked
-python3 examples/devops/run.py --agentctl target/debug/agentctl --only 15 --keep --report /tmp/agentctl-devops-15.json
+python3 examples/devops/package.py --example 15 --output ./example-15
 ```
 
-The runner copies this directory and the checked-in common helper into a new temporary directory and invokes the real CLI from a different clean directory with an explicit workspace. The checked-in workflow uses the JSON-compatible subset of YAML (`agentctl.dev/v1`). `--keep` prints the retained location; the JSON report includes it. It records every CLI command, result envelope, inspection and replay in `evidence/`.
+Enter the extracted directory containing `setup.py`. You need Python 3.11 or newer. Create an isolated environment and install the pinned example dependencies:
 
-## Prerequisites, authority and limits
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python setup.py
+```
 
-Python 3.10+ and a built agentctl binary are required. No credentials; no live model is needed.
+On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`. Setup records the selected interpreters and prepares `local.workflow.yaml` with a matching explicit interpreter-basename grant. Review that generated workflow before running it. The authored [workflow.yaml](workflow.yaml) remains readable and editable source.
 
-The workflow grants workspace access, writes only under `artifacts`, and explicitly allows `python3` for the reviewed helper where required. Host process execution is **not a security sandbox**: the trusted helper can spawn its documented local Git/Python subprocesses. No production cluster, cloud account, package registry or external deployment is accessed. Fixtures contain no secrets. Network access is absent except explicit api.openai.com in a live variant; the HTTP demonstration is a runner-owned loopback service.
+The complete package contains:
 
-The DSL carries request, turn, token, task, wall-time, process-output and artifact bounds. The runner adds subprocess deadlines. Ordinary variable files contain configuration only, not secrets or policy grants.
+```text
+15-interrupted-deployment/
+  README.md
+  example.json
+  fault.workflow.yaml
+  fixtures/desired-service.json
+  format_operations.py
+  helper.py
+  local_service.py
+  operations.py
+  requirements.txt
+  service_operations.py
+  setup.py
+  workflow.yaml
+  yaml_io.py
+```
 
-## Expected artifacts and semantic assertions
+Setup creates local configuration and outputs separately. Keep `state.db` and `artifacts/` when investigating a run.
 
-The runner validates the case-specific structured report and its source-derived fields.
+## Run and inspect
 
-- `artifacts/report.json`
-- `artifacts/mutations.txt`
-- `artifacts/service.json`
+```sh
+agentctl check local.workflow.yaml --workspace .
+agentctl plan local.workflow.yaml --workspace .
+agentctl run local.workflow.yaml --workspace . --db state.db --output json --color never
+```
 
-Deterministic execution status is recorded by the suite report, not inferred from static checking. Live model output is checked semantically, never by exact prose equality.
+Copy `runId` from the JSON result, then inspect it:
 
-## Failure, recovery and cleanup
+```sh
+agentctl inspect RUN_ID --db state.db --output json --color never
+```
 
-The runner kills the CLI only after the deploy boundary is durably applied and pause is running, then resumes. If the delayed fake request was already dispatched, resume must stop at its uncertain effect; the runner records explicit not-applied reconciliation for that in-process fake request before continuing. mutations.txt must remain exactly 1. This proves reuse of a confirmed effect; it does not claim exactly-once remote mutation after an ambiguous acknowledgment.
+## Follow the YAML
 
-The runner exercises a denied process or write in a separate workspace and verifies there is no forbidden output. Replay is run with provider credential removed and must preserve effect count and artifact bytes. Remove only the printed temporary workspace when finished; without `--keep`, the runner cleans it automatically. Disposable services and containers are stopped even if an assertion fails.
+The local mutation records its effect before execution. After interruption, inspect the run and effect ledger. A confirmed applied mutation can be reused. An uncertain non-idempotent effect requires evidence about the external state before narrowly recording reconciliation.
+
+[Open the complete workflow](workflow.yaml) to inspect its inputs, task dependencies, grants and bounds. The site embeds the same source below; editing a helper does not replace review of its host-process authority.
+
+<!-- agentctl-include: examples/devops/15-interrupted-deployment/workflow.yaml language=yaml -->
+
+## Stop the explicit fault fixture
+
+The primary workflow above completes normally without a model. To exercise interruption, use a second fresh package and its separately authored `local.fault.workflow.yaml`. Its fake provider waits 30 seconds after the confirmed local deployment. Its request and token ceilings reserve capacity for the interrupted attempt and one continuation; it makes no paid requests.
+
+The following advanced test aid requires a POSIX shell. Start this exact fixture in the background and keep its process identifier:
+
+```sh
+agentctl check local.fault.workflow.yaml --workspace .
+agentctl plan local.fault.workflow.yaml --workspace .
+agentctl run local.fault.workflow.yaml --workspace . --db state.db --output json > fault.stdout 2> fault.stderr &
+FAULT_PID=$!
+```
+
+The CLI does not print a run identifier while this fixture waits. For this disposable test only, read the newest identifier from the local database without changing it:
+
+```sh
+.venv/bin/python -c "import sqlite3; from pathlib import Path; db=sqlite3.connect(Path('state.db').resolve().as_uri()+'?mode=ro',uri=True); print(db.execute('SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1').fetchone()[0]); db.close()"
+agentctl inspect RUN_ID --db state.db --output json
+```
+
+Inspect until task `deploy` is `succeeded` and the effect with operation `fake` is `started`. Do not interrupt before that evidence exists. While the fake delay is still active, stop only the process you just started:
+
+```sh
+kill -KILL "$FAULT_PID"
+```
+
+If the fixture already completed, retain its result and use another fresh package for the interruption exercise. The SQL query is an explicit test aid for this pinned candidate's SQLite schema, not an instruction to edit engine state or an application integration API.
+
+## Inspect before resuming
+
+Use the stopped run's identifier to inspect each relevant effect and try conservative recovery:
+
+```sh
+agentctl effects --db state.db list RUN_ID --output json
+agentctl effects --db state.db inspect EFFECT_ID --output json
+agentctl resume RUN_ID --db state.db --workspace . --output json
+```
+
+If resume reports uncertainty, preserve the failure and inspect the operation type. For this tutorial's deliberately interrupted **in-process fake delay only**, there is no remote request or mutation to recover. After verifying that exact boundary and the confirmed local deployment, record the narrow reconciliation:
+
+```sh
+agentctl effects --db state.db inspect EFFECT_ID --output json > interrupted-effect.json
+agentctl effects --db state.db reconcile EFFECT_ID --status not-applied --actor local-reviewer --reason "Reviewed the interrupted in-process fake delay; it has no external effect" --evidence-file interrupted-effect.json --approved
+agentctl resume RUN_ID --db state.db --workspace . --output json
+```
+
+If the inspected source is already terminal `failed`, use a reviewed terminal retry after reconciliation:
+
+```sh
+agentctl retry local.fault.workflow.yaml RUN_ID --failed --plan --db state.db --workspace .
+agentctl retry local.fault.workflow.yaml RUN_ID --failed --db state.db --workspace . --output json
+```
+
+The example's fake-delay explanation does not apply to a real provider or deployment operation. An effect inspection by itself cannot prove that a remote service did nothing. For a real mutation, collect provider-side evidence and follow the [effect reconciliation guide](../../../docs/guides/EFFECT_RECONCILIATION.md).
+
+## Expected result
+
+Inspect `artifacts/service.json`, `artifacts/report.json` and `artifacts/mutations.txt` alongside the persisted effect status. The final report must verify the actual deployed data and the mutation counter must remain `1`. The demonstration should show one confirmed local mutation across recovery. This is not an exactly-once guarantee for a remote system.
+
+Selected fields from the recorded local walkthrough, after the interrupted fake fixture was reconciled and resumed:
+
+```json
+{
+  "verified": true,
+  "healthy": true,
+  "mutation": 1,
+  "scope": "actual local configuration validation; this check does not claim HTTP or external deployment health"
+}
+```
+
+## Use your own data
+
+Use the normal workflow to learn the state transition first. Use the documented fault-injection path only in this disposable package. Preserve the SQLite database and workspace when investigating a stopped run; deleting state destroys the evidence needed for safe recovery.
+
+Paths in these inputs stay inside the package's reviewed workspace. Use ordinary vars for non-secret configuration only. An input or variable does not grant authority to a new filesystem path, command or network destination.
+
+## Failure and recovery
+
+Do not retry an uncertain mutation simply to get a green result. A fixture-only interrupted fake-provider call can be reconciled as not applied only after verifying that it has no external effect. Real remote mutations need their own request IDs and provider-side evidence.
+
+For a terminal successful run, reconstruct the recorded result without fresh effects:
+
+```sh
+agentctl replay RUN_ID --db state.db --output json --color never
+```
+
+For a failure, preserve the database and inspect task/effect status before choosing [resume, retry or repair](../../../docs/DURABLE_EXECUTION.md). A new run is a fresh invocation, not recovery of the old one.
+
+## Authority and cleanup
+
+The command uses the selected virtual environment's absolute interpreter path, while `processAllowlist` authorizes its basename. That generic Python grant trusts the reviewed helper; it does not pin one script or independently constrain its child processes. It is not an operating-system sandbox for every file access or child process made by Python. Only run the complete reviewed package on a trusted local machine or disposable runner. No production system is modified by this tutorial.
+
+After saving needed reports and stopping this example's local service if present, remove only its disposable directory. The [optional acceptance suite](../README.md#contributor-verification) exercises additional denials, replay and failure injection; it is not required to run the published workflow.

@@ -379,6 +379,32 @@ fn devops_examples(root: &Path, build: bool) -> Result<()> {
     let python_path = std::env::var("AGENTCTL_EXAMPLES_PYTHON")
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
     let python = python_path.as_str();
+    // Discover every cookbook regression so newly added semantic or packaging
+    // checks cannot silently remain outside the required example gate.
+    run_with_env(
+        root,
+        python,
+        &[
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "examples/devops",
+            "-p",
+            "test_*.py",
+        ],
+        &[(
+            "AGENTCTL_EXAMPLES_BINARY",
+            binary.to_str().context("agentctl binary path")?,
+        )],
+    )?;
+    for pattern in ["test_live_command.py", "test_container_agentctl.py"] {
+        run(
+            root,
+            python,
+            &["-m", "unittest", "discover", "-s", "scripts", "-p", pattern],
+        )?;
+    }
     run(
         root,
         python,
@@ -390,32 +416,6 @@ fn devops_examples(root: &Path, build: bool) -> Result<()> {
             "target/devops-evidence.json",
         ],
     )?;
-    for pattern in [
-        "test_live_budget.py",
-        "test_fixture_portability.py",
-        "test_yaml_authoring.py",
-    ] {
-        run(
-            root,
-            python,
-            &[
-                "-m",
-                "unittest",
-                "discover",
-                "-s",
-                "examples/devops",
-                "-p",
-                pattern,
-            ],
-        )?;
-    }
-    for pattern in ["test_live_command.py", "test_container_agentctl.py"] {
-        run(
-            root,
-            python,
-            &["-m", "unittest", "discover", "-s", "scripts", "-p", pattern],
-        )?;
-    }
     Ok(())
 }
 

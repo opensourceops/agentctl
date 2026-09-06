@@ -2,7 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-junit-triage
-  description: Parse actual JUnit XML and classify assertion failures separately from infrastructure errors.
+  description: Parse JUnit issues and preserve failures, application errors, skips and unknown causes; infer infrastructure only from evidence.
 spec:
   policy:
     workspaceRoot: .
@@ -14,27 +14,56 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    parse-junit:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '02'
+        - helper.py
+        - junit-triage
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - reportPath
+        properties:
+          reportPath:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - tests
+          - testCases
+          - failures
+          - failedCount
+          - issueCount
+          - skippedCount
+          - status
+          - reportText
+        properties:
+          tests:
+            type: integer
+          testCases:
+            type: array
+          failures:
+            type: array
+          failedCount:
+            type: integer
+          issueCount:
+            type: integer
+          skippedCount:
+            type: integer
+          status:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -43,14 +72,11 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
+      uses: action:parse-junit
+      with:
+        reportPath: '${{ inputs.reportPath }}'
     - id: report
       uses: action:write
       needs:
@@ -58,5 +84,7 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    reportPath: fixtures/junit.xml
   outputs:
     report: '${{ tasks.analyze.output }}'

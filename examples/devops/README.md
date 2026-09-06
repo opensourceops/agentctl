@@ -1,43 +1,39 @@
 # DevOps and CI/CD workflows
 
-These twenty `agentctl.dev/v1` examples execute actual parsers, local patches,
-tests, policy decisions and recovery commands. Every run produces structured
-evidence. They use disposable local fixtures; none applies infrastructure or
-deploys an external service.
+Choose a complete local workflow for a concrete CI, platform, SRE, release or security problem. The twenty tutorials below lead with editable YAML, input files and direct `agentctl` commands. The CLI is pre-1.0; `agentctl.dev/v1` names its workflow document format.
 
-From the repository checkout, run the complete credential-free suite:
+## Get a complete package
+
+Install the [matching candidate binary](../../docs/guides/INSTALLATION.md). On the documentation site, each tutorial offers a ZIP containing its workflow, fixtures, instructions, schemas and reviewed helper. From a source checkout, the equivalent packaging command is:
 
 ```sh
-cargo build -p agentctl-cli --locked
-python3 examples/devops/run.py --agentctl target/debug/agentctl --report /tmp/agentctl-devops.json
+python3 examples/devops/package.py --example 02 --output ./junit-example
+cd junit-example
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python setup.py
+agentctl check local.workflow.yaml --workspace .
+agentctl plan local.workflow.yaml --workspace .
+agentctl run local.workflow.yaml --workspace . --db state.db --output json
 ```
 
-Use `--only 01` to select an example; repeat it to select several. `--keep`
-retains the fresh workspaces and prints their locations. Failed workspaces are
-always retained. The runner invokes the real CLI from a separate, empty working
-directory, uses explicit workflow/workspace/database paths, and records check,
-plan, execution, inspection, denial, replay and relevant recovery commands.
-Each JSON envelope and exit code is saved under the retained `evidence/` folder.
-The aggregate report includes checkout HEAD and a dirty-tree flag, binary/workflow/helper hashes, artifact
-digests, usage and assertions. A passing local report does not establish hosted
-Linux/macOS/Windows evidence.
+Use `.venv\Scripts\python.exe` on Windows. Python 3.11 or newer is required; the requirements file pins the YAML authoring dependency and any case-specific validator. Setup configures the selected interpreter and support tools before creating `local.workflow.yaml`. It does not grant authority through user inputs or vars. Inspect the generated local policy, then use the case's direct commands for approvals, recovery or local service operation.
 
-The [machine-readable catalog](catalog.json) is an exact inventory of twenty
-directories, dependencies, platforms, features, modes, expected exit codes and
-artifacts. The runner rejects uncatalogued/missing example directories. Static
-`check` success is not execution evidence; a current suite report is required.
+Read [variable precedence](../../docs/VARIABLES.md) and [configuration drift](11-configuration-drift/README.md) when adapting inputs. Captured source files belong to one run: edit for a fresh invocation or a reviewed repair, and use recorded replay to reconstruct history.
+
+## Choose a tutorial
 
 | # | Workflow | Observable result |
 |---|---|---|
 | 01 | [CI diagnosis](01-ci-diagnosis/README.md) | Parsed failure and structured advice with verified log citations |
-| 02 | [JUnit triage](02-junit-triage/README.md) | Real XML parsing, assertion/infrastructure classification |
+| 02 | [JUnit triage](02-junit-triage/README.md) | Real XML parsing, preserved JUnit error/failure kinds and evidence-based classifications |
 | 03 | [Pipeline review](03-pipeline-review/README.md) | Permission/timeout violations and a checked, applied Git patch |
 | 04 | [Dockerfile review](04-dockerfile-review/README.md) | Narrow COPY, non-root user, code checks and separate real image gate |
-| 05 | [Kubernetes review](05-kubernetes-review/README.md) | Corrected manifest checked against a bundled Deployment subset schema |
+| 05 | [Kubernetes review](05-kubernetes-review/README.md) | Local manifest review with explicitly pinned schema coverage |
 | 06 | [Terraform plan](06-terraform-plan/README.md) | Plan rules, durable approvals, isolated local-file mutation |
 | 07 | [Dependency update](07-dependency-update/README.md) | Vendored patch plus failing-before/passing-after behavioral tests |
 | 08 | [SBOM triage](08-sbom-triage/README.md) | Component joins, severity rules and expiring exceptions |
-| 09 | [Release notes](09-release-notes/README.md) | Actual fixture Git commits and verified changed-file citations |
+| 09 | [Release notes](09-release-notes/README.md) | Existing repository range and verified changed-file citations |
 | 10 | [Release readiness](10-release-readiness/README.md) | Gate and package-digest evidence with an explicit no-go |
 | 11 | [Configuration drift](11-configuration-drift/README.md) | External variable precedence, replacement and invocation overrides |
 | 12 | [Incident timeline](12-incident-timeline/README.md) | Sorted events, duration and source-checked runbook advice |
@@ -50,46 +46,33 @@ artifacts. The runner rejects uncatalogued/missing example directories. Static
 | 19 | [Role sub-workflow](19-role-subworkflow/README.md) | Typed planner/reviewer/executor handoffs and distinct tool visibility |
 | 20 | [Bounded remediation](20-bounded-remediation/README.md) | Validated tool mutation, loop termination and resource/cost audit |
 
-## Execution and authority
+## Authority and evidence
 
-Python 3.10+ is required; examples 03, 04, 07 and 09 also use Git. On Windows, provide `--agentctl target/debug/agentctl.exe` or omit that option to use the platform default, and ensure `python3` is on PATH. Workflow files
-use the JSON-compatible subset of YAML so the small standard-library runner
-does not need a YAML dependency. The [reviewed process extension](fixture.py)
-implements the versioned handshake and returns JSON; workflows validate its
-outputs and write durable reports. Interpreter access is an explicit host
-process grant. Host execution is not an operating-system sandbox; the helper
-can invoke the documented Git/Python subprocesses. Use only reviewed helpers
-on a trusted fixture runner.
+The normal paths work without credentials. Four tutorials also have separately labeled OpenAI workflows; the scripted fake provider establishes deterministic protocol behavior, not live model quality. Other cases perform useful deterministic parsing, patching, validation or routing without artificial model calls.
 
-For Git fixtures, the runner resolves the installed executable before dispatch
-and stages its absolute path and SHA-256 in `fixture-tools.json` beside the
-copied helper. The helper verifies that fingerprint before invoking Git; the
-case report records the same configuration. This is trusted host preparation,
-separate from workflow variables and the compiled plan. It avoids importing
-PATH into cleared process environments, including on Windows. Run these fixtures
-through the suite runner so their support configuration is prepared.
+Offline practical workflows accept supplied local files. Recovery and local-service tutorials are contract demonstrations with explicit disposable fixtures. None applies infrastructure or deploys production services. Report generation can intentionally succeed with `no-go`; tutorials 08 and 10 provide separate CI enforcement paths that fail nonzero and block downstream effects.
 
-The approval cases preserve `approval: mutations`. The runner lists and reviews
-each pending effect, uses actor `devops-fixture-reviewer` with an explicit
-reason, and resumes the same durable run. This framework version records actors
-but has no actor-role authorization system: local database ownership remains a
-trust boundary. The fixture does not disable policy to obtain a green result.
+The Python process grant trusts the reviewed helper and its documented child processes. It is **not an operating-system sandbox** enforcing a separate policy around every Python file access or Git invocation. Setup records support-tool paths and fingerprints; ordinary variables cannot grant new process or filesystem authority. Use trusted local or disposable runners, protect input data and SQLite history, and review complete packages before execution.
 
-All cases execute a policy denial and prove no application artifact was written.
-Runtime lock/CAS scaffolding is allowed. Terminal replays remove the provider
-credential, point HTTP proxies at an unreachable loopback address, temporarily
-hide instruction/variable files, and require zero fresh effects and identical
-application artifact bytes. This is a replay behavior assertion, not an
-operating-system network sandbox.
+Approval commands record the local actor and reason. Local database ownership is the current authority boundary; the fixture does not simulate an actor-role authorization system. Review each pending operation and its content digest before approving it.
 
-The interrupted case preserves confirmed non-idempotent effects. An interrupted
-in-process fake-provider request may remain uncertain; the runner verifies that
-resume refuses it and explicitly records not-applied fixture reconciliation
-before continuing. That evidence does not establish exactly-once remote
-mutation. Compensation likewise proves a declared best-effort inverse, not a
-transactional rollback.
+## Contributor verification
 
-## Real container gate
+The optional acceptance runner packages and prepares the same published workflows, then adds separate denial cases, fault injection, replay assertions and aggregate evidence. A new user does not need the runner to operate an example.
+
+From the framework checkout:
+
+```sh
+cargo build -p agentctl-cli --locked
+python3 -m pip install -r examples/devops/requirements.txt
+python3 examples/devops/run.py --agentctl target/debug/agentctl --report /tmp/agentctl-devops.json
+```
+
+Use `--only 01` to select a case, repeat it to select several, and use `--keep` to retain workspaces. The discoverable suite alias is `cargo xtask devops-examples`. Reports retain source and binary identity, commands, exit codes, semantic assertions and artifact hashes. Passing static `check` alone does not establish execution evidence. The [machine-readable catalog](catalog.json) and [recorded validation](validation.json) preserve exact inventory and source-labeled results.
+
+Hand-maintained tutorial prose is separate from the deterministic [catalog generator](build_catalog.py). Regeneration updates workflows, input fixtures and machine-readable inventory; it must not overwrite these READMEs. Run it after authored generator changes and verify a second pass produces no diff.
+
+### Optional container verification
 
 Example 04's normal mode checks source syntax and the proposed patch. The
 additional image gate requires a usable Docker or Podman engine and an already
@@ -107,11 +90,13 @@ fixture image. Substitute `podman` for Docker in both commands if needed. The
 base image remains cached. No performance or image-size improvement is claimed.
 Without this gate, the report explicitly says container build was not executed.
 
-## Explicit paid OpenAI variants
+### Paid acceptance verification
 
-Only examples 01, 12, 19 and 20 depend on model analysis or model/tool
-collaboration. Each has a deterministic fake-provider workflow and a separate
-`openai.workflow.yaml`. Ordinary CI executes no paid requests. The crash test's
+Examples 01, 12, 19 and 20 provide optional model analysis or model/tool
+collaboration through a separate `openai.workflow.yaml`. The primary 01 and 12
+workflows are deterministic without a provider; their explicit
+`contract.workflow.yaml` files retain scripted fake-agent regression cases.
+All four primary workflows work without a provider. Role and remediation examples also keep bounded fake-agent paths as labeled contracts. Ordinary CI executes no paid requests. The crash test's
 fake provider is fault injection and has no artificial OpenAI variant.
 
 Paid execution requires the runtime `OPENAI_API_KEY`, available `gpt-5-mini`
@@ -145,17 +130,3 @@ Budget guard regression checks require no credentials:
 ```sh
 python3 -m unittest discover -s examples/devops -p test_live_budget.py -v
 ```
-
-The [catalog generator](build_catalog.py) regenerates fixtures, workflow
-documents, per-example READMEs and the catalog without network access. Edit it
-when changing those generated files, then run `python3 examples/devops/build_catalog.py`.
-Runtime evidence belongs to the suite report; never replace a failed gate with
-a static catalog claim.
-
-[Recorded local validation](validation.json) retains each executed report's source identity, dirty-tree flag, binary hash and results. Refresh this evidence only from actual runner reports:
-
-```sh
-python3 examples/devops/record_evidence.py --deterministic /tmp/agentctl-devops.json --container /tmp/agentctl-devops-container.json
-```
-
-Add `--live /tmp/agentctl-devops-openai.json` only after executing that paid gate. The recording tool preserves failures and never upgrades local evidence into a final release verdict.

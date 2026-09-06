@@ -1,3 +1,4 @@
+# Repair completion uses actual artifact validation; optional model done only ends proposal attempts.
 apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
@@ -24,7 +25,7 @@ spec:
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
-      maxLoopIterations: 3
+      maxLoopIterations: 6
       maxCostMicrousd: 100000
     pricing:
       version: openai-public-2026-09-05-estimate
@@ -33,18 +34,210 @@ spec:
           inputMicrousdPerMillionTokens: 250000
           outputMicrousdPerMillionTokens: 2000000
   actions:
-    fixture:
+    prepare:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '20'
+        - helper.py
+        - prepare-remediation
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        required:
+          - configurationPath
+          - maxTimeout
+          - maxReduction
+        additionalProperties: false
+        properties:
+          configurationPath:
+            type: string
+          maxTimeout:
+            type: integer
+          maxReduction:
+            type: integer
       outputSchema:
         type: object
+        required:
+          - configurationPath
+          - configuration
+          - sourceSha256
+          - current
+          - expectedTimeout
+          - maxTimeout
+          - maxReduction
+          - iteration
+          - targetTimeout
+          - reportText
+        additionalProperties: false
+        properties:
+          configurationPath:
+            type: string
+          configuration:
+            type: object
+          sourceSha256:
+            type: string
+          current:
+            type: object
+          expectedTimeout:
+            type: integer
+          maxTimeout:
+            type: integer
+          maxReduction:
+            type: integer
+          iteration:
+            type: integer
+          targetTimeout:
+            type: integer
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    validate-target:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - validate-remediation-target
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - context
+          - proposal
+        additionalProperties: false
+        properties:
+          context:
+            type: object
+          proposal:
+            type: object
+      outputSchema:
+        type: object
+        required:
+          - validated
+          - targetTimeout
+          - sourceSha256
+          - validation
+          - reportText
+        additionalProperties: false
+        properties:
+          validated:
+            type: boolean
+          targetTimeout:
+            type: integer
+          sourceSha256:
+            type: string
+          validation:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    repair-step:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - remediation-step
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - configurationPath
+          - maxTimeout
+          - maxReduction
+          - iteration
+          - previous
+        additionalProperties: false
+        properties:
+          configurationPath:
+            type: string
+          maxTimeout:
+            type: integer
+          maxReduction:
+            type: integer
+          iteration:
+            type: integer
+          previous:
+            type: object
+      outputSchema:
+        type: object
+        required:
+          - done
+          - timeoutSeconds
+          - iteration
+          - artifactSha256
+          - reportText
+        additionalProperties: false
+        properties:
+          done:
+            type: boolean
+          timeoutSeconds:
+            type: integer
+          iteration:
+            type: integer
+          artifactSha256:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    verify:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - verify-remediation
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - configurationPath
+          - maxTimeout
+        additionalProperties: false
+        properties:
+          configurationPath:
+            type: string
+          maxTimeout:
+            type: integer
+      outputSchema:
+        type: object
+        required:
+          - validated
+          - configuration
+          - maxTimeout
+          - artifactSha256
+          - completionEvidence
+          - reportText
+        additionalProperties: false
+        properties:
+          validated:
+            type: boolean
+          configuration:
+            type: object
+          maxTimeout:
+            type: integer
+          artifactSha256:
+            type: string
+          completionEvidence:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -53,48 +246,57 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
-    read:
-      kind: builtin.read
   tasks:
-    - id: read-config
-      uses: action:read
+    - id: prepare
+      uses: action:prepare
       with:
-        path: fixtures/configuration.json
-    - id: remediate
+        configurationPath: '${{ inputs.configurationPath }}'
+        maxTimeout: '${{ inputs.maxTimeout }}'
+        maxReduction: '${{ inputs.maxReduction }}'
+    - id: propose
       uses: agent:remediator
       needs:
-        - read-config
+        - prepare
       with:
         prompt:
-          configuration: '${{ tasks.read-config.output.content }}'
+          context: '${{ tasks.prepare.output }}'
           previous: '${{ vars.loopPrevious }}'
           iteration: '${{ vars.loopIndex }}'
-          limit: 30
       loop:
         maxIterations: 3
         while: '${{ vars.loopPrevious.done == false }}'
         initial:
           done: false
-      outputSchema:
-        type: object
-        required:
-          - done
-          - timeoutSeconds
-        additionalProperties: false
-        properties:
-          done:
-            type: boolean
-          timeoutSeconds:
-            const: 30
-    - id: analyze
-      uses: action:fixture
+    - id: validate-target
+      uses: action:validate-target
       needs:
-        - remediate
-      with: {}
+        - prepare
+        - propose
+      with:
+        context: '${{ tasks.prepare.output }}'
+        proposal: '${{ tasks.propose.output }}'
+    - id: repair
+      uses: action:repair-step
+      needs:
+        - validate-target
+      with:
+        configurationPath: '${{ inputs.configurationPath }}'
+        maxTimeout: '${{ inputs.maxTimeout }}'
+        maxReduction: '${{ inputs.maxReduction }}'
+        iteration: '${{ vars.loopIndex }}'
+        previous: '${{ vars.loopPrevious }}'
+      loop:
+        maxIterations: 3
+        while: '${{ vars.loopPrevious.done == false }}'
+        initial:
+          done: false
+    - id: analyze
+      uses: action:verify
+      needs:
+        - repair
+      with:
+        configurationPath: '${{ inputs.configurationPath }}'
+        maxTimeout: '${{ inputs.maxTimeout }}'
     - id: report
       uses: action:write
       needs:
@@ -102,6 +304,10 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    configurationPath: fixtures/configuration.json
+    maxTimeout: 30
+    maxReduction: 120
   providers:
     openai:
       kind: openai
@@ -110,7 +316,7 @@ spec:
   tools:
     repair_config:
       kind: builtin.workspace.write
-      description: Stage the exact approved decimal timeout value
+      description: Stage a proposed target as decimal text at one fixed path; this does not apply a repair
       inputSchema:
         type: object
         required:
@@ -124,8 +330,8 @@ spec:
               - artifacts/timeout-seconds.txt
           content:
             type: string
-            enum:
-              - '30'
+            pattern: ^[1-9][0-9]{0,3}$
+            maxLength: 4
       outputSchema:
         type: object
       capability: filesystem.write

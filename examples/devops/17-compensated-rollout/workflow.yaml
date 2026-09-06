@@ -1,3 +1,4 @@
+# Host Python is trusted; the YAML exposes snapshot, mutation, probe and recovery boundaries.
 apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
@@ -14,27 +15,116 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    snapshot-service:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '17'
+        - helper.py
+        - service-snapshot
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - desiredPath
+        properties:
+          desiredPath:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - priorText
+          - priorSha256
+          - priorVersion
+          - desiredText
+          - desiredSha256
+          - desiredVersion
+          - scope
+          - reportText
+        properties:
+          priorText:
+            type: string
+          priorSha256:
+            type: string
+          priorVersion:
+            type: string
+          desiredText:
+            type: string
+          desiredSha256:
+            type: string
+          desiredVersion:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    probe-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-probe
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - endpointPath
+          - expectedText
+          - requireHealthy
+        properties:
+          endpointPath:
+            type: string
+          expectedText:
+            type: string
+          requireHealthy:
+            type: boolean
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - verified
+          - reason
+          - httpStatus
+          - version
+          - healthy
+          - sha256
+          - url
+          - scope
+          - reportText
+        properties:
+          verified:
+            type: boolean
+          reason:
+            type: string
+          httpStatus:
+            type: integer
+          version:
+            type: string
+          healthy:
+            type: boolean
+          sha256:
+            type: string
+          url:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -43,30 +133,44 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
     assert:
       kind: builtin.assert
   tasks:
+    - id: snapshot
+      uses: action:snapshot-service
+      with:
+        desiredPath: '${{ inputs.desiredPath }}'
     - id: rollout
       uses: action:write
+      needs:
+        - snapshot
       with:
         path: artifacts/service.json
-        content: |
-          {"version":"broken"}
+        content: '${{ tasks.snapshot.output.desiredText }}'
       compensate:
         uses: action:write
         with:
           path: artifacts/service.json
-          content: |
-            {"version":"restored"}
+          content: '${{ tasks.snapshot.output.priorText }}'
+    - id: probe
+      uses: action:probe-service
+      needs:
+        - snapshot
+        - rollout
+      with:
+        endpointPath: '${{ inputs.endpointPath }}'
+        expectedText: '${{ tasks.snapshot.output.desiredText }}'
+        requireHealthy: true
     - id: health
       uses: action:assert
       needs:
-        - rollout
+        - probe
       with:
-        that: false
-        message: deliberate fixture rollout health failure
+        that: '${{ tasks.probe.output.verified }}'
+        message: actual rollout HTTP probe failed; review compensation before restoring captured prior state
+  inputs:
+    desiredPath: fixtures/desired-service.json
+    endpointPath: service-endpoint.json
   compensation:
     onFailure: manual
     approval: policy

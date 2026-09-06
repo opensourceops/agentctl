@@ -1,38 +1,104 @@
-# 9. Verified release notes
+# 09. Generate evidenced release notes
 
-Build actual fixture Git history and link release-note entries to commits and changed files.
+**For:** Release engineer. **Level and evidence:** Beginner; offline, Python and Git.
 
-## Run
+Generate a changelog from an existing Git repository and explicit commit range without mutating that repository.
 
-From the framework checkout:
+## Get the complete example
+
+Install the [matching candidate binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
 
 ```sh
-cargo build -p agentctl-cli --locked
-python3 examples/devops/run.py --agentctl target/debug/agentctl --only 09 --keep --report /tmp/agentctl-devops-09.json
+python3 examples/devops/package.py --example 09 --output ./example-09
 ```
 
-The runner copies this directory and the checked-in common helper into a new temporary directory and invokes the real CLI from a different clean directory with an explicit workspace. The checked-in workflow uses the JSON-compatible subset of YAML (`agentctl.dev/v1`). `--keep` prints the retained location; the JSON report includes it. It records every CLI command, result envelope, inspection and replay in `evidence/`.
+Enter the extracted directory containing `setup.py`. You need Python 3.11 or newer. Git is also required. Create an isolated environment and install the pinned example dependencies:
 
-## Prerequisites, authority and limits
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python setup.py
+```
 
-Python 3.10+ and a built agentctl binary are required. Git is also required. No credentials; no live model is needed.
+On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`. Setup records the selected interpreters and prepares `local.workflow.yaml` with a matching explicit interpreter-basename grant. Review that generated workflow before running it. The authored [workflow.yaml](workflow.yaml) remains readable and editable source.
 
-The workflow grants workspace access, writes only under `artifacts`, and explicitly allows `python3` for the reviewed helper where required. Host process execution is **not a security sandbox**: the trusted helper can spawn its documented local Git/Python subprocesses. No production cluster, cloud account, package registry or external deployment is accessed. Fixtures contain no secrets. Network access is absent except explicit api.openai.com in a live variant; the HTTP demonstration is a runner-owned loopback service.
+The complete package contains:
 
-The DSL carries request, turn, token, task, wall-time, process-output and artifact bounds. The runner adds subprocess deadlines. Ordinary variable files contain configuration only, not secrets or policy grants.
+```text
+09-release-notes/
+  README.md
+  example.json
+  fixtures/history.json
+  format_operations.py
+  helper.py
+  local_service.py
+  operations.py
+  requirements.txt
+  service_operations.py
+  setup.py
+  workflow.yaml
+  yaml_io.py
+```
 
-## Expected artifacts and semantic assertions
+Setup creates local configuration and outputs separately. Keep `state.db` and `artifacts/` when investigating a run.
 
-The runner validates the case-specific structured report and its source-derived fields.
+## Run and inspect
 
-- `artifacts/report.json`
-- `artifacts/CHANGELOG.md`
-- `artifacts/history/`
+```sh
+agentctl check local.workflow.yaml --workspace .
+agentctl plan local.workflow.yaml --workspace .
+agentctl run local.workflow.yaml --workspace . --db state.db --output json --color never
+```
 
-Deterministic execution status is recorded by the suite report, not inferred from static checking. Live model output is checked semantically, never by exact prose equality.
+Copy `runId` from the JSON result, then inspect it:
 
-## Failure, recovery and cleanup
+```sh
+agentctl inspect RUN_ID --db state.db --output json --color never
+```
 
-Replay with the runner verifies that recorded execution creates zero fresh effects. Fix bad fixture data in a new workspace before a new run.
+## Follow the YAML
 
-The runner exercises a denied process or write in a separate workspace and verifies there is no forbidden output. Replay is run with provider credential removed and must preserve effect count and artifact bytes. Remove only the printed temporary workspace when finished; without `--keep`, the runner cleans it automatically. Disposable services and containers are stopped even if an assertion fails.
+Setup may create the disposable fixture history once. The operational action only resolves the supplied refs, reads commits and changed paths, and writes release notes beneath `artifacts`. The range excludes `fromRef` and includes `toRef`, with a 500-commit ceiling.
+
+[Open the complete workflow](workflow.yaml) to inspect its inputs, task dependencies, grants and bounds. The site embeds the same source below; editing a helper does not replace review of its host-process authority.
+
+<!-- agentctl-include: examples/devops/09-release-notes/workflow.yaml language=yaml -->
+
+## Expected result
+
+Inspect `artifacts/CHANGELOG.md` and the report containing resolved full commit IDs. Each note names its source commit and changed files. Two identical runs produce the same changelog bytes and leave repository history unchanged.
+
+Selected fields from the supplied fixture's `artifacts/report.json`:
+
+```json
+{
+  "commitsVerified": 3,
+  "outputPath": "artifacts/CHANGELOG.md"
+}
+```
+
+The complete report also contains full commit IDs and changed-file evidence. Your repository or freshly prepared fixture history can have different commit IDs.
+
+## Use your own data
+
+Copy your repository beneath the package, then pass `--input repositoryPath=fixtures/my-repo --input fromRef=v0.2.0 --input toRef=v0.3.0`. Use explicit reviewed refs; refs beginning with an option prefix are rejected. The helper does not fetch remotes.
+
+Paths in these inputs stay inside the package's reviewed workspace. Use ordinary vars for non-secret configuration only. An input or variable does not grant authority to a new filesystem path, command or network destination.
+
+## Failure and recovery
+
+Missing refs, an excessive range or an output path outside `artifacts` fail. Repeating analysis is idempotent. Fixture preparation refuses to alter an existing unmarked user repository; use a new directory when changing the fixture history.
+
+For a terminal successful run, reconstruct the recorded result without fresh effects:
+
+```sh
+agentctl replay RUN_ID --db state.db --output json --color never
+```
+
+For a failure, preserve the database and inspect task/effect status before choosing [resume, retry or repair](../../../docs/DURABLE_EXECUTION.md). A new run is a fresh invocation, not recovery of the old one.
+
+## Authority and cleanup
+
+The command uses the selected virtual environment's absolute interpreter path, while `processAllowlist` authorizes its basename. That generic Python grant trusts the reviewed helper; it does not pin one script or independently constrain its child processes. It is not an operating-system sandbox for every file access or child process made by Python. Only run the complete reviewed package on a trusted local machine or disposable runner. No production system is modified by this tutorial.
+
+After saving needed reports and stopping this example's local service if present, remove only its disposable directory. The [optional acceptance suite](../README.md#contributor-verification) exercises additional denials, replay and failure injection; it is not required to run the published workflow.

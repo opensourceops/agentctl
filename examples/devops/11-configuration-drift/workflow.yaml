@@ -14,43 +14,66 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    write:
+      kind: builtin.write
+    compare-config:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '11'
+        - helper.py
+        - configuration-drift
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        required:
+          - actualPath
+          - desired
+          - environment
+        additionalProperties: false
+        properties:
+          actualPath:
+            type: string
+          desired:
+            type: object
+          environment:
+            type: string
       outputSchema:
         type: object
+        required:
+          - desired
+          - actual
+          - drift
+          - inputEnvironment
+          - reportText
+        additionalProperties: false
+        properties:
+          desired:
+            type: object
+          actual:
+            type: object
+          drift:
+            type: array
+          inputEnvironment:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
       stdoutLimitBytes: 65536
       stderrLimitBytes: 8192
       combinedOutputLimitBytes: 73728
-    write:
-      kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
+      uses: action:compare-config
       with:
+        actualPath: '${{ inputs.actualPath }}'
         desired:
           replicas: '${{ vars.replicas }}'
           region: '${{ vars.region }}'
@@ -74,5 +97,6 @@ spec:
     region: fixture
   inputs:
     environment: disposable
+    actualPath: fixtures/actual.json
   outputs:
     report: '${{ tasks.analyze.output }}'

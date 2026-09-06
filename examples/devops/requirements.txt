@@ -1,2 +1,8 @@
-# Development/example authoring dependency only; the Rust CLI does not use Python.
+# Requires Python 3.11 or newer (rpds-py minimum).
+# Pinned cookbook tooling, including validator dependencies. No Rust runtime dependency.
+attrs==26.1.0
+jsonschema==4.25.1
+jsonschema-specifications==2025.9.1
+referencing==0.37.0
+rpds-py==2026.6.3
 ruamel.yaml==0.19.1

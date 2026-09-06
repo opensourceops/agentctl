@@ -14,27 +14,107 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    deploy-service:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '16'
+        - helper.py
+        - service-deploy
       idempotency: at_most_once
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - desiredPath
+        properties:
+          desiredPath:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - mutation
+          - version
+          - desiredText
+          - desiredSha256
+          - scope
+          - reportText
+        properties:
+          mutation:
+            type: integer
+          version:
+            type: string
+          desiredText:
+            type: string
+          desiredSha256:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    check-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-check
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - expectedText
+          - requireReady
+        properties:
+          expectedText:
+            type: string
+          requireReady:
+            type: boolean
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - verified
+          - version
+          - healthy
+          - mutation
+          - sha256
+          - dependencyChecked
+          - reason
+          - scope
+          - reportText
+        properties:
+          verified:
+            type: boolean
+          version:
+            type: string
+          healthy:
+            type: boolean
+          mutation:
+            type: integer
+          sha256:
+            type: string
+          dependencyChecked:
+            type: boolean
+          reason:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -43,44 +123,33 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
-    test:
-      kind: builtin.shell.exec
-      command: python3
-      args:
-        - ../fixture.py
-        - terminal-check
-      timeoutSeconds: 5
-      stdoutLimitBytes: 1024
-      stderrLimitBytes: 1024
-      combinedOutputLimitBytes: 2048
   tasks:
     - id: build
-      uses: action:fixture
-      with: {}
+      uses: action:deploy-service
+      with:
+        desiredPath: '${{ inputs.desiredPath }}'
     - id: test
-      uses: action:assert
+      uses: action:check-service
       needs:
         - build
       with:
-        that: true
-        message: reviewed repair replaces the failed fixture check
-    - id: analyze
-      uses: action:assign
-      needs:
-        - test
-      with:
-        reportText: |
-          {"testsPassed":true,"expectedBuilds":1}
+        expectedText: '${{ tasks.build.output.desiredText }}'
+        requireReady: false
+      outputSchema:
+        type: object
+        required:
+          - verified
+        properties:
+          verified:
+            const: true
     - id: report
       uses: action:write
       needs:
-        - analyze
+        - test
       with:
         path: artifacts/report.json
-        content: '${{ tasks.analyze.output.output.reportText }}'
+        content: '${{ tasks.test.output.reportText }}'
+  inputs:
+    desiredPath: fixtures/desired-service.json
   outputs:
-    report: '${{ tasks.analyze.output.output }}'
+    report: '${{ tasks.test.output }}'

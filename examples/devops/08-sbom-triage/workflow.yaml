@@ -14,27 +14,56 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    triage-sbom:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '08'
+        - helper.py
+        - sbom-triage
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - sbomPath
+          - vulnerabilitiesPath
+          - rulesPath
+        properties:
+          sbomPath:
+            type: string
+          vulnerabilitiesPath:
+            type: string
+          rulesPath:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - findings
+          - decision
+          - asOf
+          - mode
+          - requiresExplicitCiGate
+          - reportText
+        properties:
+          findings:
+            type: array
+          decision:
+            type: string
+          asOf:
+            type: string
+          mode:
+            type: string
+          requiresExplicitCiGate:
+            type: boolean
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -43,14 +72,13 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
+      uses: action:triage-sbom
+      with:
+        sbomPath: '${{ inputs.sbomPath }}'
+        vulnerabilitiesPath: '${{ inputs.vulnerabilitiesPath }}'
+        rulesPath: '${{ inputs.rulesPath }}'
     - id: report
       uses: action:write
       needs:
@@ -58,5 +86,9 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    sbomPath: fixtures/sbom.json
+    vulnerabilitiesPath: fixtures/vulnerabilities.json
+    rulesPath: fixtures/rules.json
   outputs:
     report: '${{ tasks.analyze.output }}'

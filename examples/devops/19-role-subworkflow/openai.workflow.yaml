@@ -32,42 +32,193 @@ spec:
           inputMicrousdPerMillionTokens: 250000
           outputMicrousdPerMillionTokens: 2000000
   actions:
-    fixture:
+    plan-change:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '19'
+        - helper.py
+        - plan-change
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        required:
+          - configurationPath
+          - proposedTimeout
+          - maxTimeout
+        additionalProperties: false
+        properties:
+          configurationPath:
+            type: string
+          proposedTimeout:
+            type: integer
+          maxTimeout:
+            type: integer
       outputSchema:
         type: object
+        required:
+          - configuration
+          - sourceSha256
+          - configurationPath
+          - proposedTimeout
+          - maxTimeout
+          - allowed
+          - scope
+          - reportText
+        additionalProperties: false
+        properties:
+          configuration:
+            type: object
+          sourceSha256:
+            type: string
+          configurationPath:
+            type: string
+          proposedTimeout:
+            type: integer
+          maxTimeout:
+            type: integer
+          allowed:
+            type: boolean
+          scope:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
       stdoutLimitBytes: 65536
       stderrLimitBytes: 8192
       combinedOutputLimitBytes: 73728
-    write:
-      kind: builtin.write
+    review-change:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - review-change
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - context
+          - proposal
+          - review
+        additionalProperties: false
+        properties:
+          context:
+            type: object
+          proposal:
+            type: object
+          review:
+            type: object
+      outputSchema:
+        type: object
+        required:
+          - approved
+          - timeoutSeconds
+          - sourceSha256
+          - decision
+          - validation
+          - reportText
+        additionalProperties: false
+        properties:
+          approved:
+            type: boolean
+          timeoutSeconds:
+            type: integer
+          sourceSha256:
+            type: string
+          decision:
+            type: string
+          validation:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    apply-change:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - apply-change
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - context
+          - review
+          - requireStagedValue
+        additionalProperties: false
+        properties:
+          context:
+            type: object
+          review:
+            type: object
+          requireStagedValue:
+            type: boolean
+      outputSchema:
+        type: object
+        required:
+          - executed
+          - configuration
+          - artifactSha256
+          - originalPreserved
+          - scope
+          - reportText
+        additionalProperties: false
+        properties:
+          executed:
+            type: boolean
+          configuration:
+            type: object
+          artifactSha256:
+            type: string
+          originalPreserved:
+            type: boolean
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
     assign:
       kind: builtin.assign
     assert:
       kind: builtin.assert
-    read:
-      kind: builtin.read
+    write:
+      kind: builtin.write
   tasks:
+    - id: prepare-change
+      uses: action:plan-change
+      with:
+        configurationPath: '${{ inputs.configurationPath }}'
+        proposedTimeout: '${{ inputs.proposedTimeout }}'
+        maxTimeout: '${{ inputs.maxTimeout }}'
     - id: roles
       uses: workflow:change
-      with:
-        request: Read, review and execute the narrow local change.
-    - id: analyze
-      uses: action:fixture
       needs:
+        - prepare-change
+      with:
+        context: '${{ tasks.prepare-change.output }}'
+    - id: analyze
+      uses: action:apply-change
+      needs:
+        - prepare-change
         - roles
-      with: {}
+      with:
+        context: '${{ tasks.prepare-change.output }}'
+        review: '${{ tasks.roles.output.review }}'
+        requireStagedValue: true
     - id: report
       uses: action:write
       needs:
@@ -75,6 +226,10 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    configurationPath: fixtures/configuration.json
+    proposedTimeout: 30
+    maxTimeout: 60
   providers:
     openai:
       kind: openai
@@ -83,7 +238,7 @@ spec:
   tools:
     read_scope:
       kind: builtin.workspace.read
-      description: Read the local change scope
+      description: Read the bundled service configuration; caller-provided context remains authoritative for alternate inputs
       inputSchema:
         type: object
         required:
@@ -93,7 +248,7 @@ spec:
           path:
             type: string
             enum:
-              - fixtures/change.txt
+              - fixtures/configuration.json
       outputSchema:
         type: object
       capability: filesystem.read
@@ -105,7 +260,7 @@ spec:
       approval: never
     publish:
       kind: builtin.workspace.write
-      description: Write the reviewed local change
+      description: Stage the reviewed timeout as decimal text at one fixed output path; deterministic validation controls the resulting configuration
       inputSchema:
         type: object
         required:
@@ -116,11 +271,11 @@ spec:
           path:
             type: string
             enum:
-              - artifacts/role-change.txt
+              - artifacts/role-timeout.txt
           content:
             type: string
-            enum:
-              - reviewed-local-change
+            pattern: ^[1-9][0-9]{0,3}$
+            maxLength: 4
       outputSchema:
         type: object
       capability: filesystem.write
@@ -144,16 +299,14 @@ spec:
       structuredOutput:
         type: object
         required:
-          - payload
-          - ready
+          - timeoutSeconds
+          - rationale
         additionalProperties: false
         properties:
-          payload:
+          timeoutSeconds:
+            type: integer
+          rationale:
             type: string
-            enum:
-              - reviewed-local-change
-          ready:
-            type: boolean
       providerOptions:
         store: false
       reasoning:
@@ -171,15 +324,16 @@ spec:
         type: object
         required:
           - approved
-          - payload
+          - timeoutSeconds
+          - rationale
         additionalProperties: false
         properties:
           approved:
             type: boolean
-          payload:
+          timeoutSeconds:
+            type: integer
+          rationale:
             type: string
-            enum:
-              - reviewed-local-change
       providerOptions:
         store: false
       reasoning:
@@ -212,57 +366,121 @@ spec:
       inputSchema:
         type: object
         required:
-          - request
+          - context
         additionalProperties: false
         properties:
-          request:
-            type: string
+          context:
+            type: object
       outputSchema:
         type: object
         required:
-          - executed
+          - review
         additionalProperties: false
         properties:
-          executed:
-            type: boolean
+          review:
+            type: object
+            required:
+              - approved
+              - timeoutSeconds
+              - sourceSha256
+            additionalProperties: false
+            properties:
+              approved:
+                type: boolean
+              timeoutSeconds:
+                type: integer
+              sourceSha256:
+                type: string
       outputs:
-        executed: '${{ tasks.execute.output.executed }}'
+        review: '${{ tasks.handoff.output.output }}'
       tasks:
         - id: plan
           uses: agent:planner
           with:
-            prompt: '${{ inputs.request }}'
+            prompt: '${{ inputs.context }}'
         - id: review
           uses: agent:reviewer
           needs:
             - plan
           with:
-            prompt: '${{ tasks.plan.output }}'
+            prompt:
+              context: '${{ inputs.context }}'
+              proposal: '${{ tasks.plan.output }}'
+        - id: validate-review
+          uses: action:review-change
+          needs:
+            - plan
+            - review
+          with:
+            context: '${{ inputs.context }}'
+            proposal: '${{ tasks.plan.output }}'
+            review: '${{ tasks.review.output }}'
+        - id: require-approval
+          uses: action:assert
+          needs:
+            - validate-review
+          with:
+            that: '${{ tasks.validate-review.output.approved }}'
+            message: reviewed change exceeds the configured maximum; executor is blocked
         - id: handoff
           uses: action:assign
           needs:
-            - review
+            - require-approval
+            - validate-review
           with:
-            payload: '${{ tasks.review.output.payload }}'
-            approved: '${{ tasks.review.output.approved }}'
+            approved: '${{ tasks.validate-review.output.approved }}'
+            timeoutSeconds: '${{ tasks.validate-review.output.timeoutSeconds }}'
+            sourceSha256: '${{ tasks.validate-review.output.sourceSha256 }}'
           outputSchema:
             type: object
             required:
+              - status
+              - changed
+              - before
+              - after
+              - diff
               - output
+              - predictability
+            additionalProperties: false
             properties:
+              status:
+                const: unchanged
+              changed:
+                const: false
+              before:
+                type: 'null'
+              after:
+                type: object
+                required:
+                  - approved
+                  - timeoutSeconds
+                  - sourceSha256
+                additionalProperties: false
+                properties:
+                  approved:
+                    type: boolean
+                  timeoutSeconds:
+                    type: integer
+                  sourceSha256:
+                    type: string
+              diff:
+                type: 'null'
               output:
                 type: object
                 required:
-                  - payload
                   - approved
+                  - timeoutSeconds
+                  - sourceSha256
                 additionalProperties: false
                 properties:
-                  payload:
-                    type: string
-                    enum:
-                      - reviewed-local-change
                   approved:
-                    const: true
+                    type: boolean
+                  timeoutSeconds:
+                    type: integer
+                  sourceSha256:
+                    type: string
+              predictability:
+                const: fully_predictable
         - id: execute
           uses: agent:executor
           needs:

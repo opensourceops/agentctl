@@ -150,3 +150,9 @@ Inline-only workflows omit unused capture fields and preserve existing digest co
 `agentctl doctor workflow.yaml --output json` adds non-dispatching prerequisite checks. A missing provider credential fails readiness without showing the value. A process secret that would require running an external command remains unverified and makes readiness false. For container actions, the doctor checks the engine and pinned local image with bounded inspection; it does not pull an image or run a container. These checks establish available prerequisites, not successful workflow execution. A failed or unverified prerequisite uses exit code `6`; inspect the structured checks before scheduling a live run.
 
 See [Workflow DSL](DSL.md), the [YAML reference](reference/YAML.md), [scheduled operation](OPERATIONS.md), and [selective repair](guides/repair-a-failed-workflow.md).
+
+## Practice with a complete example
+
+The [configuration drift tutorial](../examples/devops/11-configuration-drift/README.md) includes editable YAML variable files, direct `explain` and `run` commands, and expected winning values. Use it to see whole-key replacement and invocation overrides without introducing a model or credentials.
+
+The [CI diagnosis](../examples/devops/01-ci-diagnosis/README.md) and [incident timeline](../examples/devops/12-incident-timeline/README.md) tutorials keep file paths in the typed `inputs` namespace. Their optional agent variants keep instructions in captured external files. Changing a path or variable never grants authority to read a new location or execute a new command.

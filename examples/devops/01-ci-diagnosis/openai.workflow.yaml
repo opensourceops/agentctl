@@ -32,18 +32,99 @@ spec:
           inputMicrousdPerMillionTokens: 250000
           outputMicrousdPerMillionTokens: 2000000
   actions:
-    fixture:
+    diagnose-ci:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '01'
+        - helper.py
+        - ci-diagnose
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - logPath
+        properties:
+          logPath:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - findings
+          - rootCause
+          - evidence
+          - lineCount
+          - supportedActions
+          - suggestedDecision
+          - validationScope
+          - reportText
+        properties:
+          findings:
+            type: array
+          rootCause:
+            type: string
+          evidence:
+            type: array
+          lineCount:
+            type: integer
+          supportedActions:
+            type: object
+          suggestedDecision:
+            type: object
+          validationScope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    verify-decision:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - verify-ci-decision
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+          - semanticValidation
+          - validationScope
+          - advisory
+          - reportText
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+          semanticValidation:
+            type: boolean
+          validationScope:
+            type: string
+          advisory:
+            type: object
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -52,14 +133,11 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
+      uses: action:diagnose-ci
+      with:
+        logPath: '${{ inputs.logPath }}'
     - id: advise
       uses: agent:analyst
       needs:
@@ -67,12 +145,11 @@ spec:
       with:
         prompt: '${{ tasks.analyze.output }}'
     - id: verify
-      uses: action:fixture
+      uses: action:verify-decision
       needs:
         - analyze
         - advise
       with:
-        phase: verify-model
         report: '${{ tasks.analyze.output }}'
         analysis: '${{ tasks.advise.output }}'
     - id: report
@@ -82,6 +159,8 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.verify.output.reportText }}'
+  inputs:
+    logPath: fixtures/build.log
   providers:
     openai:
       kind: openai
@@ -102,7 +181,7 @@ spec:
         required:
           - rootCause
           - evidence
-          - recommendation
+          - action
         additionalProperties: false
         properties:
           rootCause:
@@ -112,13 +191,19 @@ spec:
               - test_failure
               - configuration_error
               - unknown
-            description: Machine-readable classification code from the parsed report; put prose in recommendation.
+            description: Machine-readable classification code from the deterministic parsed report.
           evidence:
             type: array
             items:
               type: string
-          recommendation:
+            minItems: 1
+          action:
             type: string
+            enum:
+              - install_declared_dependency
+              - inspect_test_failure
+              - repair_configuration
+              - investigate_build
       providerOptions:
         store: false
       reasoning:

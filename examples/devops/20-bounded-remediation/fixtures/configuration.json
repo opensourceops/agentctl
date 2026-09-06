@@ -1,3 +1,8 @@
 {
-  "timeoutSeconds": 300
+  "service": "worker",
+  "timeoutSeconds": 300,
+  "retries": 3,
+  "security": {
+    "allowPrivilegeEscalation": false
+  }
 }

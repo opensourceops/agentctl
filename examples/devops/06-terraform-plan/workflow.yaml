@@ -14,58 +14,90 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    analyze-plan:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '06'
+        - helper.py
+        - terraform-analyze
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - planPath
+          - allowedFilename
+        properties:
+          planPath:
+            type: string
+          allowedFilename:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - allowed
+          - denied
+          - reasons
+          - changes
+          - desiredContent
+          - targetPath
+          - scope
+          - reportText
+        properties:
+          allowed:
+            type: boolean
+          denied:
+            type: array
+          reasons:
+            type: object
+          changes:
+            type: array
+          desiredContent:
+            type: string
+          targetPath:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
       stdoutLimitBytes: 65536
       stderrLimitBytes: 8192
       combinedOutputLimitBytes: 73728
-    write:
-      kind: builtin.write
-    assign:
-      kind: builtin.assign
     assert:
       kind: builtin.assert
+    write:
+      kind: builtin.write
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
+      uses: action:analyze-plan
+      with:
+        planPath: '${{ inputs.planPath }}'
+        allowedFilename: '${{ inputs.allowedFilename }}'
     - id: allow-plan
       uses: action:assert
       needs:
         - analyze
       with:
         that: '${{ tasks.analyze.output.allowed }}'
-        message: plan contains destructive or nonlocal changes
+        message: plan contains destructive, sensitive, unknown or nonlocal changes
     - id: apply-local
       uses: action:write
       needs:
+        - analyze
         - allow-plan
       with:
-        path: artifacts/local-state.json
-        content: |
-          {"scope":"local fixture","applied":true}
+        path: '${{ tasks.analyze.output.targetPath }}'
+        content: '${{ tasks.analyze.output.desiredContent }}'
     - id: report
       uses: action:write
       needs:
@@ -73,5 +105,8 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    planPath: fixtures/plan.json
+    allowedFilename: artifacts/local-state.json
   outputs:
     report: '${{ tasks.analyze.output }}'

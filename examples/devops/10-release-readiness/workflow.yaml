@@ -14,27 +14,53 @@ spec:
   runtime:
     maxConcurrency: 1
     budgets:
-      maxProviderRequests: 8
-      maxTurns: 8
-      maxToolCalls: 4
-      maxTotalTokens: 16000
       maxProcessOutputBytes: 1048576
       maxArtifactBytes: 1048576
       maxTasks: 32
       maxWallTimeSeconds: 120
   actions:
-    fixture:
+    assess-release:
       kind: extension.process
       command: python3
       args:
-        - ../fixture.py
-        - '10'
+        - helper.py
+        - release-readiness
       idempotency: idempotent
       protocolVersion: agentctl.dev/process-extension/v1
       inputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - gatesPath
+          - packagePath
+        properties:
+          gatesPath:
+            type: string
+          packagePath:
+            type: string
       outputSchema:
         type: object
+        additionalProperties: false
+        required:
+          - checks
+          - decision
+          - blocking
+          - mode
+          - requiresExplicitCiGate
+          - reportText
+        properties:
+          checks:
+            type: array
+          decision:
+            type: string
+          blocking:
+            type: array
+          mode:
+            type: string
+          requiresExplicitCiGate:
+            type: boolean
+          reportText:
+            type: string
       capabilities:
         - devops.fixture
       timeoutSeconds: 30
@@ -43,14 +69,12 @@ spec:
       combinedOutputLimitBytes: 73728
     write:
       kind: builtin.write
-    assign:
-      kind: builtin.assign
-    assert:
-      kind: builtin.assert
   tasks:
     - id: analyze
-      uses: action:fixture
-      with: {}
+      uses: action:assess-release
+      with:
+        gatesPath: '${{ inputs.gatesPath }}'
+        packagePath: '${{ inputs.packagePath }}'
     - id: report
       uses: action:write
       needs:
@@ -58,5 +82,8 @@ spec:
       with:
         path: artifacts/report.json
         content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    gatesPath: fixtures/gates.json
+    packagePath: fixtures/package.txt
   outputs:
     report: '${{ tasks.analyze.output }}'

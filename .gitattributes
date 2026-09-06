@@ -4,3 +4,4 @@
 *.pack text eol=lf
 *.pack.lock text eol=lf
 /crates/agentctl-cli/tests/fixtures/sigstore/cosign-v3-blob.txt text eol=lf
+/examples/devops/** text=auto eol=lf

@@ -1,37 +1,126 @@
-# 16. Terminal retry and selective repair
+# 16. Retry and selectively repair a workflow
 
-Demonstrate terminal failure, retry after fixture recovery, and selective repair while reusing a successful mutation.
+**For:** SRE. **Level and evidence:** Intermediate; offline recovery contract demonstration.
 
-## Run
+Recover a terminal test failure while reusing a successful upstream build boundary.
 
-From the framework checkout:
+## Get the complete example
+
+Install the [matching candidate binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
 
 ```sh
-cargo build -p agentctl-cli --locked
-python3 examples/devops/run.py --agentctl target/debug/agentctl --only 16 --keep --report /tmp/agentctl-devops-16.json
+python3 examples/devops/package.py --example 16 --output ./example-16
 ```
 
-The runner copies this directory and the checked-in common helper into a new temporary directory and invokes the real CLI from a different clean directory with an explicit workspace. The checked-in workflow uses the JSON-compatible subset of YAML (`agentctl.dev/v1`). `--keep` prints the retained location; the JSON report includes it. It records every CLI command, result envelope, inspection and replay in `evidence/`.
+Enter the extracted directory containing `setup.py`. You need Python 3.11 or newer. Create an isolated environment and install the pinned example dependencies:
 
-## Prerequisites, authority and limits
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python setup.py
+```
 
-Python 3.10+ and a built agentctl binary are required. No credentials; no live model is needed.
+On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`. Setup records the selected interpreters and prepares `local.workflow.yaml` with a matching explicit interpreter-basename grant. Review that generated workflow before running it. The authored [workflow.yaml](workflow.yaml) remains readable and editable source.
 
-The workflow grants workspace access, writes only under `artifacts`, and explicitly allows `python3` for the reviewed helper where required. Host process execution is **not a security sandbox**: the trusted helper can spawn its documented local Git/Python subprocesses. No production cluster, cloud account, package registry or external deployment is accessed. Fixtures contain no secrets. Network access is absent except explicit api.openai.com in a live variant; the HTTP demonstration is a runner-owned loopback service.
+The complete package contains:
 
-The DSL carries request, turn, token, task, wall-time, process-output and artifact bounds. The runner adds subprocess deadlines. Ordinary variable files contain configuration only, not secrets or policy grants.
+```text
+16-retry-repair/
+  README.md
+  example.json
+  fixtures/desired-service.json
+  format_operations.py
+  helper.py
+  local_service.py
+  operations.py
+  repaired.workflow.yaml
+  requirements.txt
+  service_operations.py
+  setup.py
+  workflow.yaml
+  yaml_io.py
+```
 
-## Expected artifacts and semantic assertions
+Setup creates local configuration and outputs separately. Keep `state.db` and `artifacts/` when investigating a run.
 
-The runner validates the case-specific structured report and its source-derived fields.
+## Run and inspect
 
-- `artifacts/report.json`
-- `artifacts/mutations.txt`
+```sh
+agentctl check local.workflow.yaml --workspace .
+agentctl plan local.workflow.yaml --workspace .
+agentctl run local.workflow.yaml --workspace . --db state.db --output json --color never
+```
 
-Deterministic execution status is recorded by the suite report, not inferred from static checking. Live model output is checked semantically, never by exact prose equality.
+Copy `runId` from the JSON result, then inspect it:
 
-## Failure, recovery and cleanup
+```sh
+agentctl inspect RUN_ID --db state.db --output json --color never
+```
 
-The source fails because fixtures/retry-ready.txt is absent. The runner creates the fixture dependency, retries --failed, and separately repairs the source from test using repaired.workflow.yaml. It verifies mutations.txt remains 1 through both child runs.
+## Follow the YAML
 
-The runner exercises a denied process or write in a separate workspace and verifies there is no forbidden output. Replay is run with provider credential removed and must preserve effect count and artifact bytes. Remove only the printed temporary workspace when finished; without `--keep`, the runner cleans it automatically. Disposable services and containers are stopped even if an assertion fails.
+Resume continues an interrupted nonterminal run. Retry creates a child attempt for failed boundaries of a compatible terminal workflow. Repair uses corrected workflow content and reuses only compatible successful boundaries. Preview reuse before dispatching either terminal recovery command.
+
+[Open the complete workflow](workflow.yaml) to inspect its inputs, task dependencies, grants and bounds. The site embeds the same source below; editing a helper does not replace review of its host-process authority.
+
+<!-- agentctl-include: examples/devops/16-retry-repair/workflow.yaml language=yaml -->
+
+## Retry or repair the terminal failure
+
+The first run intentionally fails after the build. Copy its source `runId` and inspect it. Restore the disposable test dependency, then preview and run a retry:
+
+```sh
+.venv/bin/python -c "from pathlib import Path; Path('fixtures/retry-ready.txt').write_text('available\n')"
+agentctl retry local.workflow.yaml SOURCE_RUN_ID --failed --plan --db state.db --workspace .
+agentctl retry local.workflow.yaml SOURCE_RUN_ID --failed --db state.db --workspace . --output json
+```
+
+For a corrected suffix, use the prepared repaired workflow against the original source:
+
+```sh
+agentctl repair local.repaired.workflow.yaml SOURCE_RUN_ID --from test --plan --db state.db --workspace .
+agentctl repair local.repaired.workflow.yaml SOURCE_RUN_ID --from test --db state.db --workspace . --output json
+agentctl inspect CHILD_RUN_ID --db state.db --output json
+```
+
+The repair path demonstrates a reviewed workflow change; it does not overwrite the failed source. Inspect both child attempts and confirm that the build is reused.
+
+## Expected result
+
+The initial test fails after the build succeeds. Inspect the source run, then the retry or repair child and its lineage. The build counter must remain unchanged when that successful boundary is reused.
+
+Selected fields from the recorded local walkthrough, after selective repair reused the confirmed build:
+
+```json
+{
+  "verified": true,
+  "healthy": true,
+  "mutation": 1,
+  "dependencyChecked": false,
+  "scope": "actual local configuration validation; this check does not claim HTTP or external deployment health"
+}
+```
+
+## Use your own data
+
+Restore the failing fixture input for an unchanged-workflow retry, or use the supplied repaired workflow to change the failing suffix. Copy each returned child run ID separately from the original source ID. The source history remains available.
+
+Paths in these inputs stay inside the package's reviewed workspace. Use ordinary vars for non-secret configuration only. An input or variable does not grant authority to a new filesystem path, command or network destination.
+
+## Failure and recovery
+
+Use `--plan` first. Changed inputs, instructions, policy or upstream task semantics can invalidate reuse. An uncertain effect is a reconciliation problem, not a reason to force retry or repair.
+
+For a terminal successful run, reconstruct the recorded result without fresh effects:
+
+```sh
+agentctl replay RUN_ID --db state.db --output json --color never
+```
+
+For a failure, preserve the database and inspect task/effect status before choosing [resume, retry or repair](../../../docs/DURABLE_EXECUTION.md). A new run is a fresh invocation, not recovery of the old one.
+
+## Authority and cleanup
+
+The command uses the selected virtual environment's absolute interpreter path, while `processAllowlist` authorizes its basename. That generic Python grant trusts the reviewed helper; it does not pin one script or independently constrain its child processes. It is not an operating-system sandbox for every file access or child process made by Python. Only run the complete reviewed package on a trusted local machine or disposable runner. No production system is modified by this tutorial.
+
+After saving needed reports and stopping this example's local service if present, remove only its disposable directory. The [optional acceptance suite](../README.md#contributor-verification) exercises additional denials, replay and failure injection; it is not required to run the published workflow.

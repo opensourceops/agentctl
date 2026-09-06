@@ -1,4 +1,8 @@
 {
   "version": "1.0.0",
-  "scope": "disposable local HTTP fixture"
+  "healthy": true,
+  "scope": "disposable local HTTP fixture",
+  "settings": {
+    "replicas": 1
+  }
 }
