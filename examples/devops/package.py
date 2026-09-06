@@ -4,14 +4,63 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
+from urllib.parse import quote, unquote, urlsplit
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
 SUPPORT = {"fixture.py": "helper.py", "yaml_io.py": "yaml_io.py", "requirements.txt": "requirements.txt",
            "setup_example.py": "setup.py", "operations.py": "operations.py", "format_operations.py": "format_operations.py",
            "local_service.py": "local_service.py", "service_operations.py": "service_operations.py"}
+
+
+def render_readme_links(text, source, destination, revision):
+    """Pin informational links to source when their targets are outside the package."""
+    framework = ROOT.parent.parent.resolve()
+    destination = destination.resolve()
+    link = re.compile(r'(?<!!)\[[^\]\n]*\]\((?P<target><[^>\n]+>|[^\s()]+)(?:\s+"[^"\n]*")?\)')
+    fence = None
+    rendered = []
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            if fence is None:
+                fence = marker[1]
+            elif marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                fence = None
+            rendered.append(line)
+            continue
+        if fence is not None:
+            rendered.append(line)
+            continue
+        code = [match.span() for match in re.finditer(r"(`+).*?\1", line)]
+
+        def replace(match):
+            if any(start <= match.start() < end for start, end in code):
+                return match[0]
+            raw = match["target"]
+            target = urlsplit(raw[1:-1] if raw.startswith("<") else raw)
+            if target.scheme or target.netloc or not target.path or target.path.startswith("/"):
+                return match[0]
+            relative = unquote(target.path)
+            copied = (destination / relative).resolve()
+            if copied.is_relative_to(destination) and copied.exists():
+                return match[0]
+            original = (source / relative).resolve()
+            if not original.is_relative_to(framework) or not original.is_file():
+                return match[0]
+            url = "https://github.com/opensourceops/agentctl/blob/" + revision + "/" + quote(original.relative_to(framework).as_posix(), safe="/")
+            if target.query:
+                url += "?" + target.query
+            if target.fragment:
+                url += "#" + target.fragment
+            start, end = match.span("target")
+            return match[0][:start - match.start()] + url + match[0][end - match.start():]
+
+        rendered.append(link.sub(replace, line))
+    return "".join(rendered)
 
 
 def package_example(identifier, output, archive=None):
@@ -30,6 +79,10 @@ def package_example(identifier, output, archive=None):
         shutil.copy2(ROOT / filename, destination / target)
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    readme = destination / "README.md"
+    if readme.is_file():
+        rendered = render_readme_links(readme.read_bytes().decode("utf-8"), source, destination, revision)
+        readme.write_bytes(rendered.encode("utf-8"))
     files = {str(p.relative_to(destination)): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(destination.rglob("*")) if p.is_file()}
     metadata = {"schemaVersion": "agentctl.dev/cookbook-package/v1", "exampleId": identifier,

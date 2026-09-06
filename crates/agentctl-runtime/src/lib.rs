@@ -17265,17 +17265,24 @@ spec:
 behavior="$1"
 mode="$2"
 if [ "$mode" = "--agentctl-handshake" ]; then
+  if [ "$behavior" = "handshake-timeout" ]; then
+    : > '{}'/handshake-timeout-started
+    sleep 10
+  fi
   printf '%s' '{{"protocolVersion":"agentctl.dev/process-extension/v1","name":"bounded","inputSchema":{{"type":"object"}},"outputSchema":{{"type":"object"}},"capabilities":[]}}'
   exit 0
 fi
 read -r request
+: > "{}/$behavior-invoked"
 case "$behavior" in
   overflow) while :; do printf 1234567890; done ;;
-  timeout) sleep 2 ;;
+  timeout) sleep 10 ;;
   crash) exit 70 ;;
   cancel) touch '{}'; sleep 10 ;;
 esac
 "#,
+                directory.path().display(),
+                directory.path().display(),
                 marker.display()
             ),
         )
@@ -17312,8 +17319,38 @@ spec:
             )
         };
 
-        for (behavior, timeout) in [("overflow", 2), ("timeout", 1), ("crash", 2)] {
-            let (workflow, plan) = compile_fixture(&source_for(behavior, timeout));
+        // Both phases share the action deadline. Allow five seconds for process
+        // startup under parallel test load, and prove which phase actually ran.
+        // A deliberate handshake timeout must fail before invocation, rather
+        // than satisfy a test of post-dispatch uncertainty accidentally.
+        let (workflow, plan) = compile_fixture(&source_for("handshake-timeout", 5));
+        let store = SqliteStore::open_memory().expect("store");
+        let run_id = match runtime(store.clone(), directory.path())
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected handshake timeout failure, got {other:?}"),
+        };
+        assert!(directory.path().join("handshake-timeout-started").exists());
+        assert!(!directory.path().join("handshake-timeout-invoked").exists());
+        let effect = &store.list_effects(&run_id).expect("effects")[0];
+        assert_eq!(effect.status, EffectStatus::Failed);
+        assert!(
+            effect
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("extension timed out after 5 seconds"))
+        );
+
+        for behavior in ["overflow", "timeout", "crash"] {
+            let (workflow, plan) = compile_fixture(&source_for(behavior, 5));
             let store = SqliteStore::open_memory().expect("store");
             let run_id = match runtime(store.clone(), directory.path())
                 .start(
@@ -17329,6 +17366,11 @@ spec:
                 other => panic!("expected {behavior} failure, got {other:?}"),
             };
             let effect = &store.list_effects(&run_id).expect("effects")[0];
+            assert!(
+                directory.path().join(format!("{behavior}-invoked")).exists(),
+                "{behavior} failed before the intended invocation boundary: {:?}",
+                effect.error
+            );
             assert_eq!(
                 effect.status,
                 EffectStatus::Uncertain,
@@ -17359,6 +17401,7 @@ spec:
             .await
             .expect("durably cancelled run");
         assert_eq!(cancelled.state, RunState::Cancelled);
+        assert!(directory.path().join("cancel-invoked").exists());
         assert_eq!(
             store.list_effects(&cancelled.run_id).expect("effects")[0].status,
             EffectStatus::Uncertain

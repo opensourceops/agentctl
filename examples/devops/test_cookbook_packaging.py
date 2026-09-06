@@ -127,6 +127,26 @@ class CookbookPackagingTests(unittest.TestCase):
                     self.assertIn(executable.name, workflow["spec"]["policy"]["processAllowlist"])
             self.assertFalse((destination / "artifacts").exists(), "setup must not execute this workflow")
 
+    def test_packaged_readme_pins_external_docs_and_preserves_local_workflow_links(self):
+        with tempfile.TemporaryDirectory(prefix="agentctl-cookbook-links-") as directory:
+            destination = Path(directory) / "package"
+            metadata = package.package_example("03", destination)
+            source = ROOT / metadata["directory"]
+            text = (destination / "README.md").read_text(encoding="utf-8")
+            pinned = "https://github.com/opensourceops/agentctl/blob/" + metadata["sourceSha"]
+            self.assertIn(pinned + "/docs/guides/INSTALLATION.md", text)
+            self.assertIn(pinned + "/examples/devops/README.md#contributor-verification", text)
+            self.assertIn("[workflow.yaml](workflow.yaml)", text)
+            self.assertNotIn("](../../../docs/", text)
+            self.assertNotEqual((source / "README.md").read_bytes(), (destination / "README.md").read_bytes(),
+                                "only the packaged README intentionally renders external links")
+            self.assertEqual((source / "workflow.yaml").read_bytes(), (destination / "workflow.yaml").read_bytes())
+            self.assertEqual(metadata["files"]["README.md"], digest(destination / "README.md"))
+            untouched = ("[missing](missing.md) [anchor](#example) [web](https://example.com)\n"
+                         "`[code](../../../docs/DURABLE_EXECUTION.md)`\n"
+                         "```markdown\n[example](../../../docs/DURABLE_EXECUTION.md)\n```\n")
+            self.assertEqual(package.render_readme_links(untouched, source, destination, metadata["sourceSha"]), untouched)
+
     def test_zip_bytes_are_deterministic_and_existing_work_is_not_replaced(self):
         with tempfile.TemporaryDirectory(prefix="agentctl-cookbook-archives-") as directory:
             root = Path(directory)
