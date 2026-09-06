@@ -168,6 +168,8 @@ jobs:
           file: Containerfile
           target: ${{ matrix.variant }}
           platforms: linux/${{ matrix.arch }}
+          # A named local export gives BuildKit a bound in-toto subject; no push.
+          tags: agentctl-release:${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.source_sha }}
           build-args: |
             AGENTCTL_VERSION=${{ needs.identity.outputs.version }}
             AGENTCTL_REVISION=${{ inputs.source_sha }}

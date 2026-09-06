@@ -45,10 +45,11 @@ def layout(architecture="amd64", variant="minimal", source=None, subject=None, a
     layer = blob(b"synthetic layer contract fixture " + architecture.encode(), "application/vnd.oci.image.layer.v1.tar+gzip")
     image = blob({"schemaVersion": 2, "mediaType": MANIFEST, "config": config, "layers": [layer]}, MANIFEST)
     image["platform"] = {"os": "linux", "architecture": architecture}
-    statement = blob({"_type": STATEMENT, "predicateType": PROVENANCE,
+    predicate = "https://slsa.dev/provenance/v1" if oci_artifact else PROVENANCE
+    statement = blob({"_type": "https://in-toto.io/Statement/v1" if oci_artifact else STATEMENT, "predicateType": predicate,
         "subject": [{"name": "fixture", "digest": {"sha256": (subject or image["digest"])[7:]}}],
         "predicate": {"buildType": "https://mobyproject.org/buildkit@v1", "materials": []}}, "application/vnd.in-toto+json")
-    statement["annotations"] = {"in-toto.io/predicate-type": PROVENANCE}
+    statement["annotations"] = {"in-toto.io/predicate-type": predicate}
     if oci_artifact:
         # BuildKit v0.32.2 exporter/containerimage/writer.go:578-608, 631-642.
         # Exact published OCI empty descriptor; synthetic provenance body above.
@@ -269,6 +270,25 @@ class OciTests(unittest.TestCase):
                 path = write_layout(self.root / (case + ".tar"), files)
                 with artifacts.OciArchive(path) as archive, self.assertRaises(ValueError):
                     archive.images(IDENTITY, "minimal")
+
+    def test_untagged_buildkit_export_with_empty_statement_subject_cannot_claim_provenance(self):
+        # Observed in hosted run34051210706: a valid OCI artifact subject alone
+        # does not repair the empty SLSA v1 statement emitted by an untagged build.
+        files, _, _ = layout(oci_artifact=True)
+        index = json.loads(files["index.json"])
+        descriptor = index["manifests"][-1]
+        manifest = json.loads(files["blobs/sha256/" + descriptor["digest"][7:]])
+        layer = manifest["layers"][0]
+        statement = json.loads(files["blobs/sha256/" + layer["digest"][7:]])
+        statement["subject"] = []
+        for value, target in [(statement, layer), (manifest, descriptor)]:
+            payload = encoded(value)
+            target.update(digest="sha256:" + artifacts.sha256(payload), size=len(payload))
+            files["blobs/sha256/" + target["digest"][7:]] = payload
+        files["index.json"] = encoded(index)
+        path = write_layout(self.root / "untagged-buildkit.tar", files)
+        with artifacts.OciArchive(path) as archive, self.assertRaisesRegex(ValueError, "provenance subject"):
+            archive.images(IDENTITY, "minimal")
 
     def test_merge_preserves_exact_platform_manifests_layers_and_provenance(self):
         left, left_image, left_layer = self.image("amd64.tar")
