@@ -22,6 +22,8 @@ python3 -m venv .venv
 
 On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`. Setup records the selected interpreters and prepares `local.workflow.yaml` with a matching explicit interpreter-basename grant. Review that generated workflow before running it. The authored [workflow.yaml](workflow.yaml) remains readable and editable source.
 
+On Windows, Python socket startup also requires `SYSTEMROOT`. Setup adds an explicit `SYSTEMROOT` environment reference only to the local `service-probe` actions and a matching `environmentAllowlist` grant. It records the variable name, never its value, and fails if the prerequisite is absent or conflicts with an authored environment setting or explicit allowlist. Review this declared prerequisite in `local.*.yaml`; other host environment variables are not inherited. Keep `SYSTEMROOT` available when running or resuming the workflow.
+
 The complete package contains:
 
 ```text

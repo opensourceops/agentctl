@@ -72,6 +72,10 @@ jobs:
           "$example_python" -m pip install -r examples/devops/requirements.txt
           echo "AGENTCTL_EXAMPLES_PYTHON=$example_python" >> "$GITHUB_ENV"
 
+      - name: Verify Windows service subprocess prerequisites
+        if: runner.os == 'Windows'
+        run: '"$AGENTCTL_EXAMPLES_PYTHON" -m unittest discover -s examples/devops -p test_service_operations.py'
+
       - name: Run deterministic verification gate
         run: cargo xtask verify
 

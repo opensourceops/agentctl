@@ -7,12 +7,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 
 import fixture
 import package
-from yaml_io import load, dumps
+import setup_example
+from local_service import create_server
+from yaml_io import load, dumps, dump
 
 
 ROOT = Path(__file__).resolve().parent
@@ -169,6 +172,53 @@ class CookbookPackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "existing work"):
                 package.package_example("03", root / "first")
             self.assertEqual(before, authored_files(root / "first"))
+
+    @unittest.skipUnless(os.environ.get("AGENTCTL_EXAMPLES_BINARY"), "xtask supplies the built CLI for environment denial")
+    def test_service_probe_missing_environment_permission_denies_before_http(self):
+        # Exercise the real policy boundary on every platform; the declared
+        # reference must be rejected before either extension handshake or HTTP.
+        with tempfile.TemporaryDirectory(prefix="agentctl-service-environment-denial-") as directory:
+            destination = Path(directory) / "package"
+            package.package_example("14", destination)
+            setup_example.prepare(destination)
+            workflow = load(destination / "local.workflow.yaml")
+            action = workflow["spec"]["actions"]["probe-service"]
+            action["env"] = {"SYSTEMROOT": {"env": "SYSTEMROOT"}}
+            workflow["spec"]["policy"]["environmentAllowlist"] = []
+            expected = (destination / "artifacts/service.json").read_bytes().decode("utf-8")
+            workflow["spec"]["tasks"] = [{"id": "probe", "uses": "action:probe-service", "with": {
+                "endpointPath": "service-endpoint.json", "expectedText": expected, "requireHealthy": True}}]
+            workflow["spec"]["outputs"] = {"report": "${{ tasks.probe.output }}"}
+            path = destination / "denied.workflow.yaml"
+            dump(path, workflow)
+            server = create_server(destination)
+            hits = []
+            original = server.finish_request
+            def record_request(*args):
+                hits.append(True)
+                return original(*args)
+            server.finish_request = record_request
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+            thread.start()
+            try:
+                checked = subprocess.run([os.environ["AGENTCTL_EXAMPLES_BINARY"], "check", str(path), "--workspace", str(destination),
+                                          "--output", "json"], cwd=destination, capture_output=True, text=True, timeout=30)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                result = subprocess.run([os.environ["AGENTCTL_EXAMPLES_BINARY"], "run", str(path), "--workspace", str(destination),
+                                         "--db", str(destination / "state.db"), "--output", "json"],
+                                        cwd=destination, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                envelope = json.loads(result.stdout or result.stderr)
+                self.assertIn("environment variable is not authorized: SYSTEMROOT", envelope["error"]["message"])
+                self.assertEqual(hits, [])
+                self.assertEqual((destination / "artifacts/service.json").read_bytes(), expected.encode("utf-8"))
+                self.assertFalse((destination / "evidence/fixture-error.json").exists())
+                self.assertFalse((destination / "artifacts/report.json").exists())
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
 
     @unittest.skipUnless(os.environ.get("AGENTCTL_EXAMPLES_BINARY"), "xtask supplies the built CLI for compiler equivalence")
     def test_json_to_readable_yaml_preserves_actual_compiled_digests(self):

@@ -105,11 +105,16 @@ def python_executable():
 
 def record_failure(error):
     # Exception values and source lines can include input data. Preserve only
-    # stack locations and the exception class in this local fixture diagnostic.
+    # stack locations, the exception class and numeric OS error codes here.
     diagnostic = {"errorType": type(error).__name__, "frames": [
         {"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
         for frame in traceback.extract_tb(error.__traceback__)[-12:]],
         "exceptionValuesRedacted": True}
+    for key, candidate in (("errorCodes", error), ("reasonCodes", getattr(error, "reason", None))):
+        codes = {name: value for name in ("errno", "winerror")
+                 if type(value := getattr(candidate, name, None)) is int}
+        if codes:
+            diagnostic[key] = codes
     write("evidence/fixture-error.json", diagnostic)
 
 

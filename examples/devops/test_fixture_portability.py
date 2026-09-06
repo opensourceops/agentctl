@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.error import URLError
 from unittest.mock import patch
 
 import fixture
@@ -169,6 +170,22 @@ class FixturePortabilityTests(unittest.TestCase):
             self.assertEqual(diagnostic["errorType"], "ValueError")
             self.assertTrue(diagnostic["frames"])
             self.assertTrue(diagnostic["exceptionValuesRedacted"])
+
+    def test_failure_diagnostic_keeps_only_numeric_os_codes_and_redacts_url_reason(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(fixture, "ROOT", Path(directory).resolve()):
+            reason = OSError(10106, "SENSITIVE_SOCKET_REASON")
+            reason.winerror = 10106
+            fixture.record_failure(URLError(reason, "SENSITIVE_URL"))
+            contents = (Path(directory) / "evidence/fixture-error.json").read_text()
+            self.assertNotIn("SENSITIVE", contents)
+            diagnostic = json.loads(contents)
+            self.assertEqual(diagnostic["reasonCodes"], {"errno": 10106, "winerror": 10106})
+            reason.errno = "SENSITIVE_NON_NUMERIC_CODE"
+            reason.winerror = True
+            fixture.record_failure(reason)
+            contents = (Path(directory) / "evidence/fixture-error.json").read_text()
+            self.assertNotIn("SENSITIVE", contents)
+            self.assertNotIn("errorCodes", json.loads(contents))
 
 
 if __name__ == "__main__":

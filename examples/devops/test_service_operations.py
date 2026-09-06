@@ -1,15 +1,22 @@
 """Real loopback and local-state regressions; no providers or production services."""
 import json
+import copy
+import os
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tempfile
 import threading
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
 import fixture
 from local_service import create_server
 import service_operations as service
+import package
+import setup_example
+from yaml_io import load
 
 
 class ServiceOperationTests(unittest.TestCase):
@@ -58,6 +65,79 @@ class ServiceOperationTests(unittest.TestCase):
         self.assertEqual(restored["version"], "8.4")
         self.assertEqual((self.root / "artifacts/service.json").read_bytes(), prior.encode())
         self.assertFalse(service.service_probe(fixture, probe)["verified"])
+
+    def test_packaged_probe_uses_only_declared_environment_in_real_child_http_request(self):
+        destination = self.root / "package"
+        package.package_example("14", destination)
+        setup_example.prepare(destination)
+        workflow = load(destination / "local.workflow.yaml")
+        action = workflow["spec"]["actions"]["probe-service"]
+        environment = {name: os.environ[reference["env"]] for name, reference in action.get("env", {}).items()}
+        self.assertEqual(set(environment), {"SYSTEMROOT"} if sys.platform == "win32" else set())
+        server = self.start_server(create_server(destination))
+        expected = (destination / "artifacts/service.json").read_bytes().decode("utf-8")
+        request = {"effectId": "fixture-loopback-probe", "input": {
+            "endpointPath": "service-endpoint.json", "expectedText": expected, "requireHealthy": True}}
+        child = subprocess.run([action["command"], *action["args"], "--agentctl-invoke"],
+                               cwd=destination, env=environment, input=json.dumps(request),
+                               capture_output=True, text=True, timeout=15)
+        diagnostic = destination / "evidence/fixture-error.json"
+        safe_cause = diagnostic.read_text(encoding="utf-8") if diagnostic.is_file() else ""
+        self.assertEqual(child.returncode, 0, child.stderr + safe_cause)
+        output = json.loads(child.stdout)["output"]
+        self.assertTrue(output["verified"])
+        self.assertEqual(output["httpStatus"], 200)
+        self.assertEqual(output["sha256"], service.digest(expected))
+        self.assertEqual(output["url"], f"http://127.0.0.1:{server.server_port}/service.json")
+
+    def test_windows_setup_selects_only_probes_without_inheriting_environment(self):
+        workflow = {"spec": {"policy": {"processAllowlist": ["python3"]}, "actions": {
+            "probe": {"kind": "extension.process", "args": ["helper.py", "service-probe"]},
+            "snapshot": {"kind": "extension.process", "args": ["helper.py", "service-snapshot"]}}}}
+        original = copy.deepcopy(workflow)
+        self.assertEqual(setup_example.configure_service_environment(workflow, platform="linux", environment={}), [])
+        self.assertEqual(workflow, original)
+        requirements = setup_example.configure_service_environment(workflow, platform="win32", environment={
+            "SYSTEMROOT": "PRIVATE_ROOT_VALUE", "PRIVATE_UNRELATED": "PRIVATE_OTHER_VALUE"})
+        self.assertEqual(requirements, ["SYSTEMROOT"])
+        self.assertEqual(workflow["spec"]["policy"]["environmentAllowlist"], ["SYSTEMROOT"])
+        self.assertEqual(workflow["spec"]["actions"]["probe"]["env"], {"SYSTEMROOT": {"env": "SYSTEMROOT"}})
+        self.assertNotIn("env", workflow["spec"]["actions"]["snapshot"])
+        self.assertNotIn("PRIVATE_", json.dumps(workflow))
+        no_probe = copy.deepcopy(original)
+        del no_probe["spec"]["actions"]["probe"]
+        before = copy.deepcopy(no_probe)
+        self.assertEqual(setup_example.configure_service_environment(no_probe, platform="win32", environment={}), [])
+        self.assertEqual(no_probe, before)
+
+    def test_windows_setup_rejects_missing_prerequisite_or_conflicting_explicit_authority(self):
+        base = {"spec": {"policy": {}, "actions": {
+            "probe": {"kind": "extension.process", "args": ["helper.py", "service-probe"]}}}}
+        for environment in ({}, {"SYSTEMROOT": " "}):
+            value = copy.deepcopy(base)
+            with self.assertRaisesRegex(ValueError, "require SYSTEMROOT"):
+                setup_example.configure_service_environment(value, platform="win32", environment=environment)
+            self.assertEqual(value, base)
+        for setting in ({"SYSTEMROOT": {"env": "PRIVATE_OVERRIDE"}}, {"SystemRoot": {"env": "SystemRoot"}}):
+            value = copy.deepcopy(base)
+            value["spec"]["actions"]["probe"]["env"] = setting
+            before = copy.deepcopy(value)
+            with self.assertRaisesRegex(ValueError, "Conflicting explicit"):
+                setup_example.configure_service_environment(value, platform="win32", environment={"SYSTEMROOT": "present"})
+            self.assertEqual(value, before)
+        value = copy.deepcopy(base)
+        value["spec"]["policy"]["environmentAllowlist"] = ["AUTHORED_ENV"]
+        before = copy.deepcopy(value)
+        with self.assertRaisesRegex(ValueError, "Explicit environmentAllowlist excludes"):
+            setup_example.configure_service_environment(value, platform="win32", environment={"SYSTEMROOT": "present"})
+        self.assertEqual(value, before)
+        value["spec"]["policy"]["environmentAllowlist"].append("SYSTEMROOT")
+        value["spec"]["policy"]["toolsDeny"] = ["filesystem.write"]
+        value["spec"]["actions"]["probe"]["env"] = {"AUTHORED_ENV": {"env": "AUTHORED_ENV"}}
+        before = copy.deepcopy(value)
+        setup_example.configure_service_environment(value, platform="win32", environment={"SYSTEMROOT": "present"})
+        self.assertEqual(value["spec"]["policy"], before["spec"]["policy"])
+        self.assertEqual(value["spec"]["actions"]["probe"]["env"]["AUTHORED_ENV"], {"env": "AUTHORED_ENV"})
 
     def test_probe_rejects_out_of_scope_destinations_before_network(self):
         expected = json.dumps({"version": "1", "healthy": True})
