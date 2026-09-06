@@ -1,0 +1,479 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-role-subworkflow-model-contract
+  description: Connect planner, reviewer, and executor through typed handoffs in a reusable sub-workflow with distinct tool visibility.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 8
+      maxTurns: 8
+      maxToolCalls: 4
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    plan-change:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - plan-change
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - configurationPath
+          - proposedTimeout
+          - maxTimeout
+        additionalProperties: false
+        properties:
+          configurationPath:
+            type: string
+          proposedTimeout:
+            type: integer
+          maxTimeout:
+            type: integer
+      outputSchema:
+        type: object
+        required:
+          - configuration
+          - sourceSha256
+          - configurationPath
+          - proposedTimeout
+          - maxTimeout
+          - allowed
+          - scope
+          - reportText
+        additionalProperties: false
+        properties:
+          configuration:
+            type: object
+          sourceSha256:
+            type: string
+          configurationPath:
+            type: string
+          proposedTimeout:
+            type: integer
+          maxTimeout:
+            type: integer
+          allowed:
+            type: boolean
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    review-change:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - review-change
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - context
+          - proposal
+          - review
+        additionalProperties: false
+        properties:
+          context:
+            type: object
+          proposal:
+            type: object
+          review:
+            type: object
+      outputSchema:
+        type: object
+        required:
+          - approved
+          - timeoutSeconds
+          - sourceSha256
+          - decision
+          - validation
+          - reportText
+        additionalProperties: false
+        properties:
+          approved:
+            type: boolean
+          timeoutSeconds:
+            type: integer
+          sourceSha256:
+            type: string
+          decision:
+            type: string
+          validation:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    apply-change:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - apply-change
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - context
+          - review
+          - requireStagedValue
+        additionalProperties: false
+        properties:
+          context:
+            type: object
+          review:
+            type: object
+          requireStagedValue:
+            type: boolean
+      outputSchema:
+        type: object
+        required:
+          - executed
+          - configuration
+          - artifactSha256
+          - originalPreserved
+          - scope
+          - reportText
+        additionalProperties: false
+        properties:
+          executed:
+            type: boolean
+          configuration:
+            type: object
+          artifactSha256:
+            type: string
+          originalPreserved:
+            type: boolean
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+    write:
+      kind: builtin.write
+  tasks:
+    - id: prepare-change
+      uses: action:plan-change
+      with:
+        configurationPath: '${{ inputs.configurationPath }}'
+        proposedTimeout: '${{ inputs.proposedTimeout }}'
+        maxTimeout: '${{ inputs.maxTimeout }}'
+    - id: roles
+      uses: workflow:change
+      needs:
+        - prepare-change
+      with:
+        context: '${{ tasks.prepare-change.output }}'
+    - id: analyze
+      uses: action:apply-change
+      needs:
+        - prepare-change
+        - roles
+      with:
+        context: '${{ tasks.prepare-change.output }}'
+        review: '${{ tasks.roles.output.review }}'
+        requireStagedValue: true
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    configurationPath: fixtures/configuration.json
+    proposedTimeout: 30
+    maxTimeout: 60
+  providers:
+    fake:
+      kind: fake
+  tools:
+    read_scope:
+      kind: builtin.workspace.read
+      description: Read the bundled service configuration; caller-provided context remains authoritative for alternate inputs
+      inputSchema:
+        type: object
+        required:
+          - path
+        additionalProperties: false
+        properties:
+          path:
+            type: string
+            enum:
+              - fixtures/configuration.json
+      outputSchema:
+        type: object
+      capability: filesystem.read
+      effectClass: observe
+      risk: low
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+    publish:
+      kind: builtin.workspace.write
+      description: Stage the reviewed timeout as decimal text at one fixed output path; deterministic validation controls the resulting configuration
+      inputSchema:
+        type: object
+        required:
+          - path
+          - content
+        additionalProperties: false
+        properties:
+          path:
+            type: string
+            enum:
+              - artifacts/role-timeout.txt
+          content:
+            type: string
+            pattern: ^[1-9][0-9]{0,3}$
+            maxLength: 4
+      outputSchema:
+        type: object
+      capability: filesystem.write
+      effectClass: workspace_mutate
+      risk: medium
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: policy
+  agents:
+    planner:
+      provider: fake
+      model: scripted
+      instructionsFile: instructions/planner.md
+      tools:
+        - read_scope
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 512
+      timeoutSeconds: 45
+      structuredOutput:
+        type: object
+        required:
+          - timeoutSeconds
+          - rationale
+        additionalProperties: false
+        properties:
+          timeoutSeconds:
+            type: integer
+          rationale:
+            type: string
+      providerOptions:
+        finalText: '{"timeoutSeconds": 30, "rationale": "Apply the requested bounded timeout."}'
+        toolInput:
+          path: fixtures/configuration.json
+    reviewer:
+      provider: fake
+      model: scripted
+      instructionsFile: instructions/reviewer.md
+      tools: []
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 512
+      timeoutSeconds: 45
+      structuredOutput:
+        type: object
+        required:
+          - approved
+          - timeoutSeconds
+          - rationale
+        additionalProperties: false
+        properties:
+          approved:
+            type: boolean
+          timeoutSeconds:
+            type: integer
+          rationale:
+            type: string
+      providerOptions:
+        finalText: '{"approved": true, "timeoutSeconds": 30, "rationale": "Requested timeout is within the maximum."}'
+    executor:
+      provider: fake
+      model: scripted
+      instructionsFile: instructions/executor.md
+      tools:
+        - publish
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 512
+      timeoutSeconds: 45
+      structuredOutput:
+        type: object
+        required:
+          - executed
+        additionalProperties: false
+        properties:
+          executed:
+            type: boolean
+      providerOptions:
+        finalText: '{"executed": true}'
+        toolInput:
+          path: artifacts/role-timeout.txt
+          content: '30'
+  subworkflows:
+    change:
+      version: 1.0.0
+      inputSchema:
+        type: object
+        required:
+          - context
+        additionalProperties: false
+        properties:
+          context:
+            type: object
+      outputSchema:
+        type: object
+        required:
+          - review
+        additionalProperties: false
+        properties:
+          review:
+            type: object
+            required:
+              - approved
+              - timeoutSeconds
+              - sourceSha256
+            additionalProperties: false
+            properties:
+              approved:
+                type: boolean
+              timeoutSeconds:
+                type: integer
+              sourceSha256:
+                type: string
+      outputs:
+        review: '${{ tasks.handoff.output.output }}'
+      tasks:
+        - id: plan
+          uses: agent:planner
+          with:
+            prompt: '${{ inputs.context }}'
+        - id: review
+          uses: agent:reviewer
+          needs:
+            - plan
+          with:
+            prompt:
+              context: '${{ inputs.context }}'
+              proposal: '${{ tasks.plan.output }}'
+        - id: validate-review
+          uses: action:review-change
+          needs:
+            - plan
+            - review
+          with:
+            context: '${{ inputs.context }}'
+            proposal: '${{ tasks.plan.output }}'
+            review: '${{ tasks.review.output }}'
+        - id: require-approval
+          uses: action:assert
+          needs:
+            - validate-review
+          with:
+            that: '${{ tasks.validate-review.output.approved }}'
+            message: reviewed change exceeds the configured maximum; executor is blocked
+        - id: handoff
+          uses: action:assign
+          needs:
+            - require-approval
+            - validate-review
+          with:
+            approved: '${{ tasks.validate-review.output.approved }}'
+            timeoutSeconds: '${{ tasks.validate-review.output.timeoutSeconds }}'
+            sourceSha256: '${{ tasks.validate-review.output.sourceSha256 }}'
+          outputSchema:
+            type: object
+            required:
+              - status
+              - changed
+              - before
+              - after
+              - diff
+              - output
+              - predictability
+            additionalProperties: false
+            properties:
+              status:
+                const: unchanged
+              changed:
+                const: false
+              before:
+                type: 'null'
+              after:
+                type: object
+                required:
+                  - approved
+                  - timeoutSeconds
+                  - sourceSha256
+                additionalProperties: false
+                properties:
+                  approved:
+                    type: boolean
+                  timeoutSeconds:
+                    type: integer
+                  sourceSha256:
+                    type: string
+              diff:
+                type: 'null'
+              output:
+                type: object
+                required:
+                  - approved
+                  - timeoutSeconds
+                  - sourceSha256
+                additionalProperties: false
+                properties:
+                  approved:
+                    type: boolean
+                  timeoutSeconds:
+                    type: integer
+                  sourceSha256:
+                    type: string
+              predictability:
+                const: fully_predictable
+        - id: execute
+          uses: agent:executor
+          needs:
+            - handoff
+          with:
+            prompt: '${{ tasks.handoff.output.output }}'
+  outputs:
+    report: '${{ tasks.analyze.output }}'

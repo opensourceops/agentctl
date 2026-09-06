@@ -1,0 +1,2740 @@
+{
+  "schemaVersion": "agentctl.dev/pr-review-followup-evidence/v1",
+  "recordedAt": "2026-09-06T09:51:14.113744+00:00",
+  "frameworkCodeSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+  "documentationCodeSha": "8b3cdda50dea34a7282365f0d09dc7eef219848c",
+  "frameworkPr": "https://github.com/opensourceops/agentctl/pull/7",
+  "documentationPr": "https://github.com/opensourceops/opensourceops.github.io/pull/6",
+  "verdicts": {
+    "runtime": "launch-ready pre-1.0 candidate for review; unpublished",
+    "developerDocumentation": "ready for review at the paired source; undeployed"
+  },
+  "evidenceCommitPolicy": "The commits containing this report may add execution evidence after the tested code SHAs. They are identified separately in the PRs and delivery report; earlier runs are never relabeled as execution against those later evidence-only commits.",
+  "review": {
+    "reviewedFrameworkSha": "bb633fdec35a73f986d7d5d5d74e4f6c72ef6923",
+    "reviewedDocumentationSha": "d4b79f833d0a9d9983a44782d86453cc2e41061e",
+    "findings": [
+      {
+        "id": 1,
+        "finding": "JSON generated into authored YAML",
+        "disposition": "fixed",
+        "behavior": "Pinned YAML 1.2 parser/serializer, readable block YAML, duplicate-key rejection, semantic-equivalence proof and deterministic regeneration cover generator and runner negative variants."
+      },
+      {
+        "id": 2,
+        "finding": "Public journey depends on acceptance harness",
+        "disposition": "fixed",
+        "behavior": "Every case has a complete portable package, pinned declared dependencies, published setup, direct CLI commands and case-specific recovery. Named helper operations leave orchestration visible in YAML; run.py is optional."
+      },
+      {
+        "id": 3,
+        "finding": "Release-note analysis falsely idempotent",
+        "disposition": "fixed",
+        "behavior": "Fixture Git history is prepared separately. Operational analysis consumes an existing repository and explicit ref range; repeated calls preserve Git and produce identical verified output."
+      },
+      {
+        "id": 4,
+        "finding": "Arbitrary JUnit errors classified as infrastructure",
+        "disposition": "fixed",
+        "behavior": "Preserves errors, failures and skips across nested suites and optional attributes; infrastructure classification requires source evidence. Application ValueError is a regression fixture."
+      },
+      {
+        "id": 5,
+        "finding": "Advice verifier accepts contradictory recommendations",
+        "disposition": "fixed with explicit evidence boundary",
+        "behavior": "Controlled decisions must match observations and cited evidence. Contradictory or unsupported actions are rejected; arbitrary model prose remains explicitly advisory."
+      },
+      {
+        "id": 6,
+        "finding": "Fixed-token mechanics presented as reusable operations",
+        "disposition": "fixed with labeled fixture boundaries",
+        "behavior": "Input-driven local deployment, actual HTTP health, captured-state compensation, substantive typed role review and artifact-validated bounded remediation have practical paths. Fake fault aids remain separately labeled."
+      },
+      {
+        "id": 7,
+        "finding": "Successful analysis mistaken for release permission",
+        "disposition": "fixed",
+        "behavior": "Report-only no-go retains exit 0. Separate CI enforcement workflows fail with exit 4 and prove the downstream marker was not created."
+      },
+      {
+        "id": 8,
+        "finding": "Twenty tutorials missing from site/search",
+        "disposition": "fixed",
+        "behavior": "All 20 have stable site routes, search entries, readable/copyable YAML and complete downloads whose manifest/file hashes bind the exact framework source."
+      },
+      {
+        "id": 9,
+        "finding": "Navigation foregrounds internal release records",
+        "disposition": "fixed",
+        "behavior": "Six task-oriented groups prioritize installation, first use, authoring, cookbook and recovery. Advanced history remains reachable at existing routes; workflow API v1 is distinguished from pre-1.0 CLI maturity."
+      },
+      {
+        "id": 10,
+        "finding": "Doctor skips required host process dependencies",
+        "disposition": "reproduced through real CLI and fixed",
+        "behavior": "Metadata-only explicit executable, direct script, cwd, execute-bit and declared environment checks. Missing checked prerequisites or unresolved bare command lookup return not-ready/exit 6. Transitive dependencies and executable loading remain explicitly unverified even when checked metadata is present."
+      }
+    ],
+    "additionalCorrections": [
+      "Reject negative/impossible canary counts and invalid exception scope, revocation and dates.",
+      "Use actual GitHub Actions YAML, Terraform plan JSON and a pinned full Kubernetes Deployment schema while preserving unrelated fields.",
+      "Preserve actual test content hashes for supplied vendored-code patches and verify failure before and success after application.",
+      "Preserve outstanding runtime reservations in both paid-runner success and failure reconciliation.",
+      "Use selected absolute Python interpreter under an empty environment; assert venv discovery on Linux and native artifact paths on Windows.",
+      "Make cookbook ZIP manifest and member paths portable and verify every manifest digest through the archive member name.",
+      "Replace the yanked chacha20 0.10.1 lockfile entry with upstream 0.10.2 without relaxing dependency denial.",
+      "Prove process-extension handshake versus post-invocation failure phases through actual markers instead of a startup timing assumption.",
+      "Fix copy-feedback contrast and render keyboard focus for wide documentation code blocks before delayed client initialization.",
+      "Declare only the Windows service-probe SYSTEMROOT startup prerequisite, preserve conflicting authored settings and environment denial, test real env-cleared child HTTP, and retain numeric OS error codes without exception values."
+    ],
+    "compatibility": {
+      "instructions": "Existing exclusive inline instructions versus instructionsFile syntax remains.",
+      "variablePrecedenceLowToHigh": [
+        "workflow files",
+        "workflow inline",
+        "agent files",
+        "agent inline",
+        "task files",
+        "task inline",
+        "invocation files",
+        "invocation inline"
+      ],
+      "merge": "Later repeated files/flags win by replacing a whole top-level key, including objects, arrays, scalars and null. Typed inputs remain a separate namespace. Ordinary variables grant no authority or implicit environment/secret access.",
+      "runtime": "Rust production implementation, bounded compiled graph, explicit grants, effect ledger, local SQLite and conservative recovery are preserved."
+    },
+    "intentionalBoundaries": [
+      "Local service and cloud-plan examples are disposable fixtures; no production deployment or Terraform apply is claimed.",
+      "Trusted host Python is not an OS sandbox for its child processes or file writes.",
+      "Schema validation does not establish Kubernetes admission or live-cluster conformance.",
+      "The supplied vendored-code patch journey is not a package-registry upgrade implementation.",
+      "Compensation is best-effort inverse execution; uncertain remote effects require evidence and reconciliation.",
+      "Fresh model output is nondeterministic; deterministic control does not imply exactly-once remote mutation.",
+      "Live services tested are OpenAI and isolated local/OCI fixtures; no other provider, real MCP/A2A peer, cloud account or production infrastructure live coverage is inferred.",
+      "No performance or cost savings are claimed. Recorded duration and usage are observations, not comparative benchmarks."
+    ]
+  },
+  "installedDirectJourneys": {
+    "status": "passed",
+    "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "sourceWorktreeDirty": false,
+    "binarySha256": "55462ef9413222fd1bd0b1755544e675a223a767d183e2f26744fd2433f5d01d",
+    "imageId": "028e9c6e396df864557156c594bf435f970f06dbb70005e1a62244d57c8080f3",
+    "install": {
+      "argv": [
+        "cargo",
+        "install",
+        "--locked",
+        "--git",
+        "https://github.com/opensourceops/agentctl",
+        "--rev",
+        "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "agentctl-cli",
+        "--root",
+        "/work/installed-4a22f7f"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 5.820957899093628,
+      "cargoInstalledMetadataSha256": "7e44270dc361ef1b5d3517dfa08afb1d0e5239f01d34304ab7eadecdf3ba0a12"
+    },
+    "direct": {
+      "primaryCasesPassed": 20,
+      "supplementalCasesPassed": 1,
+      "wallSeconds": 112.14191484451294,
+      "sourceUnchanged": true,
+      "binaryUnchanged": true,
+      "cases": [
+        {
+          "case": "01",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/01/baseline/package/example.json",
+          "packageManifestSha256": "dc4820e3ce0ce3f270407661f11d3ca914939753711301ac2664fe25d26df33d",
+          "reportSha256": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976"
+          },
+          "wallSeconds": 1.141
+        },
+        {
+          "case": "02",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/02/baseline/package/example.json",
+          "packageManifestSha256": "9051cd85fc7bc7976f5091e85d4d05520134aad5ba6e48f057734f9e15ad926c",
+          "reportSha256": "a8071d2812ab9d47b653eea11c40cf4867e9ec5b6138ba628b5e58a220a04be1",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "a8071d2812ab9d47b653eea11c40cf4867e9ec5b6138ba628b5e58a220a04be1"
+          },
+          "wallSeconds": 0.863
+        },
+        {
+          "case": "03",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/03-primary/example.json",
+          "packageManifestSha256": "0d05217f1d60421b918da25affd5da2af428c3f3c75d8c854125fbc42aea9c33",
+          "reportSha256": "ee32228f44cff03fad00fde646f79763225f39265df06dc92e393e3d02dd9aec",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/patch-workspace/pipeline.yaml": "b0841ef1f6a33711b2903d152ba1fe80eb6ed77047419aca778f202a5072deb1",
+            "artifacts/proposed/pipeline.yaml": "b0841ef1f6a33711b2903d152ba1fe80eb6ed77047419aca778f202a5072deb1",
+            "artifacts/proposed.patch": "36d513ff93d10193944a8a5606a1d1ab4563bae865935646360c6e8cdb9e49b3",
+            "artifacts/report.json": "ee32228f44cff03fad00fde646f79763225f39265df06dc92e393e3d02dd9aec"
+          },
+          "wallSeconds": 1.073
+        },
+        {
+          "case": "04",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/04-primary/example.json",
+          "packageManifestSha256": "51facf4f493eae2c294dfe2b627537d28f190d32507a4ff3ed1964d369cbddf7",
+          "reportSha256": "3786c6781edaa2a522367d0d8c42449e0e592e8431e98397c51de7cbfa5e208e",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/Dockerfile": "b3b3be3302317d2208a5fc263feffa69acf0cb59c117c6cf0accb3fa60f5704e",
+            "artifacts/app.py": "e75d7b57ccf207fab312497b53ac7f0c733a40ea8849f61c661f7f3399805ad6",
+            "artifacts/patch-workspace/Dockerfile": "b3b3be3302317d2208a5fc263feffa69acf0cb59c117c6cf0accb3fa60f5704e",
+            "artifacts/proposed/Dockerfile": "b3b3be3302317d2208a5fc263feffa69acf0cb59c117c6cf0accb3fa60f5704e",
+            "artifacts/proposed.patch": "de24ac66c4799509d2bac5c63adaba42bebdad5a2d760db0e7f46c6fc8d39522",
+            "artifacts/report.json": "3786c6781edaa2a522367d0d8c42449e0e592e8431e98397c51de7cbfa5e208e"
+          },
+          "wallSeconds": 1.213
+        },
+        {
+          "case": "05",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/05-primary/example.json",
+          "packageManifestSha256": "c5f717aa8345bce12c8acccc19fe36454ec0b5817371a69b72e06ba97db656a2",
+          "reportSha256": "96ba687c7e1756a0b63c7b0d48ea7ec31ff530b51c582923a2cca902fba26397",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/deployment.json": "f258257f6b9f0b064c0f92ae980c54d701bbfe5dcb5c409975b56d3dd1d0ce4d",
+            "artifacts/deployment.yaml": "51929c748a4c148b8f4c9c319f4fdbc4259438f51ac36cca5f8d10646cec84fe",
+            "artifacts/proposed/deployment.yaml": "51929c748a4c148b8f4c9c319f4fdbc4259438f51ac36cca5f8d10646cec84fe",
+            "artifacts/proposed.patch": "d615ccc19860e5738c3fea27564b87b4ea1e6fd7df3cbe88e6e2ac3eda9e3a53",
+            "artifacts/report.json": "96ba687c7e1756a0b63c7b0d48ea7ec31ff530b51c582923a2cca902fba26397"
+          },
+          "wallSeconds": 1.273
+        },
+        {
+          "case": "06",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/06-primary/example.json",
+          "packageManifestSha256": "81fd831f5db1de734f8dbbef62c70201867c13b024928e87bd7b7bcbd311c6d9",
+          "reportSha256": "48a50c3c47d7199eb121f9741057479ebf26c57584e829e73b14a3ffd4a230e4",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/local-state.json": "aad55c5f88c897c4fd055ce78bfbd9d3e14bc357a0173b851a0662970d9fc9ac",
+            "artifacts/report.json": "48a50c3c47d7199eb121f9741057479ebf26c57584e829e73b14a3ffd4a230e4"
+          },
+          "wallSeconds": 1.834
+        },
+        {
+          "case": "07",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/07-primary/example.json",
+          "packageManifestSha256": "b603c4058809395abf34b3048652c46d779922ae401fed1840bbe3897e45e048",
+          "reportSha256": "9f3313ece4259813f352bf96ce8dec99aa44b176afbe6ac6b18de8e5c5ad5163",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/patch-workspace/test_dependency.py": "b5a4dda01359d29de2a490fdb15dac42f252dff217db92fbb5884d8292584100",
+            "artifacts/patch-workspace/vendor_version.py": "4351ce10da90c5dc5a9e9acc8a4e863702097123f6038ea26dd6ba75cf724822",
+            "artifacts/proposal-workspace/.git/HEAD": "f6f2b945f6c411b02ba3da9c7ace88dcf71b6af65ba2e0d89aa82900042b5a10",
+            "artifacts/proposal-workspace/.git/config": "9521128740784e9183224f2279fd3ff585dbb5e36c3a25bd4c6484faaf8138ca",
+            "artifacts/proposal-workspace/.git/description": "85ab6c163d43a17ea9cf7788308bca1466f1b0a8d1cc92e26e9bf63da4062aee",
+            "artifacts/proposal-workspace/.git/hooks/applypatch-msg.sample": "0223497a0b8b033aa58a3a521b8629869386cf7ab0e2f101963d328aa62193f7",
+            "artifacts/proposal-workspace/.git/hooks/commit-msg.sample": "1f74d5e9292979b573ebd59741d46cb93ff391acdd083d340b94370753d92437",
+            "artifacts/proposal-workspace/.git/hooks/fsmonitor-watchman.sample": "e0549964e93897b519bd8e333c037e51fff0f88ba13e086a331592bf801fa1d0",
+            "artifacts/proposal-workspace/.git/hooks/post-update.sample": "81765af2daef323061dcbc5e61fc16481cb74b3bac9ad8a174b186523586f6c5",
+            "artifacts/proposal-workspace/.git/hooks/pre-applypatch.sample": "e15c5b469ea3e0a695bea6f2c82bcf8e62821074939ddd85b77e0007ff165475",
+            "artifacts/proposal-workspace/.git/hooks/pre-commit.sample": "f9af7d95eb1231ecf2eba9770fedfa8d4797a12b02d7240e98d568201251244a",
+            "artifacts/proposal-workspace/.git/hooks/pre-merge-commit.sample": "d3825a70337940ebbd0a5c072984e13245920cdf8898bd225c8d27a6dfc9cb53",
+            "artifacts/proposal-workspace/.git/hooks/pre-push.sample": "ecce9c7e04d3f5dd9d8ada81753dd1d549a9634b26770042b58dda00217d086a",
+            "artifacts/proposal-workspace/.git/hooks/pre-rebase.sample": "4febce867790052338076f4e66cc47efb14879d18097d1d61c8261859eaaa7b3",
+            "artifacts/proposal-workspace/.git/hooks/pre-receive.sample": "a4c3d2b9c7bb3fd8d1441c31bd4ee71a595d66b44fcf49ddb310252320169989",
+            "artifacts/proposal-workspace/.git/hooks/prepare-commit-msg.sample": "e9ddcaa4189fddd25ed97fc8c789eca7b6ca16390b2392ae3276f0c8e1aa4619",
+            "artifacts/proposal-workspace/.git/hooks/push-to-checkout.sample": "a53d0741798b287c6dd7afa64aee473f305e65d3f49463bb9d7408ec3b12bf5f",
+            "artifacts/proposal-workspace/.git/hooks/update.sample": "8d5f2fa83e103cf08b57eaa67521df9194f45cbdbcb37da52ad586097a14d106",
+            "artifacts/proposal-workspace/.git/info/exclude": "6671fe83b7a07c8932ee89164d1f2793b2318058eb8b98dc5c06ee0a5a3b0ec1",
+            "artifacts/proposal-workspace/vendor_version.py": "4351ce10da90c5dc5a9e9acc8a4e863702097123f6038ea26dd6ba75cf724822",
+            "artifacts/proposed.patch": "ace25dee534de873f766eb665ca2c65c950134ff9ce327a861efaaba39031510",
+            "artifacts/report.json": "9f3313ece4259813f352bf96ce8dec99aa44b176afbe6ac6b18de8e5c5ad5163",
+            "artifacts/test-after.txt": "fb0433ee2f87074895f396f8db1fd1673941e0645f8d80b0defaca78f4c37a1d",
+            "artifacts/test-before.txt": "3db0a52c1c3ac786e8b5bdca8463fccc1a1adf5b0b6b9fde21d7937801e1fef3"
+          },
+          "wallSeconds": 2.567
+        },
+        {
+          "case": "08",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/08/baseline/package/example.json",
+          "packageManifestSha256": "ec6c355fc591165bbda6758a5cc506e999bac10985f608ffc0bd488a90145e19",
+          "reportSha256": "193b33abfe559a63413721a58bdd26ba1dc98b72d12c4abbcc0c260340490845",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "193b33abfe559a63413721a58bdd26ba1dc98b72d12c4abbcc0c260340490845"
+          },
+          "wallSeconds": 1.295
+        },
+        {
+          "case": "09",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/09/baseline/package/example.json",
+          "packageManifestSha256": "5959e13a4aa34a2e33ee9e7947caa01758c6eca54785d454ef4e9be32fbe6d28",
+          "reportSha256": "f900be8ebc601bb9b3854569a8dc04e4e1bd4475687905cac42a7a11ba9435d1",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/CHANGELOG.md": "cdee3b8870890487da7835400cc3a19a79eeda5bededb96cf9173cd92699c07c",
+            "artifacts/report.json": "f900be8ebc601bb9b3854569a8dc04e4e1bd4475687905cac42a7a11ba9435d1"
+          },
+          "wallSeconds": 2.056
+        },
+        {
+          "case": "10",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/10/baseline/package/example.json",
+          "packageManifestSha256": "b65528377f93f1ccc55e1650183d2fa6e2b8f57c0579abce1ab99def7b84924e",
+          "reportSha256": "aa6dbb24bb58a1d8a59cfdd7205c2637234b40f70c9a25fc2d6cde2240d4ff82",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "aa6dbb24bb58a1d8a59cfdd7205c2637234b40f70c9a25fc2d6cde2240d4ff82"
+          },
+          "wallSeconds": 1.052
+        },
+        {
+          "case": "11",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/11/baseline/package/example.json",
+          "packageManifestSha256": "45270486ac121755f31e66805baa76331636c5d36ceae029bd3dea005f77c7ff",
+          "reportSha256": "e66674b49e831566414a479515374367155bdc3b4fe8cef83e603ad25a08902b",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "e66674b49e831566414a479515374367155bdc3b4fe8cef83e603ad25a08902b"
+          },
+          "wallSeconds": 0.872
+        },
+        {
+          "case": "12",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/12/baseline/package/example.json",
+          "packageManifestSha256": "f34729e6f550d2cfd41631d30ee6fe1b292a09a78328f60f7c69fb00b8663a4f",
+          "reportSha256": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9"
+          },
+          "wallSeconds": 1.217
+        },
+        {
+          "case": "13",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/analysis/13/baseline/package/example.json",
+          "packageManifestSha256": "f8dcde20f648af914273e7b0888500779002405bc661db018f796ffb16b434bc",
+          "reportSha256": "436c317a3d8821ea5a600f6a1fe321dd29bd32478eb8a1d64406c3e78917b456",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/promotion.json": "81b2394836773ce5178edf79c6064cd47afa5bc624d1b3ae77209c4094762c0e",
+            "artifacts/report.json": "436c317a3d8821ea5a600f6a1fe321dd29bd32478eb8a1d64406c3e78917b456"
+          },
+          "wallSeconds": 1.063
+        },
+        {
+          "case": "14",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/services/14-primary/package/example.json",
+          "packageManifestSha256": "b66d0b2a096ee1be83e4de45ae3557665cd9707682bab3f70cbc340394a2a58e",
+          "reportSha256": "78cf71e9b5a376fd893c0be0bb64b4e9b280e796b8e0c5613335e92d9032a88b",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/prior-service.json": "5be1f1d5ff1d1e887a72695cdd83dc8a82a8c4f4c8ec93dd9b0a2820c66560f5",
+            "artifacts/report.json": "78cf71e9b5a376fd893c0be0bb64b4e9b280e796b8e0c5613335e92d9032a88b",
+            "artifacts/service.json": "8440b7db182f5017b0cf2b627dede29133011e55bad84b59449b4cb0e207dcb7"
+          },
+          "wallSeconds": 7.683
+        },
+        {
+          "case": "15",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/services/15-primary/package/example.json",
+          "packageManifestSha256": "ce21295b92387b31eebd385543d39f47df879f6a4727573db67dc7abd4b6e9a8",
+          "reportSha256": "eba5130e4b9511d7bc6a1e36503ce3a894c4883956e0cc7173b043e851c6d3fd",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/deployment-journal.json": "a98b2b86bd88509930dc643706956e2571026886cc043b80c4e991f502de7b2c",
+            "artifacts/mutations.txt": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "artifacts/report.json": "eba5130e4b9511d7bc6a1e36503ce3a894c4883956e0cc7173b043e851c6d3fd",
+            "artifacts/service.json": "4e5de4fd1b4092b03c0c13d25d4f6a4fa6bfca9b70feb5a932d559e69c086bb6"
+          },
+          "wallSeconds": 8.092
+        },
+        {
+          "case": "16",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/services/16-primary/package/example.json",
+          "packageManifestSha256": "6a2f706566761f766de585febb486cab12fe46d6d36a8c73717831ad882173d1",
+          "reportSha256": "0bf410383f9c59d8d1f7b00a8edb87fdb1998160a2420042deaab2e6596f46bf",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/deployment-journal.json": "f207f1f2ee95a37cb046a052bce30ebb106e96f4e4631e3734885848b45f12ea",
+            "artifacts/mutations.txt": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "artifacts/report.json": "0bf410383f9c59d8d1f7b00a8edb87fdb1998160a2420042deaab2e6596f46bf",
+            "artifacts/service.json": "ae0080bcb621e0f64398d40c93895da8c0469bc8b88f76364440a275e2abac8e"
+          },
+          "wallSeconds": 9.698
+        },
+        {
+          "case": "17",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/services/17-primary/package/example.json",
+          "packageManifestSha256": "eb24df3e90dae18342c09f076334ad3a58730e9e70365d5bcf6481ca7a6394ad",
+          "reportSha256": null,
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/prior-service.json": "02f9f923565f695376c09a62f3973fe4c90d1674372b842aa348f0ea17e59cfd",
+            "artifacts/reconciliation.json": "f69fe498849ebcff765bbaae9a98f9cedf6948fa71aac8b9414c96c1bf2c2218",
+            "artifacts/service.json": "02f9f923565f695376c09a62f3973fe4c90d1674372b842aa348f0ea17e59cfd"
+          },
+          "wallSeconds": 12.32
+        },
+        {
+          "case": "18",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/services/18-primary/package/example.json",
+          "packageManifestSha256": "9bcd3171255b61ab4611acb030f9f4a5633927cde7d2606bc7ded431f7f0c30a",
+          "reportSha256": "54b7fc714924a49f16f9598cfc88b7952bad6dbbc04b2f39755acc38fc33f2fa",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "54b7fc714924a49f16f9598cfc88b7952bad6dbbc04b2f39755acc38fc33f2fa"
+          },
+          "wallSeconds": 11.353
+        },
+        {
+          "case": "19",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/19-primary/example.json",
+          "packageManifestSha256": "cc419e99c96bb887dd7ff031ab2d627ea61f0920e2db877a90e5cd2dafdf1a66",
+          "reportSha256": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/report.json": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b",
+            "artifacts/reviewed-configuration.json": "baa63bdbda5e0b23f91f58802f13bb33bda412ca78f449e3c6a9477488a1b8bc"
+          },
+          "wallSeconds": 1.671
+        },
+        {
+          "case": "20",
+          "status": "passed",
+          "packageManifestPath": "direct-4a22f7f/formats/20-primary/example.json",
+          "packageManifestSha256": "e117df08ab9c2d8e9f05b0fa56d1dd67eac393edc5ceee6b88bd57b8a77847a5",
+          "reportSha256": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07",
+          "semanticArtifactsSha256": {
+            "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifacts/remediation.json": "9018d862edc9898c569aa5c2129ff9f786402bafcead18b7dc60a8bc8ecc6731",
+            "artifacts/report.json": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07"
+          },
+          "wallSeconds": 1.868
+        }
+      ],
+      "detailedCommandLogHashesIn": [
+        "direct-4a22f7f/analysis.json",
+        "direct-4a22f7f/formats.json",
+        "direct-4a22f7f/services.json"
+      ]
+    },
+    "onboarding": {
+      "casesPassed": 2,
+      "cases": [
+        {
+          "page": "GETTING_STARTED.md",
+          "status": "passed",
+          "pageSha256": "1e9a4212ec51d04fca65cd949fc8590a5d19894c613b0cfd1f61bae9804600b8",
+          "runId": "run-01a0760c-6045-74a2-88a0-2de98391e64a",
+          "replayRunId": "replay-01a0760c-60e2-7871-b1cd-554631d5d6f2",
+          "providerRequests": 0,
+          "providerQualification": "no provider used",
+          "replayEffects": 0,
+          "replayProviderRequests": 0
+        },
+        {
+          "page": "FIRST_AGENT_WORKFLOW.md",
+          "status": "passed",
+          "pageSha256": "aa4c25ecffc40d1a7ea024cb53f6da2f507741c6b67b4f7689c06b3a1ac3da83",
+          "runId": "run-01a0760c-62d9-7811-80c9-75846f1f69d0",
+          "replayRunId": "replay-01a0760c-6428-7bf2-be31-2b18bf0d59a3",
+          "providerRequests": 2,
+          "providerQualification": "Explicit fake provider; no remote credentials or network",
+          "replayEffects": 0,
+          "replayProviderRequests": 0
+        }
+      ]
+    },
+    "environment": {
+      "platform": "aarch64-unknown-linux-gnu",
+      "rustVersion": "1.88.0",
+      "pythonVersion": "3.11.2",
+      "credentialsInjected": false,
+      "directAndOnboardingNetwork": "none",
+      "packageDependencies": "Pinned offline image wheelhouse; service packages use new independent venvs",
+      "windowsConditionalSetupExecuted": false,
+      "qualification": "Linux container fallback. The Windows-only SYSTEMROOT setup branch requires separately recorded native Windows evidence; this does not replace hosted platform gates."
+    },
+    "priorEvidencePreserved": [
+      "45d0995",
+      "9090a76"
+    ],
+    "evidenceSha256": {
+      "install-4a22f7f-command.json": "bcb620e0db3db03a9d5eb54063a8838e1a1d36efc6870135341e80aba32517f6",
+      "install-4a22f7f-result.json": "d2f84d72ab7a63e4d78cd18d680a8d1d8f3202bda3cfd96828f391db69121c7f",
+      "install-4a22f7f.log": "58a1977470e2e32dabc131c04910c61591974d20df2c8ddd8de47f6658a21a60",
+      "installed-4a22f7f-provenance.json": "902cffbae2a2413722420b0e746138f3cd0f625ccc9a822e0ff42758eed7978e",
+      "installed-4a22f7f/.crates2.json": "7e44270dc361ef1b5d3517dfa08afb1d0e5239f01d34304ab7eadecdf3ba0a12",
+      "direct-4a22f7f-command.json": "aa188270d37a0ed47218dfbb50bf16dab637b5c87ab3df21e4099e7759d0e8e6",
+      "direct-4a22f7f-result.json": "568a0e14c56606e02c746618a7753fc4fc595ae0f3da6cf557cf57a823530ef3",
+      "direct-4a22f7f.log": "98ccc6bb794f52def4a351e72dfb91005cd67163c0185ab489ac622237e1494f",
+      "direct-4a22f7f/report.json": "deca5aca9c10dcf0fc0bf299a7f71b38429eeff3f4a354300666658e0af003c2",
+      "direct-4a22f7f/analysis.json": "7b595384f8427256f8524729c8ca50f43f8d87e59a7949ac32383e7065e434aa",
+      "direct-4a22f7f/formats.json": "5f573979679b68aba5b441e600689325b857a620cb8da6ae1c8d43f1bb47fa07",
+      "direct-4a22f7f/services.json": "2dc1717e2318f9054c4d6ed18be039002568c23f8e0691f1543da86de694ba59",
+      "onboarding-4a22f7f-command.json": "5e6e82fab0599b72dcd92a0801f1511044aa3ec33e7a7f45923b9f5d908f0fea",
+      "onboarding-4a22f7f-result.json": "af99dc54b32dec57407d9cca394ad763d2fd5661a60ead1ba170064f5d755f8c",
+      "onboarding-4a22f7f.log": "dc8ac61772c056cd440bf367cfbb02a50dbb749ef534fbfea159112f688ff50a",
+      "onboarding-4a22f7f/report.json": "ec9b72adfbd8f6e57af54980287dca5b3f2392f369906e3a3f4d2826e26c0baa"
+    }
+  },
+  "hostedFrameworkGates": {
+    "repository": "opensourceops/agentctl",
+    "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "observedAt": "2026-09-06T09:47:42.750778+00:00",
+    "runs": [
+      {
+        "id": 34024602218,
+        "name": "credential-free-ci",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218",
+        "head_sha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101463221015,
+            "name": "gates (aarch64-apple-darwin)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218/job/101463221015"
+          },
+          {
+            "id": 101463221069,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218/job/101463221069"
+          },
+          {
+            "id": 101463221096,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218/job/101463221096"
+          },
+          {
+            "id": 101465781337,
+            "name": "production SBOM",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218/job/101465781337"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": 9986932107,
+            "name": "agentctl-production-sbom-cyclonedx",
+            "size_in_bytes": 41511,
+            "digest": "sha256:076e1c35449fd0ad5e85c82a44d432cf64cf81842b79ffdebe32a43e171f4ae8",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-production.cdx.json",
+                "bytes": 347246,
+                "sha256": "219d39e07aabc5cd2cd07fb6ec8ecf9ba4a921da92ce333925c46d74ebcff703",
+                "bomFormat": "CycloneDX",
+                "componentCount": 279,
+                "imageIds": []
+              }
+            ]
+          },
+          {
+            "id": 9986927030,
+            "name": "agentctl-x86_64-pc-windows-msvc",
+            "size_in_bytes": 10197686,
+            "digest": "sha256:0be47b7a8099429006fcf98bbcbc8e667e0dcd4349b3f19d64c33ff54712f4bc",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/LICENSE",
+                "bytes": 575,
+                "sha256": "93c37b21b3718acce2597b99a2dfcb6c55c493afebebcc4b4d30091d3403b278"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/README.md",
+                "bytes": 8292,
+                "sha256": "e5562f196e516f089f00423a15d5832aa071358bb2104eee7aacd8daf3c096e2"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/SHA256SUMS",
+                "bytes": 79,
+                "sha256": "bbc2abccc6befda44f9e20c74d33fb31ec5e97ce4117d489f2e52e329200393e",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe",
+                "bytes": 27362816,
+                "sha256": "8e58beed900e8e0a1c18aab8e577b4629293bcd23337bc70016d1cec3e7d8622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9986812868,
+            "name": "agentctl-aarch64-apple-darwin",
+            "size_in_bytes": 10726659,
+            "digest": "sha256:acaf93f4cca1d7afaa0235c2e23d1d889c4c87a9e2a18b89ff3e6453e1b66d2c",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/README.md",
+                "bytes": 8170,
+                "sha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "9c3484e93941a8dd0b3f4168cbb3b384a4162d5ad24a06c1113b9065ec795444",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-aarch64-apple-darwin/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl",
+                "bytes": 26411376,
+                "sha256": "94d71f7146fdb2ee1d1821d0ea7ee3795e96b517c0bd51566e3f6a3b77232c98"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9986808934,
+            "name": "agentctl-x86_64-unknown-linux-gnu",
+            "size_in_bytes": 11814623,
+            "digest": "sha256:7bfc005f1a4bdbc241a8661bf1d52ac4d58c20c74d81d55e56f572b123bd0aab",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/README.md",
+                "bytes": 8170,
+                "sha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "48bee987c0e40f78f250bcd901eaebc828087f9ad021d7815729762ca64d19b9",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl",
+                "bytes": 31855736,
+                "sha256": "202c2e300fb29ce9ecdfef4de82473d329909add8714b104bc8527aef6dbd39f"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 34024619321,
+        "name": "rc-release-preparation",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321",
+        "head_sha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101463267951,
+            "name": "RC (aarch64-apple-darwin)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321/job/101463267951"
+          },
+          {
+            "id": 101463268042,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321/job/101463268042"
+          },
+          {
+            "id": 101463268099,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321/job/101463268099"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": 9986946853,
+            "name": "agentctl-rc-x86_64-pc-windows-msvc",
+            "size_in_bytes": 10197687,
+            "digest": "sha256:83824bd16a42e32d8e6a589a61c16d1dba6c76322e72d9a5fb2d2c2c485b2fd9",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/LICENSE",
+                "bytes": 575,
+                "sha256": "93c37b21b3718acce2597b99a2dfcb6c55c493afebebcc4b4d30091d3403b278"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/README.md",
+                "bytes": 8292,
+                "sha256": "e5562f196e516f089f00423a15d5832aa071358bb2104eee7aacd8daf3c096e2"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/SHA256SUMS",
+                "bytes": 79,
+                "sha256": "52248b295aca837a9042b0b8253e6a661b6bd5be1d8a5bb1cc0c88cab956a461",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe",
+                "bytes": 27362816,
+                "sha256": "0ca2b8c03d8aa3bc7b2a60997353d4f8f458baddbe23b9a16c1d9332cbf42582"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9986810807,
+            "name": "agentctl-rc-x86_64-unknown-linux-gnu",
+            "size_in_bytes": 11814623,
+            "digest": "sha256:354027c16778f76bedc2163b038d7c56b33a4197a51d433bb10f37d10849de6b",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/README.md",
+                "bytes": 8170,
+                "sha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "48bee987c0e40f78f250bcd901eaebc828087f9ad021d7815729762ca64d19b9",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl",
+                "bytes": 31855736,
+                "sha256": "202c2e300fb29ce9ecdfef4de82473d329909add8714b104bc8527aef6dbd39f"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9986796195,
+            "name": "agentctl-rc-aarch64-apple-darwin",
+            "size_in_bytes": 10726659,
+            "digest": "sha256:b0431d6eda582545fe8de25f31ed4f875c940e94546ba64b816e58a8b75984a4",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/README.md",
+                "bytes": 8170,
+                "sha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "9c3484e93941a8dd0b3f4168cbb3b384a4162d5ad24a06c1113b9065ec795444",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-aarch64-apple-darwin/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl",
+                "bytes": 26411376,
+                "sha256": "94d71f7146fdb2ee1d1821d0ea7ee3795e96b517c0bd51566e3f6a3b77232c98"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 34024602216,
+        "name": "container-security",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602216",
+        "head_sha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101463220962,
+            "name": "container",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602216/job/101463220962"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": 9986718202,
+            "name": "agentctl-image-sbom-cyclonedx",
+            "size_in_bytes": 2962,
+            "digest": "sha256:8d729d1b10bb186f72c0f5542f3f6f1b06d6a117500a12a5205b38f67961a6d5",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-image.cdx.json",
+                "bytes": 21703,
+                "sha256": "772deea3798ad7ee47f7fa51d8d1eba1de5841b4e2993fac2aebb156528a0bb2",
+                "bomFormat": "CycloneDX",
+                "componentCount": 12,
+                "imageIds": [
+                  "sha256:101d340fb8cbb018b772dae97e973b6ace42acf12d86174aef0e759762f5e550"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 34024602237,
+        "name": "supply-chain-security",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602237",
+        "head_sha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101463220907,
+            "name": "security",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/34024602237/job/101463220907"
+          }
+        ],
+        "artifacts": []
+      }
+    ]
+  },
+  "packageSourceRelationships": {
+    "status": "passed",
+    "frameworkSource": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "packageCount": 6,
+    "packages": [
+      {
+        "runId": 34024602218,
+        "artifactId": 9986927030,
+        "artifactName": "agentctl-x86_64-pc-windows-msvc",
+        "package": "agentctl-0.3.0-x86_64-pc-windows-msvc",
+        "binarySha256": "8e58beed900e8e0a1c18aab8e577b4629293bcd23337bc70016d1cec3e7d8622",
+        "sourceFilesMatch": {
+          "README.md": {
+            "artifactSha256": "e5562f196e516f089f00423a15d5832aa071358bb2104eee7aacd8daf3c096e2",
+            "gitSourceSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "relation": "exact CRLF checkout conversion"
+          },
+          "LICENSE": {
+            "artifactSha256": "93c37b21b3718acce2597b99a2dfcb6c55c493afebebcc4b4d30091d3403b278",
+            "gitSourceSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "relation": "exact CRLF checkout conversion"
+          }
+        },
+        "completionSha256": {
+          "_agentctl": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28",
+          "_agentctl.ps1": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d",
+          "agentctl.bash": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622",
+          "agentctl.fish": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+        }
+      },
+      {
+        "runId": 34024602218,
+        "artifactId": 9986812868,
+        "artifactName": "agentctl-aarch64-apple-darwin",
+        "package": "agentctl-0.3.0-aarch64-apple-darwin",
+        "binarySha256": "94d71f7146fdb2ee1d1821d0ea7ee3795e96b517c0bd51566e3f6a3b77232c98",
+        "sourceFilesMatch": {
+          "README.md": {
+            "artifactSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "gitSourceSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "relation": "byte-identical"
+          },
+          "LICENSE": {
+            "artifactSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "gitSourceSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "relation": "byte-identical"
+          }
+        },
+        "completionSha256": {
+          "_agentctl": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28",
+          "_agentctl.ps1": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d",
+          "agentctl.bash": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622",
+          "agentctl.fish": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+        }
+      },
+      {
+        "runId": 34024602218,
+        "artifactId": 9986808934,
+        "artifactName": "agentctl-x86_64-unknown-linux-gnu",
+        "package": "agentctl-0.3.0-x86_64-unknown-linux-gnu",
+        "binarySha256": "202c2e300fb29ce9ecdfef4de82473d329909add8714b104bc8527aef6dbd39f",
+        "sourceFilesMatch": {
+          "README.md": {
+            "artifactSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "gitSourceSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "relation": "byte-identical"
+          },
+          "LICENSE": {
+            "artifactSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "gitSourceSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "relation": "byte-identical"
+          }
+        },
+        "completionSha256": {
+          "_agentctl": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28",
+          "_agentctl.ps1": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d",
+          "agentctl.bash": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622",
+          "agentctl.fish": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+        }
+      },
+      {
+        "runId": 34024619321,
+        "artifactId": 9986946853,
+        "artifactName": "agentctl-rc-x86_64-pc-windows-msvc",
+        "package": "agentctl-0.3.0-x86_64-pc-windows-msvc",
+        "binarySha256": "0ca2b8c03d8aa3bc7b2a60997353d4f8f458baddbe23b9a16c1d9332cbf42582",
+        "sourceFilesMatch": {
+          "README.md": {
+            "artifactSha256": "e5562f196e516f089f00423a15d5832aa071358bb2104eee7aacd8daf3c096e2",
+            "gitSourceSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "relation": "exact CRLF checkout conversion"
+          },
+          "LICENSE": {
+            "artifactSha256": "93c37b21b3718acce2597b99a2dfcb6c55c493afebebcc4b4d30091d3403b278",
+            "gitSourceSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "relation": "exact CRLF checkout conversion"
+          }
+        },
+        "completionSha256": {
+          "_agentctl": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28",
+          "_agentctl.ps1": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d",
+          "agentctl.bash": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622",
+          "agentctl.fish": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+        }
+      },
+      {
+        "runId": 34024619321,
+        "artifactId": 9986810807,
+        "artifactName": "agentctl-rc-x86_64-unknown-linux-gnu",
+        "package": "agentctl-0.3.0-x86_64-unknown-linux-gnu",
+        "binarySha256": "202c2e300fb29ce9ecdfef4de82473d329909add8714b104bc8527aef6dbd39f",
+        "sourceFilesMatch": {
+          "README.md": {
+            "artifactSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "gitSourceSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "relation": "byte-identical"
+          },
+          "LICENSE": {
+            "artifactSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "gitSourceSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "relation": "byte-identical"
+          }
+        },
+        "completionSha256": {
+          "_agentctl": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28",
+          "_agentctl.ps1": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d",
+          "agentctl.bash": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622",
+          "agentctl.fish": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+        }
+      },
+      {
+        "runId": 34024619321,
+        "artifactId": 9986796195,
+        "artifactName": "agentctl-rc-aarch64-apple-darwin",
+        "package": "agentctl-0.3.0-aarch64-apple-darwin",
+        "binarySha256": "94d71f7146fdb2ee1d1821d0ea7ee3795e96b517c0bd51566e3f6a3b77232c98",
+        "sourceFilesMatch": {
+          "README.md": {
+            "artifactSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "gitSourceSha256": "d170279d33f98a62c8430cc6f2e718f9b3f3867edf308d42f78c73c1ed447fa3",
+            "relation": "byte-identical"
+          },
+          "LICENSE": {
+            "artifactSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "gitSourceSha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8",
+            "relation": "byte-identical"
+          }
+        },
+        "completionSha256": {
+          "_agentctl": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28",
+          "_agentctl.ps1": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d",
+          "agentctl.bash": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622",
+          "agentctl.fish": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+        }
+      }
+    ],
+    "independentCiRcComparison": [
+      {
+        "targetPackage": "agentctl-0.3.0-aarch64-apple-darwin",
+        "artifactIds": [
+          9986812868,
+          9986796195
+        ],
+        "binaryBytesMatch": true,
+        "completionBytesMatch": true
+      },
+      {
+        "targetPackage": "agentctl-0.3.0-x86_64-pc-windows-msvc",
+        "artifactIds": [
+          9986927030,
+          9986946853
+        ],
+        "binaryBytesMatch": false,
+        "completionBytesMatch": true
+      },
+      {
+        "targetPackage": "agentctl-0.3.0-x86_64-unknown-linux-gnu",
+        "artifactIds": [
+          9986808934,
+          9986810807
+        ],
+        "binaryBytesMatch": true,
+        "completionBytesMatch": true
+      }
+    ],
+    "qualification": "All six packages independently passed their source-specific jobs and inner binary checksums. README and LICENSE are byte-identical to the source on Linux/macOS; on Windows they match the exact LF-to-CRLF checkout conversion with both raw hashes retained. Completions match across CI/RC. Windows binary hashes differ across independent builds; Linux and macOS hashes match. No bit-for-bit reproducibility guarantee is claimed, and each artifact retains its own verified digest."
+  },
+  "nativeWindowsProof": [
+    {
+      "runId": 34024602218,
+      "jobId": 101463221096,
+      "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218/job/101463221096",
+      "earlyServiceTests": {
+        "run": 9,
+        "passed": 9
+      },
+      "fullCookbookTests": {
+        "run": 87,
+        "passed": 86,
+        "skipped": 1,
+        "skip": "Optional actual pinned actionlint validator test requires ACTIONLINT_TEST_BINARY."
+      },
+      "exampleIdsPassed": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20"
+      ],
+      "realHttpServiceExamplesPassed": [
+        "14",
+        "17"
+      ],
+      "frameworkCompleteness": "passed",
+      "log": {
+        "path": "hosted-triage/passed-job-101463221096.log",
+        "sha256": "14a76b3562598ed81e3c513c34b17f560795eb462e55cd9ea26bae222a112f99"
+      }
+    },
+    {
+      "runId": 34024619321,
+      "jobId": 101463268099,
+      "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321/job/101463268099",
+      "earlyServiceTests": {
+        "run": 9,
+        "passed": 9
+      },
+      "fullCookbookTests": {
+        "run": 87,
+        "passed": 86,
+        "skipped": 1,
+        "skip": "Optional actual pinned actionlint validator test requires ACTIONLINT_TEST_BINARY."
+      },
+      "exampleIdsPassed": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20"
+      ],
+      "realHttpServiceExamplesPassed": [
+        "14",
+        "17"
+      ],
+      "frameworkCompleteness": "passed",
+      "log": {
+        "path": "hosted-triage/passed-job-101463268099.log",
+        "sha256": "1b8078ef52a16bc7f63c412fd5d7a5065d30225b81c6f881adee0c39e52391e0"
+      }
+    }
+  ],
+  "additionalEvidenceComparison": {
+    "status": "failed initial evidence-comparison assumption",
+    "artifactId": 9986927030,
+    "file": "README.md",
+    "assertion": "raw byte identity with local LF checkout",
+    "observed": "Windows package README and LICENSE contain CRLF; exact LF-to-CRLF conversion matches every byte. Production files and tests unchanged. The relationship report records both raw hashes and the explicit platform transformation; no byte-identity claim is retained."
+  },
+  "documentation": {
+    "docsSource": "8b3cdda50dea34a7282365f0d09dc7eef219848c",
+    "frameworkSource": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "docsPr": "https://github.com/opensourceops/opensourceops.github.io/pull/6",
+    "frameworkPr": "https://github.com/opensourceops/agentctl/pull/7",
+    "localSiteChecks": {
+      "status": "passed",
+      "commandCount": 14,
+      "browserPassed": 122,
+      "existingGenericMobileSearchSkip": 1,
+      "newCookbookTestsSkipped": 0,
+      "report": {
+        "path": "/Users/ompragash/agentctl/.release-evidence/review-20260906/docs/work/final-site-8b3cdda/result.json",
+        "sha256": "d491e2832415211a855c622fafc1876076650962d1856f669389fe24b559e682",
+        "bytes": 10618
+      }
+    },
+    "localCombinedGate": "not passing: documented macOS loader and package-cache blocking attempts; direct Node site checks executed independently",
+    "hostedRun": "https://github.com/opensourceops/opensourceops.github.io/actions/runs/34024704916",
+    "screenshots": [
+      {
+        "path": "/Users/ompragash/agentctl/.release-evidence/review-20260906/docs/work/final-8b3cdda-cookbook-desktop.png",
+        "sha256": "f1150b2e98a61af96a7ecffad7056b376b6f4305a5779bc240fe182060d59d0e",
+        "bytes": 239287
+      },
+      {
+        "path": "/Users/ompragash/agentctl/.release-evidence/review-20260906/docs/work/final-8b3cdda-cookbook-mobile.png",
+        "sha256": "c4bf479df2389f5d64b8ec7214e287c6f266ef1ec399efb8ca9bf78a1f541c5a",
+        "bytes": 73051
+      },
+      {
+        "path": "/Users/ompragash/agentctl/.release-evidence/review-20260906/docs/work/final-8b3cdda-recovery-desktop.png",
+        "sha256": "bbe6f76bf09d46cb9a2032adc076b7ae2db09b900941616a35911cfba3a19052",
+        "bytes": 262172
+      },
+      {
+        "path": "/Users/ompragash/agentctl/.release-evidence/review-20260906/docs/work/final-8b3cdda-recovery-mobile.png",
+        "sha256": "212f2f9d195fa7d828da82a815caf6a79167d92646b017d0cd4bd9cd10f57d3f",
+        "bytes": 83536
+      }
+    ],
+    "screenshotsVisuallyInspected": true,
+    "localCatalog": {
+      "path": "/Users/ompragash/agentctl/.release-evidence/review-20260906/docs/public/downloads/devops/catalog.json",
+      "sha256": "42aceaf0146274a5b65f3883331f82f4ad20adf3888a34a6a9501849ecdd6d47",
+      "bytes": 6934
+    },
+    "paidProviderRequestsByDocsAgent": 0,
+    "deploymentPerformed": false,
+    "hostedArtifactVerification": {
+      "status": "passed",
+      "frameworkSource": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "artifactId": 9986762734,
+      "artifactCreatedAt": "2026-09-06T09:34:12Z",
+      "artifactExpiresAt": "2026-09-20T09:34:10Z",
+      "archiveSha256": "3ca6d20ecce358c40981be658a254fd9935437ca143c1a6b2c8fa34144af7333",
+      "actionsDigest": "sha256:3ca6d20ecce358c40981be658a254fd9935437ca143c1a6b2c8fa34144af7333",
+      "archiveBytes": 4358390,
+      "catalogSha256": "42aceaf0146274a5b65f3883331f82f4ad20adf3888a34a6a9501849ecdd6d47",
+      "sourceMetadataSha256": "6e9afdf6b8383303d6726550c6416abe14bc960720091d638012fee0fb1bd11c",
+      "htmlPages": 93,
+      "nojekyll": true,
+      "visibleCanonicalBoilerplate": false,
+      "packages": [
+        {
+          "directory": "01-ci-diagnosis",
+          "sha256": "9c37a796d84606f93dadb11b9255ea8e875382cb31cb8d2fa286edd7051f72fe",
+          "bytes": 37377,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "02-junit-triage",
+          "sha256": "2d8a522df3ddda83142ff2424e0b495812fb4b9c1abe72d686e487483a9a6e8d",
+          "bytes": 33335,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "03-pipeline-review",
+          "sha256": "6d9a35ba563354dab7817f0bef1d323b41fdd1966447f67ddb59816a645ef0c5",
+          "bytes": 34285,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "04-dockerfile-review",
+          "sha256": "0740bff9423cb854721c08370e79c4ec0f2ad3fab2ec3abe3038daa4327cdfa5",
+          "bytes": 34249,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "05-kubernetes-review",
+          "sha256": "7ec3549de4122cd9b938e92832c3afca4c81704aa3800c8e4b659dbb96509e6a",
+          "bytes": 86237,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "06-terraform-plan",
+          "sha256": "615e561826332498ba84655c65ea4e6409405cae22e9829246830b3ce0d14588",
+          "bytes": 33860,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "07-dependency-update",
+          "sha256": "e8017080c3ac0d484bf4208bf767d79007207be401442db78003db01b6f017c8",
+          "bytes": 34438,
+          "manifestFiles": 13
+        },
+        {
+          "directory": "08-sbom-triage",
+          "sha256": "afe55b4fdeab44761d873d3d3a7ae532a838d71a6f4cee9d9320053d513b2db6",
+          "bytes": 35497,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "09-release-notes",
+          "sha256": "dca2b1225df3928d6fcf94a23d4d18561eb1c65eec4c75a91ae00f49fbac122c",
+          "bytes": 33399,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "10-release-readiness",
+          "sha256": "a6079e4c2acc3066ff9689d03437fcff2c4d3de03fb02a6f9bc533ba39fbb1d5",
+          "bytes": 35069,
+          "manifestFiles": 13
+        },
+        {
+          "directory": "11-configuration-drift",
+          "sha256": "d35b43553712287368bad53f85118b45762d81f757215d3c9f9f79fa8ee6b5ac",
+          "bytes": 34241,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "12-incident-timeline",
+          "sha256": "9fe3677f060bb3c392bc039c0a27d827edca91291f72457d9c7abe1371b32d70",
+          "bytes": 37399,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "13-canary-evaluation",
+          "sha256": "97ce2ee14b14813039330bb990648a240636c65fe4f1959bd7a9eba7035c350a",
+          "bytes": 33645,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "14-local-deployment",
+          "sha256": "389ddd029889ef4ea11282156b760f5dcbb251532199799e74e15609cc4f7c14",
+          "bytes": 34563,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "15-interrupted-deployment",
+          "sha256": "a2956f695ee5ede9ea2b97cc72a14b3ccc986d7c01a9c006303669e5022d3333",
+          "bytes": 36204,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "16-retry-repair",
+          "sha256": "2017359e2329a537e1f3f034b8d2b8f035388c25e66b1b80a946fa707020710b",
+          "bytes": 34802,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "17-compensated-rollout",
+          "sha256": "d0ab0772368f7438054b4d105a62a6912839a111c7790e55903f1b788a3960ec",
+          "bytes": 36117,
+          "manifestFiles": 13
+        },
+        {
+          "directory": "18-parallel-matrix",
+          "sha256": "8a885cd6f21fbb8772f95b50bdf19c774a4e3680ddf519d46c8ffb99eeb18a52",
+          "bytes": 34578,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "19-role-subworkflow",
+          "sha256": "e0a1f83f32943ecc0c3c3fcff825007758af3f6313120964c0b5f3c697f04a53",
+          "bytes": 41021,
+          "manifestFiles": 17
+        },
+        {
+          "directory": "20-bounded-remediation",
+          "sha256": "58cde19db1a23ba5c12c5ef9d6d5849712afa04d4d0ce9595fe3faa878f437b1",
+          "bytes": 38916,
+          "manifestFiles": 14
+        }
+      ]
+    },
+    "hostedStatus": {
+      "conclusion": "success",
+      "headSha": "8b3cdda50dea34a7282365f0d09dc7eef219848c",
+      "jobs": [
+        {
+          "completedAt": "2026-09-06T09:34:16Z",
+          "conclusion": "success",
+          "databaseId": 101463500357,
+          "name": "validate",
+          "startedAt": "2026-09-06T09:27:34Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-09-06T09:27:36Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-09-06T09:27:34Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:27:38Z",
+              "conclusion": "success",
+              "name": "Check out Pages source",
+              "number": 2,
+              "startedAt": "2026-09-06T09:27:36Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:27:39Z",
+              "conclusion": "success",
+              "name": "Check out canonical agentctl source",
+              "number": 3,
+              "startedAt": "2026-09-06T09:27:38Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:27:45Z",
+              "conclusion": "success",
+              "name": "Install pinned Node.js",
+              "number": 4,
+              "startedAt": "2026-09-06T09:27:39Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:27:52Z",
+              "conclusion": "success",
+              "name": "Install pinned Rust and pnpm",
+              "number": 5,
+              "startedAt": "2026-09-06T09:27:45Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:28:25Z",
+              "conclusion": "success",
+              "name": "Install site dependencies and browser",
+              "number": 6,
+              "startedAt": "2026-09-06T09:27:52Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:10Z",
+              "conclusion": "success",
+              "name": "Verify canonical docs and final site artifact",
+              "number": 7,
+              "startedAt": "2026-09-06T09:28:25Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "success",
+              "name": "Upload validated pull-request artifact",
+              "number": 8,
+              "startedAt": "2026-09-06T09:34:10Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "success",
+              "name": "Record validation artifact digest",
+              "number": 9,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "skipped",
+              "name": "Configure GitHub Pages",
+              "number": 10,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "skipped",
+              "name": "Upload complete Pages artifact",
+              "number": 11,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "success",
+              "name": "Post Install pinned Node.js",
+              "number": 20,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "success",
+              "name": "Post Check out canonical agentctl source",
+              "number": 21,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "success",
+              "name": "Post Check out Pages source",
+              "number": 22,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-06T09:34:12Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 23,
+              "startedAt": "2026-09-06T09:34:12Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/opensourceops/opensourceops.github.io/actions/runs/34024704916/job/101463500357"
+        },
+        {
+          "completedAt": "2026-09-06T09:34:16Z",
+          "conclusion": "skipped",
+          "databaseId": 101464353800,
+          "name": "deploy",
+          "startedAt": "2026-09-06T09:34:17Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/opensourceops/opensourceops.github.io/actions/runs/34024704916/job/101464353800"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/opensourceops/opensourceops.github.io/actions/runs/34024704916"
+    },
+    "evidenceOnlyDocsCommit": "de061a99de05ab1473e1e5c24a6521540bad4a96",
+    "evidenceOnlyChange": "docs/execution/COOKBOOK_REVIEW_20260906.md only",
+    "evidenceOnlyChecks": [
+      "writing",
+      "Markdown",
+      "spelling",
+      "git diff --check"
+    ]
+  },
+  "sitePackagesMatchInstalledJourneys": {
+    "status": "passed",
+    "frameworkSource": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "docsSource": "8b3cdda50dea34a7282365f0d09dc7eef219848c",
+    "hostedArtifactId": 9986762734,
+    "hostedArtifactSha256": "3ca6d20ecce358c40981be658a254fd9935437ca143c1a6b2c8fa34144af7333",
+    "installedBinarySha256": "55462ef9413222fd1bd0b1755544e675a223a767d183e2f26744fd2433f5d01d",
+    "cases": [
+      {
+        "id": "01",
+        "manifestSha256": "dc4820e3ce0ce3f270407661f11d3ca914939753711301ac2664fe25d26df33d",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "02",
+        "manifestSha256": "9051cd85fc7bc7976f5091e85d4d05520134aad5ba6e48f057734f9e15ad926c",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "03",
+        "manifestSha256": "0d05217f1d60421b918da25affd5da2af428c3f3c75d8c854125fbc42aea9c33",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "04",
+        "manifestSha256": "51facf4f493eae2c294dfe2b627537d28f190d32507a4ff3ed1964d369cbddf7",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "05",
+        "manifestSha256": "c5f717aa8345bce12c8acccc19fe36454ec0b5817371a69b72e06ba97db656a2",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "06",
+        "manifestSha256": "81fd831f5db1de734f8dbbef62c70201867c13b024928e87bd7b7bcbd311c6d9",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "07",
+        "manifestSha256": "b603c4058809395abf34b3048652c46d779922ae401fed1840bbe3897e45e048",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "08",
+        "manifestSha256": "ec6c355fc591165bbda6758a5cc506e999bac10985f608ffc0bd488a90145e19",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "09",
+        "manifestSha256": "5959e13a4aa34a2e33ee9e7947caa01758c6eca54785d454ef4e9be32fbe6d28",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "10",
+        "manifestSha256": "b65528377f93f1ccc55e1650183d2fa6e2b8f57c0579abce1ab99def7b84924e",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "11",
+        "manifestSha256": "45270486ac121755f31e66805baa76331636c5d36ceae029bd3dea005f77c7ff",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "12",
+        "manifestSha256": "f34729e6f550d2cfd41631d30ee6fe1b292a09a78328f60f7c69fb00b8663a4f",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "13",
+        "manifestSha256": "f8dcde20f648af914273e7b0888500779002405bc661db018f796ffb16b434bc",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "14",
+        "manifestSha256": "b66d0b2a096ee1be83e4de45ae3557665cd9707682bab3f70cbc340394a2a58e",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "15",
+        "manifestSha256": "ce21295b92387b31eebd385543d39f47df879f6a4727573db67dc7abd4b6e9a8",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "16",
+        "manifestSha256": "6a2f706566761f766de585febb486cab12fe46d6d36a8c73717831ad882173d1",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "17",
+        "manifestSha256": "eb24df3e90dae18342c09f076334ad3a58730e9e70365d5bcf6481ca7a6394ad",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "18",
+        "manifestSha256": "9bcd3171255b61ab4611acb030f9f4a5633927cde7d2606bc7ded431f7f0c30a",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "19",
+        "manifestSha256": "cc419e99c96bb887dd7ff031ab2d627ea61f0920e2db877a90e5cd2dafdf1a66",
+        "matchesInstalledDirectJourney": true
+      },
+      {
+        "id": "20",
+        "manifestSha256": "e117df08ab9c2d8e9f05b0fa56d1dd67eac393edc5ceee6b88bd57b8a77847a5",
+        "matchesInstalledDirectJourney": true
+      }
+    ],
+    "qualification": "Every complete example manifest downloaded from the actual hosted site artifact is byte-identical to the manifest used by the successful installed-binary direct journey. The site verifier separately checks every included file digest."
+  },
+  "changedLiveWorkflows": {
+    "schemaVersion": "agentctl.dev/review-live-evidence/v1",
+    "sourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+    "sourceWorktreeDirty": false,
+    "binarySha256": "55462ef9413222fd1bd0b1755544e675a223a767d183e2f26744fd2433f5d01d",
+    "model": "gpt-5-mini",
+    "reportSha256": "1a854aee3362c8f28c600f985ac33e0a62d8e5ecd9e89b89a487e5246bebaf9f",
+    "cases": [
+      {
+        "id": "01",
+        "status": "passed",
+        "runId": "run-01a075e4-3b94-75d0-9148-ffa694dea9f4",
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 555,
+          "outputTokens": 151,
+          "reasoningTokens": 64,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 5,
+          "processOutputBytes": 7439,
+          "artifactBytes": 2095,
+          "costMicrousd": 441,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "artifacts": {
+          "artifacts/report.json": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976",
+          "artifacts/sha256/89/8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976"
+        },
+        "workflowSha256": "244f33e7ef705faa7e16f2e7159d07c26bcf4fbef30a0c365c271994a54cdc76"
+      },
+      {
+        "id": "12",
+        "status": "passed",
+        "runId": "run-01a075e4-533b-7692-9006-16234db14f31",
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 806,
+          "outputTokens": 185,
+          "reasoningTokens": 128,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 4,
+          "processOutputBytes": 10505,
+          "artifactBytes": 3150,
+          "costMicrousd": 572,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "artifacts": {
+          "artifacts/report.json": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9",
+          "artifacts/sha256/48/48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9"
+        },
+        "workflowSha256": "8321e728a721a8962e6a65b692a68e060cc12a713b2e64894f87c055258f4e90"
+      },
+      {
+        "id": "19",
+        "status": "passed",
+        "runId": "run-01a075e4-690f-7432-a43d-3c57f2f67bbb",
+        "usage": {
+          "providerRequests": 5,
+          "turns": 5,
+          "toolCalls": 2,
+          "inputTokens": 2260,
+          "outputTokens": 614,
+          "reasoningTokens": 320,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 12,
+          "processOutputBytes": 4885,
+          "artifactBytes": 327,
+          "costMicrousd": 1795,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "artifacts": {
+          "artifacts/report.json": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b",
+          "artifacts/reviewed-configuration.json": "baa63bdbda5e0b23f91f58802f13bb33bda412ca78f449e3c6a9477488a1b8bc",
+          "artifacts/role-timeout.txt": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
+          "artifacts/sha256/62/624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
+          "artifacts/sha256/f9/f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b"
+        },
+        "workflowSha256": "3db442107b4791f35df919b7d611978d3683c6d013f6678b5bd98e6ce8668c97"
+      },
+      {
+        "id": "20",
+        "status": "passed",
+        "runId": "run-01a075e4-a3ad-7b31-831f-c740a140c2a2",
+        "usage": {
+          "providerRequests": 2,
+          "turns": 2,
+          "toolCalls": 1,
+          "inputTokens": 1335,
+          "outputTokens": 117,
+          "reasoningTokens": 64,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 5,
+          "processOutputBytes": 9149,
+          "artifactBytes": 403,
+          "costMicrousd": 569,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "artifacts": {
+          "artifacts/remediation.json": "9018d862edc9898c569aa5c2129ff9f786402bafcead18b7dc60a8bc8ecc6731",
+          "artifacts/report.json": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07",
+          "artifacts/sha256/42/42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07",
+          "artifacts/sha256/62/624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
+          "artifacts/timeout-seconds.txt": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4"
+        },
+        "workflowSha256": "68afa981a94e22fa9bba0beb77efccc8c38c6177a7d7b06080716e9d2df20b42"
+      }
+    ],
+    "newTotals": {
+      "providerRequests": 9,
+      "inputTokens": 4956,
+      "outputTokens": 1067,
+      "toolCalls": 3,
+      "costMicrousd": 3377,
+      "totalTokens": 6023,
+      "chargedWallTimeSeconds": 27
+    },
+    "originalLedger": {
+      "originalLedgerPath": "/Users/ompragash/Documents/Codex/2026-09-06/prior-conversation-with-codex-conversation-role/work/evidence/live-budget.sqlite3",
+      "charged": {
+        "providerRequests": 66,
+        "totalTokens": 41926,
+        "wallTimeSeconds": 380,
+        "costMicrousd": 2047740
+      },
+      "knownReconciled": {
+        "providerRequests": 54,
+        "totalTokens": 16390,
+        "wallTimeSeconds": 140,
+        "costMicrousd": 47740
+      },
+      "unresolvedReservations": 1,
+      "limits": {
+        "providerRequests": 100,
+        "totalTokens": 200000,
+        "wallTimeSeconds": 1800,
+        "costMicrousd": 25000000
+      },
+      "unreconciledReserved": {
+        "providerRequests": 12,
+        "totalTokens": 25536,
+        "wallTimeSeconds": 240,
+        "costMicrousd": 2000000
+      },
+      "remaining": {
+        "providerRequests": 34,
+        "totalTokens": 158074,
+        "wallTimeSeconds": 1420,
+        "costMicrousd": 22952260
+      },
+      "knownModels": [
+        {
+          "id": "gpt-5-mini",
+          "requests": 23,
+          "totalTokens": 10845,
+          "costMicrousd": 7754
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "requests": 27,
+          "totalTokens": 4492,
+          "costMicrousd": 26816
+        },
+        {
+          "id": "gpt-6-astra",
+          "requests": 4,
+          "totalTokens": 1053,
+          "costMicrousd": 13170
+        }
+      ]
+    },
+    "applicability": {
+      "liveSourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+      "candidateSourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "changedFiles": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-prep.yml",
+        "docs/execution/PR_REVIEW_FOLLOWUP.md",
+        "examples/devops/14-local-deployment/README.md",
+        "examples/devops/17-compensated-rollout/README.md",
+        "examples/devops/fixture.py",
+        "examples/devops/package.py",
+        "examples/devops/setup_example.py",
+        "examples/devops/test_cookbook_packaging.py",
+        "examples/devops/test_fixture_portability.py",
+        "examples/devops/test_runner_contracts.py",
+        "examples/devops/test_service_operations.py"
+      ],
+      "productionRuntimeProviderAndPaidWorkflowBytesUnchanged": true,
+      "paidRunnerAndNamedOperationBytesUnchanged": true,
+      "sharedSupportChanges": {
+        "package.py": "Portable ZIP manifest/member path serialization; independently revalidated package contract.",
+        "fixture.py": "Only redacted failure diagnostics now retain integer errno/winerror codes; successful operations and output schemas are unchanged.",
+        "setup_example.py": "Only Windows service-probe actions gain the explicit SYSTEMROOT prerequisite; no such actions exist in paid01/12/19/20. Setup report adds environmentRequirements metadata, empty on their tested Linux platform."
+      },
+      "paidCases": [
+        "01",
+        "12",
+        "19",
+        "20"
+      ],
+      "liveReportSha256": "1a854aee3362c8f28c600f985ac33e0a62d8e5ecd9e89b89a487e5246bebaf9f",
+      "qualification": "Live results remain tied to clean45d0995 and its installed binary. Review of the exact diff supports applying those successful Linux paid-scenario results to unchanged provider requests, operation implementations and workflows. No whole-helper byte identity or fresh4a22 paid execution is claimed. Current installed/package and full platform/site gates provide separate source-specific evidence; no repeat provider dispatch is justified."
+    },
+    "costKind": "Estimate from explicit versioned pricing; not invoiced or billed-cost evidence.",
+    "priorLiveEvidencePolicy": "Original mini, Sol and Astra evidence remains tied to its recorded source revisions in LAUNCH_FINAL_EVIDENCE.json and FEATURE_EVIDENCE.md. Earlier failed whole invocations remain failed; scoped passing continuations are not relabeled as a whole-suite pass."
+  },
+  "retainedFailures": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-09-06T09:49:08.593947+00:00",
+    "repository": "opensourceops/agentctl",
+    "scope": "Retained hosted CI/RC/security cancellations and gate failures from review follow-up source 23da795 through failed Windows gates at 9090a76, plus investigated local gate/contract failures. Direct journey and paid reports remain separately source-labeled evidence.",
+    "currentSourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "evidenceRoot": "/Users/ompragash/agentctl/.release-evidence/review-20260906",
+    "counts": {
+      "runs": 14,
+      "runFailures": 5,
+      "runCancellations": 9,
+      "failedJobs": 11,
+      "cancelledJobs": 23
+    },
+    "issues": [
+      {
+        "id": "windows-helper-socket-environment",
+        "phase": "cargo xtask verify: optional all-twenty runner examples 14 and 17",
+        "failure": "The isolated helper real loopback HTTP probes raise URLError after extension dispatch on Windows; parent-process HTTP probes and the other eighteen examples passed.",
+        "correctionSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "correction": "Declare SYSTEMROOT only for configured Windows service-probe actions with matching explicit environment permission; reject absence/conflicts. Child HTTP and real CLI no-permission/no-hit regressions pass on Linux. Native Windows CI and RC both passed on correction4a22f7f, including early9 service tests, 86 of87 cookbook tests with one explicitly optional actionlint skip, all20 examples and framework completeness. Original failed logs remain redacted and do not expose a numeric socket code.",
+        "evidence": [
+          {
+            "path": "hosted-triage/windows-service-env-linux-final/invocation.json",
+            "sha256": "6d981b06181f77e15ff91dae0ffc97bfe93e4e2129c500d1c87b239cff1e130e"
+          },
+          {
+            "path": "hosted-triage/windows-final-proof-4a22f7f.json",
+            "sha256": "dce9656f9bb2b9e2525af55b84eed815f8c65f5b3119c9a5ba55d121a1ca0912"
+          },
+          {
+            "path": "hosted-triage/passed-job-101463221096.log",
+            "sha256": "14a76b3562598ed81e3c513c34b17f560795eb462e55cd9ea26bae222a112f99"
+          },
+          {
+            "path": "hosted-triage/passed-job-101463268099.log",
+            "sha256": "1b8078ef52a16bc7f63c412fd5d7a5065d30225b81c6f881adee0c39e52391e0"
+          }
+        ]
+      },
+      {
+        "id": "example-inventory",
+        "phase": "cargo xtask verify: example inventory",
+        "failure": "Ten new workflow/fixture YAML files were absent from the verification matrix.",
+        "correctionSha": "bd7675fc9fc51926c19d5b437ca1904b153086c6",
+        "correction": "Enumerate every cookbook workflow and non-workflow YAML fixture with its expected check/plan outcomes.",
+        "evidence": [
+          {
+            "path": "hosted-23da795-failures.log",
+            "sha256": "7561c467ece6f7fdeb89786b21039ece29f86c96471bdd45f0085ebfc15598f5"
+          }
+        ]
+      },
+      {
+        "id": "python-argv0",
+        "phase": "cargo xtask verify: test_fixture_portability",
+        "failure": "The env-cleared Linux child was launched with bare python3 argv[0], lost the selected virtual environment, and could not import ruamel.yaml. Two semantic probes failed.",
+        "correctionSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "correction": "Use absolute sys.executable argv[0], retaining env={}, CRLF, Git tamper, and nested process assertions.",
+        "evidence": [
+          {
+            "path": "hosted-triage/linux-45d0995/prefix-probe.json",
+            "sha256": "eacbd6126f2dcfde1c6c64523ffaba9bb95fdb734a8eeea3bf2a5ba3d33cbca6"
+          },
+          {
+            "path": "hosted-triage/linux-45d0995/result.json",
+            "sha256": "47ee0556e368410cbdbdbc6fd73145a8fd7c5f703dd906fc10fc8cc6d7552e40"
+          },
+          {
+            "path": "hosted-triage/portability-argv0-fix-macos312.log",
+            "sha256": "4033b2cba7134cbc50dd95a5d28c7f48b32390084e40cb2b3efeba4297945f0a"
+          }
+        ]
+      },
+      {
+        "id": "native-artifact-test-path",
+        "phase": "cargo xtask verify: test_runner_contracts",
+        "failure": "The Windows assertion expected POSIX slashes in the intentionally native artifact_digests evidence keys.",
+        "correctionSha": "30167c8330b1a3fb0bb89c2426d6310e1efd6aa4",
+        "correction": "Construct the expected nested artifact path with pathlib; retain all denial snapshot assertions.",
+        "evidence": [
+          {
+            "path": "hosted-triage/native-path-applied-macos312.log",
+            "sha256": "6130bc03e8cf88f4879ab6b4921f0a5564c7a5575ed1f77a4a3546a7598a3f98"
+          }
+        ]
+      }
+    ],
+    "runs": [
+      {
+        "id": 34019544524,
+        "workflow": "credential-free-ci",
+        "sourceSha": "23da795e619ece5087a4b294a4a7afff2104acbe",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34019544524",
+        "conclusion": "failure",
+        "jobs": [
+          {
+            "id": 101449454490,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34019544524/job/101449454490",
+            "issue": "example-inventory",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101449454550,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34019544524/job/101449454550",
+            "issue": "example-inventory",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101449454595,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34019544524/job/101449454595",
+            "issue": "example-inventory",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101450637546,
+            "name": "production SBOM",
+            "conclusion": "skipped",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34019544524/job/101450637546"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34019544524-final-full.json",
+          "sha256": "9c24a6fcd78ddafea79b246ff1ab4b786e3d0ff58aafc59df7f9766d90f4dce1"
+        },
+        "failureLog": {
+          "path": "hosted-23da795-failures.log",
+          "sha256": "7561c467ece6f7fdeb89786b21039ece29f86c96471bdd45f0085ebfc15598f5"
+        },
+        "correctionSha": "bd7675fc9fc51926c19d5b437ca1904b153086c6"
+      },
+      {
+        "id": 34021037196,
+        "workflow": "container-security",
+        "sourceSha": "bd7675fc9fc51926c19d5b437ca1904b153086c6",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037196",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101453545465,
+            "name": "container",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037196/job/101453545465"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021037196-final-full.json",
+          "sha256": "96185cedd42c68799c4d7b9b5eaffd9ed7d927f0bd0eb039c6c0179c8366828d"
+        },
+        "supersededBySourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34021037231,
+        "workflow": "credential-free-ci",
+        "sourceSha": "bd7675fc9fc51926c19d5b437ca1904b153086c6",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037231",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101453545613,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037231/job/101453545613"
+          },
+          {
+            "id": 101453545684,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037231/job/101453545684"
+          },
+          {
+            "id": 101453545752,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037231/job/101453545752"
+          },
+          {
+            "id": 101453615005,
+            "name": "production SBOM",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037231/job/101453615005"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021037231-final-full.json",
+          "sha256": "d26a6bbb5d9c7c12b160427726b825972a8e4ae51e01dcdc0f1addd28f6f03cf"
+        },
+        "supersededBySourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34021037234,
+        "workflow": "supply-chain-security",
+        "sourceSha": "bd7675fc9fc51926c19d5b437ca1904b153086c6",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037234",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101453545691,
+            "name": "security",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021037234/job/101453545691"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021037234-final-full.json",
+          "sha256": "5ba74c84778da1adf09ad29a6245ccc5180fec12912159732ee326df285594d1"
+        },
+        "supersededBySourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34021049443,
+        "workflow": "credential-free-ci",
+        "sourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021049443",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101453615744,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021049443/job/101453615744",
+            "issue": "python-argv0",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101453615838,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021049443/job/101453615838"
+          },
+          {
+            "id": 101453615849,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021049443/job/101453615849"
+          },
+          {
+            "id": 101454793999,
+            "name": "production SBOM",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021049443/job/101454793999"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021049443-final-full.json",
+          "sha256": "5f975579c8f0682dee558b4409d9c1da9af8f5ab486c703a39a3e39ce34a8d7f"
+        },
+        "failureLog": {
+          "path": "hosted-triage/failed-job-101453615744.log",
+          "sha256": "ec846f58d7473427df4871df12800a0be833579951e4c58e89932988ae5ccb91"
+        },
+        "correctionSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "supersededBySourceSha": "d388954c346865cb34c0f20a5f528e695ba39b8a",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34021087350,
+        "workflow": "rc-release-preparation",
+        "sourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021087350",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101453689337,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021087350/job/101453689337",
+            "issue": "python-argv0",
+            "failedPhase": "Run full credential-free RC gate"
+          },
+          {
+            "id": 101453689392,
+            "name": "RC (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021087350/job/101453689392"
+          },
+          {
+            "id": 101453689499,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021087350/job/101453689499"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021087350-final-full.json",
+          "sha256": "7b400d6471f9ebfeced0f887b652803fb006c13cb66b14ef2f9110c11ffd0b73"
+        },
+        "failureLog": {
+          "path": "hosted-triage/failed-job-101453689337.log",
+          "sha256": "51eff10470b591aa88d239b8712c4d23c0ab109dc5f7aa16512d9dabab50fa64"
+        },
+        "correctionSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "supersededBySourceSha": "d388954c346865cb34c0f20a5f528e695ba39b8a",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34021476462,
+        "workflow": "credential-free-ci",
+        "sourceSha": "d388954c346865cb34c0f20a5f528e695ba39b8a",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021476462",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101454794235,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021476462/job/101454794235"
+          },
+          {
+            "id": 101454794272,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021476462/job/101454794272",
+            "issue": "python-argv0",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101454794296,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021476462/job/101454794296"
+          },
+          {
+            "id": 101456334398,
+            "name": "production SBOM",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021476462/job/101456334398"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021476462-latest.json",
+          "sha256": "7cc417a0f0fbcf92d7bfb90ffb55c65b5a0e415ff74d2edddd2b5126739ed5ba"
+        },
+        "failureLog": {
+          "path": "hosted-triage/ci-linux-34021476462.log",
+          "sha256": "59cf9adf570242a9caaf73da573805ec582871808d6327b42059baf4742f9c59"
+        },
+        "correctionSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "supersededBySourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34021504137,
+        "workflow": "rc-release-preparation",
+        "sourceSha": "d388954c346865cb34c0f20a5f528e695ba39b8a",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34021504137",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101454831234,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021504137/job/101454831234",
+            "issue": "python-argv0",
+            "failedPhase": "Run full credential-free RC gate"
+          },
+          {
+            "id": 101454831345,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021504137/job/101454831345"
+          },
+          {
+            "id": 101454831350,
+            "name": "RC (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34021504137/job/101454831350"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34021504137-latest.json",
+          "sha256": "8f1be5fe1b31ce6d4659878e55e9081acb8455f80802ae9f705639f8d59bd1e8"
+        },
+        "failureLog": {
+          "path": "hosted-triage/rc-linux-34021504137.log",
+          "sha256": "c301f3f6cb5f1566f34ae37834baeef2146d5c639a2aecb1a0fa6fa077b15514"
+        },
+        "correctionSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "supersededBySourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34022055834,
+        "workflow": "credential-free-ci",
+        "sourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34022055834",
+        "conclusion": "failure",
+        "jobs": [
+          {
+            "id": 101456334555,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022055834/job/101456334555"
+          },
+          {
+            "id": 101456334694,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022055834/job/101456334694"
+          },
+          {
+            "id": 101456334729,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022055834/job/101456334729",
+            "issue": "native-artifact-test-path",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101457953553,
+            "name": "production SBOM",
+            "conclusion": "skipped",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022055834/job/101457953553"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34022055834-latest.json",
+          "sha256": "5e684401702ef8ed0d1dbb0f9e5a9be1791839c6fbccef2f6331dc32d2e34d17"
+        },
+        "failureLog": {
+          "path": "hosted-triage/failed-job-101456334729.log",
+          "sha256": "9a5af8d54434d7ab2f67aa0a769f1a18fe5b142945c90ec042bf62cdfb3f1490"
+        },
+        "correctionSha": "30167c8330b1a3fb0bb89c2426d6310e1efd6aa4"
+      },
+      {
+        "id": 34022090762,
+        "workflow": "rc-release-preparation",
+        "sourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34022090762",
+        "conclusion": "failure",
+        "jobs": [
+          {
+            "id": 101456405052,
+            "name": "RC (aarch64-apple-darwin)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022090762/job/101456405052"
+          },
+          {
+            "id": 101456405140,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022090762/job/101456405140",
+            "issue": "native-artifact-test-path",
+            "failedPhase": "Run full credential-free RC gate"
+          },
+          {
+            "id": 101456405164,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022090762/job/101456405164"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34022090762-latest.json",
+          "sha256": "88906e193765c97c5b7086ec21f98523e32d34dde7a43104d39965acd19091bf"
+        },
+        "failureLog": {
+          "path": "hosted-triage/failed-job-101456405140.log",
+          "sha256": "62c31166ad61333ab86fd7cc1f28a930f2569da49c739c612aeaff1d089a79e1"
+        },
+        "correctionSha": "30167c8330b1a3fb0bb89c2426d6310e1efd6aa4"
+      },
+      {
+        "id": 34023348347,
+        "workflow": "credential-free-ci",
+        "sourceSha": "9090a761f819014b905db6bb448388a534bb3943",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34023348347",
+        "conclusion": "failure",
+        "jobs": [
+          {
+            "id": 101459901631,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023348347/job/101459901631",
+            "issue": "windows-helper-socket-environment",
+            "failedPhase": "Run deterministic verification gate"
+          },
+          {
+            "id": 101459901758,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023348347/job/101459901758"
+          },
+          {
+            "id": 101459901775,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023348347/job/101459901775"
+          },
+          {
+            "id": 101461745110,
+            "name": "production SBOM",
+            "conclusion": "skipped",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023348347/job/101461745110"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34023348347-latest.json",
+          "sha256": "90b955bbe330c545502a34bc6b7373755c122bc9f2d694891fdb795a813d0699"
+        },
+        "failureLog": {
+          "path": "hosted-triage/failed-job-101459901631.log",
+          "sha256": "8500d06da9081ab3d52a68b2d0793694be24fd427b655beaeadf9f9e7d003f45"
+        },
+        "correctionSha": "4a22f7f733c5c722263b956b59f36107ec398fc7"
+      },
+      {
+        "id": 34023395520,
+        "workflow": "rc-release-preparation",
+        "sourceSha": "9090a761f819014b905db6bb448388a534bb3943",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34023395520",
+        "conclusion": "failure",
+        "jobs": [
+          {
+            "id": 101459991949,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "conclusion": "failure",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023395520/job/101459991949",
+            "issue": "windows-helper-socket-environment",
+            "failedPhase": "Run full credential-free RC gate"
+          },
+          {
+            "id": 101459992088,
+            "name": "RC (aarch64-apple-darwin)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023395520/job/101459992088"
+          },
+          {
+            "id": 101459992254,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "conclusion": "success",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34023395520/job/101459992254"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34023395520-latest.json",
+          "sha256": "c8000dcfac7207647a4453ee2f0ccd285036d9f7116f9bad7d569731a06947b4"
+        },
+        "failureLog": {
+          "path": "hosted-triage/failed-job-101459991949.log",
+          "sha256": "99e8855aed0c5694a7dabbfb0a2ef5efb6b0b3d74964d71f51715bc6a1f4e542"
+        },
+        "correctionSha": "4a22f7f733c5c722263b956b59f36107ec398fc7"
+      },
+      {
+        "id": 34022829484,
+        "workflow": "credential-free-ci",
+        "sourceSha": "30167c8330b1a3fb0bb89c2426d6310e1efd6aa4",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34022829484",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101458441315,
+            "name": "gates (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022829484/job/101458441315"
+          },
+          {
+            "id": 101458441385,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022829484/job/101458441385"
+          },
+          {
+            "id": 101458441419,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022829484/job/101458441419"
+          },
+          {
+            "id": 101459901359,
+            "name": "production SBOM",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022829484/job/101459901359"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34022829484-latest.json",
+          "sha256": "81067e21793555d68850b34b33519a2ce439538d62ab47fb49060564838bec3b"
+        },
+        "supersededBySourceSha": "9090a761f819014b905db6bb448388a534bb3943",
+        "cancellationNote": "Superseded run; cancellation is not passing evidence. Failed jobs listed above remain actual failures."
+      },
+      {
+        "id": 34022897309,
+        "workflow": "rc-release-preparation",
+        "sourceSha": "30167c8330b1a3fb0bb89c2426d6310e1efd6aa4",
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34022897309",
+        "conclusion": "cancelled",
+        "jobs": [
+          {
+            "id": 101458626482,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022897309/job/101458626482"
+          },
+          {
+            "id": 101458626529,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022897309/job/101458626529"
+          },
+          {
+            "id": 101458626539,
+            "name": "RC (aarch64-apple-darwin)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/opensourceops/agentctl/actions/runs/34022897309/job/101458626539"
+          }
+        ],
+        "statusEvidence": {
+          "path": "hosted-triage/34022897309-latest.json",
+          "sha256": "f4431ac7eb0a0aabf03c04102a3eebdc5c9f231c4953737e7908bf35e90fed7a"
+        },
+        "supersededBySourceSha": "9090a761f819014b905db6bb448388a534bb3943",
+        "cancellationNote": "Explicitly cancelled after replacement 9090a76 RC 34023395520 started; no failed jobs in this run.",
+        "cancellationEvidence": {
+          "path": "hosted-triage/rc-dispatch-9090a76.json",
+          "sha256": "5a7f7c66811ae8aa20e9f8b55bd179afec31a2f4bb769214b8064af153393a9a"
+        }
+      }
+    ],
+    "localFindings": [
+      {
+        "id": "process-timeout-phase-race",
+        "kind": "local_gate_failure",
+        "sourceSha": "23da795e619ece5087a4b294a4a7afff2104acbe",
+        "failedPhase": "cargo xtask verify: runtime process extension timeout regression",
+        "failure": "Under full-suite load the one-second handshake deadline expired before invocation; the test incorrectly expected an uncertain dispatched effect without phase evidence. An unchanged focused rerun passed.",
+        "correctionSha": "bd7675fc9fc51926c19d5b437ca1904b153086c6",
+        "correction": "Five-second startup headroom, invocation marker before strict Uncertain assertion, and separate deliberate handshake timeout asserting Failed with no invocation marker. No production semantics changed.",
+        "evidence": [
+          {
+            "path": "verify-23da795-isolated.log",
+            "sha256": "42351f455fd927638bb14c8a9e7dd9fb561f1ee298b393ea7225c54c626f9290"
+          },
+          {
+            "path": "runtime-process-boundary-focused-23da795.log",
+            "sha256": "60156dc7fb6a420bc0c4e1f9ba97a94304e3c30df4a647297a3f432c06275044"
+          },
+          {
+            "path": "runtime-boundary-probe-23da795/report.json",
+            "sha256": "57d10050a84c03d9514524b0565e44ac948e8e24c24f1273b1e36b5c88c1f5f2"
+          },
+          {
+            "path": "runtime-phase-regression.log",
+            "sha256": "3438e87402f7c49d62aa9fade04864e7f1c6d3e2c5199b8e41b05b50210b6a67"
+          }
+        ]
+      },
+      {
+        "id": "macos-loader-stall",
+        "kind": "local_gate_failure",
+        "sourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "failedPhase": "cargo xtask verify: launching xtask test executable",
+        "failure": "The new owned test executable stalled before Rust entry at _dyld_start and was terminated; this is not passing local verification.",
+        "correctionSha": null,
+        "resolution": "Host restriction retained explicitly. Independent installed Linux candidate and hosted gates provide separately labeled evidence; no host security settings were modified.",
+        "evidence": [
+          {
+            "path": "verify-b930fa5.log",
+            "sha256": "f1d02610cee188225644912667ec21d725d719579ecb6f4e62739a0f97eca724"
+          },
+          {
+            "path": "xtask-test-stall.sample",
+            "sha256": "59588f100d9ca22c183cefdfd6ebdf544f3f953a3f335681c9b400d18e7fedf0"
+          }
+        ]
+      },
+      {
+        "id": "yanked-chacha20",
+        "kind": "local_preflight_finding",
+        "sourceSha": "b930fa5d348cb646b52fd5edc240dc4dab29626f",
+        "failedPhase": "Exact-source cargo install dependency review",
+        "failure": "The installation exposed yanked chacha20 0.10.1; the superseded attempt was stopped and is not passing install evidence.",
+        "correctionSha": "d388954c346865cb34c0f20a5f528e695ba39b8a",
+        "correction": "Both retained lockfiles use compatible unyanked chacha20 0.10.2 without changing deny policy.",
+        "evidence": [
+          {
+            "path": "install-b930fa5.log",
+            "sha256": "2e9fded91a5964c207583d420f824a1b89443f98fdd28c996bf8def607074566"
+          }
+        ]
+      },
+      {
+        "id": "zip-manifest-portability",
+        "kind": "reproduced_archive_contract_defect",
+        "sourceSha": "30167c8330b1a3fb0bb89c2426d6310e1efd6aa4",
+        "failedPhase": "Read-only Windows ZIP path serialization probe; no hosted failure claimed",
+        "failure": "Native Windows manifest backslashes could not address ZIP members normalized with POSIX separators.",
+        "correctionSha": "9090a761f819014b905db6bb448388a534bb3943",
+        "correction": "Use POSIX keys and member names; verify every archived manifest key resolves to bytes matching its SHA-256. Runtime native artifact evidence keys stay unchanged.",
+        "qualification": "The initial probe used PureWindowsPath and real ZipInfo Windows separator behavior; it was not a native Windows execution claim.",
+        "evidence": [
+          {
+            "path": "hosted-triage/windows-manifest-portability-probe.json",
+            "sha256": "09fb11b9d601bf001471fc7a9695a89061a931596b778d2f46742b2b8e1cc532"
+          },
+          {
+            "path": "hosted-triage/zip-posix-packaging-macos312.log",
+            "sha256": "cf09255d917202075a727ff89a21839fb7165e2075eb6dbe7c794c1094ec43b2"
+          },
+          {
+            "path": "hosted-triage/zip-posix-packaging-linux-invocation.json",
+            "sha256": "4db9576dc0a40bd8d81b2e48d9de956c474f2d95741a1a9d860daa14be273c23"
+          }
+        ]
+      }
+    ],
+    "currentHostedValidation": {
+      "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "allFourWorkflowsPassed": true,
+      "runs": [
+        {
+          "id": "34024602218",
+          "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218",
+          "conclusion": "success",
+          "evidence": {
+            "path": "hosted-triage/34024602218-latest.json",
+            "sha256": "41dc843c672121786e6f30afaf24c5a109e473646fc276b11f99cf146a308729"
+          }
+        },
+        {
+          "id": "34024619321",
+          "url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321",
+          "conclusion": "success",
+          "evidence": {
+            "path": "hosted-triage/34024619321-latest.json",
+            "sha256": "29f1bf1b442f9c23778c201b2535122a96941b50948be23a396f7f2fd17b7c6a"
+          }
+        },
+        {
+          "id": "34024602216",
+          "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602216",
+          "conclusion": "success",
+          "evidence": {
+            "path": "hosted-triage/34024602216-latest.json",
+            "sha256": "ea9e96926f8ff02932a590895495efba6135811a5625eeb7efbd2c6b911fbec9"
+          }
+        },
+        {
+          "id": "34024602237",
+          "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602237",
+          "conclusion": "success",
+          "evidence": {
+            "path": "hosted-triage/34024602237-latest.json",
+            "sha256": "2aaca9414278d95c700421d1bba83ff5c427bd2668953911bdab590a569e3bda"
+          }
+        }
+      ],
+      "windowsProof": {
+        "path": "hosted-triage/windows-final-proof-4a22f7f.json",
+        "sha256": "dce9656f9bb2b9e2525af55b84eed815f8c65f5b3119c9a5ba55d121a1ca0912"
+      }
+    }
+  },
+  "remainingRequiredReleaseGates": [],
+  "environmentLimitations": [
+    "This Mac's new Mach-O and some shell launches stalled before program entry. Failed local full-Cargo and combined-site attempts remain failed evidence. Exact installation/direct journeys ran in functioning isolated Linux; required complete gates ran on hosted Linux/macOS/Windows. No host security, daemon or TLS setting was changed."
+  ],
+  "evidenceDigests": {
+    "container-work/validation-4a22f7f.json": "39ab16a9e0b38672f9a319aab7c1f831609cf945cb3a430264f9e64ff53ad6d1",
+    "hosted-4a22f7f/evidence.json": "0ac70ad35b300b15361eaa68c206b20527c87e7fd07d09b637ec52672ad32cd2",
+    "docs/work/final-docs-evidence-8b3cdda.json": "6ddbc1f9aea3acfa5e2d7d206b6ead713bf3ac7e327bc7a39d81b5dd10759fa4",
+    "hosted-4a22f7f/site-installed-package-relationship.json": "ca3c3afcd73a5d7ba75a4da4147c7d6e6f6d91f10079ffac88f9b4902a672f28",
+    "paid-final/summary.json": "701590715efd1d7f01dc5016ee11be5ad25e26a49b5c838040d31818410b3966",
+    "paid-final/applicability.json": "0c9c5ac62ca48a3fdf38c424dc473e53769733c34104fbd3d0d7a115ddffb616",
+    "hosted-triage/retained-run-index.json": "a39b31f02fcdfdbe93b7a3fe78fb087b543b4b2644bbea0c426649077a17e220",
+    "hosted-triage/windows-final-proof-4a22f7f.json": "dce9656f9bb2b9e2525af55b84eed815f8c65f5b3119c9a5ba55d121a1ca0912",
+    "hosted-4a22f7f/package-source-relationships.json": "cd1173717c11350df77181d6cf90dae51055af60a192dd8bf753ff613280f1b7",
+    "hosted-4a22f7f/source-comparison-initial-failure.json": "4c4e5fbfea2d7bb5b2447231551585113c869e2bb84742282d1a150a6e2e71a4"
+  }
+}

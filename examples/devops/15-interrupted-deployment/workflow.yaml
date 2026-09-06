@@ -1,0 +1,148 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-interrupted-deployment
+  description: Interrupt a run after a non-idempotent local mutation and prove resume does not repeat its confirmed effect.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    deploy-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-deploy
+      idempotency: at_most_once
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - desiredPath
+        properties:
+          desiredPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - mutation
+          - version
+          - desiredText
+          - desiredSha256
+          - scope
+          - reportText
+        properties:
+          mutation:
+            type: integer
+          version:
+            type: string
+          desiredText:
+            type: string
+          desiredSha256:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    check-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-check
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - expectedText
+          - requireReady
+        properties:
+          expectedText:
+            type: string
+          requireReady:
+            type: boolean
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - verified
+          - version
+          - healthy
+          - mutation
+          - sha256
+          - dependencyChecked
+          - reason
+          - scope
+          - reportText
+        properties:
+          verified:
+            type: boolean
+          version:
+            type: string
+          healthy:
+            type: boolean
+          mutation:
+            type: integer
+          sha256:
+            type: string
+          dependencyChecked:
+            type: boolean
+          reason:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: deploy
+      uses: action:deploy-service
+      with:
+        desiredPath: '${{ inputs.desiredPath }}'
+    - id: analyze
+      uses: action:check-service
+      needs:
+        - deploy
+      with:
+        expectedText: '${{ tasks.deploy.output.desiredText }}'
+        requireReady: false
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    desiredPath: fixtures/desired-service.json
+  outputs:
+    report: '${{ tasks.analyze.output }}'

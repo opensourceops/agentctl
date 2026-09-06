@@ -1,4 +1,4 @@
-/target/
+/target
 /fuzz/target/
 /.agentctl/
 /.runtime/
@@ -17,3 +17,5 @@ examples/acceptance/mock-tool/artifacts/*
 !examples/acceptance/mock-tool/artifacts/.gitkeep
 examples/openai-live/artifacts/*
 !examples/openai-live/artifacts/.gitkeep
+
+__pycache__/

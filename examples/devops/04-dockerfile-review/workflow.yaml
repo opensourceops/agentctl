@@ -1,0 +1,147 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-dockerfile-review
+  description: Narrow copied files, use a non-root identity, validate Python syntax, and optionally build and execute the container.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    propose-dockerfile:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - dockerfile-propose
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - sourcePath
+        properties:
+          sourcePath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - proposalPath
+          - patchPath
+          - sourceSha256
+          - proposedSha256
+          - improvements
+          - reportText
+        properties:
+          proposalPath:
+            type: string
+          patchPath:
+            type: string
+          sourceSha256:
+            type: string
+          proposedSha256:
+            type: string
+          improvements:
+            type: array
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    validate-dockerfile:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - dockerfile-validate
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - sourcePath
+          - proposalPath
+          - appPath
+        properties:
+          sourcePath:
+            type: string
+          proposalPath:
+            type: string
+          appPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - improvements
+          - patch
+          - syntaxValidated
+          - validationScope
+          - containerBuild
+          - performanceClaim
+          - reportText
+        properties:
+          improvements:
+            type: array
+          patch:
+            type: object
+          syntaxValidated:
+            type: boolean
+          validationScope:
+            type: string
+          containerBuild:
+            type: string
+          performanceClaim:
+            type: 'null'
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: propose
+      uses: action:propose-dockerfile
+      with:
+        sourcePath: '${{ inputs.sourcePath }}'
+    - id: analyze
+      uses: action:validate-dockerfile
+      needs:
+        - propose
+      with:
+        sourcePath: '${{ inputs.sourcePath }}'
+        proposalPath: '${{ tasks.propose.output.proposalPath }}'
+        appPath: '${{ inputs.appPath }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    sourcePath: fixtures/Dockerfile
+    appPath: fixtures/app.py
+  outputs:
+    report: '${{ tasks.analyze.output }}'

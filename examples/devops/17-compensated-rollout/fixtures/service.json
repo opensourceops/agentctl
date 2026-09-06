@@ -1,0 +1,9 @@
+{
+  "version": "1.7.3",
+  "healthy": true,
+  "settings": {
+    "replicas": 3,
+    "feature": "retained"
+  },
+  "scope": "disposable compensated service"
+}

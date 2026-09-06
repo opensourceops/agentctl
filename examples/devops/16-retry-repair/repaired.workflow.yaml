@@ -1,0 +1,155 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-retry-repair
+  description: Demonstrate terminal failure, retry after fixture recovery, and selective repair while reusing a successful mutation.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    deploy-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-deploy
+      idempotency: at_most_once
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - desiredPath
+        properties:
+          desiredPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - mutation
+          - version
+          - desiredText
+          - desiredSha256
+          - scope
+          - reportText
+        properties:
+          mutation:
+            type: integer
+          version:
+            type: string
+          desiredText:
+            type: string
+          desiredSha256:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    check-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-check
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - expectedText
+          - requireReady
+        properties:
+          expectedText:
+            type: string
+          requireReady:
+            type: boolean
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - verified
+          - version
+          - healthy
+          - mutation
+          - sha256
+          - dependencyChecked
+          - reason
+          - scope
+          - reportText
+        properties:
+          verified:
+            type: boolean
+          version:
+            type: string
+          healthy:
+            type: boolean
+          mutation:
+            type: integer
+          sha256:
+            type: string
+          dependencyChecked:
+            type: boolean
+          reason:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: build
+      uses: action:deploy-service
+      with:
+        desiredPath: '${{ inputs.desiredPath }}'
+    - id: test
+      uses: action:check-service
+      needs:
+        - build
+      with:
+        expectedText: '${{ tasks.build.output.desiredText }}'
+        requireReady: false
+      outputSchema:
+        type: object
+        required:
+          - verified
+        properties:
+          verified:
+            const: true
+    - id: report
+      uses: action:write
+      needs:
+        - test
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.test.output.reportText }}'
+  inputs:
+    desiredPath: fixtures/desired-service.json
+  outputs:
+    report: '${{ tasks.test.output }}'

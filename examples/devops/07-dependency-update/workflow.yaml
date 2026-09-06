@@ -1,0 +1,278 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-dependency-update
+  description: Apply a vendored dependency update in a disposable workspace and prove three behavioral tests change from failing to passing.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    prepare-patch:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - vendor-prepare
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - targetPath
+          - testPath
+          - patchPath
+        properties:
+          targetPath:
+            type: string
+          testPath:
+            type: string
+          patchPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - targetName
+          - sourceSha256
+          - proposedSha256
+          - patchSha256
+          - testName
+          - testSha256
+          - scope
+          - reportText
+        properties:
+          targetName:
+            type: string
+          sourceSha256:
+            type: string
+          proposedSha256:
+            type: string
+          patchSha256:
+            type: string
+          testName:
+            type: string
+          testSha256:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    test-before:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - vendor-test-before
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - targetName
+          - sourceSha256
+          - testName
+          - testSha256
+        properties:
+          targetName:
+            type: string
+          sourceSha256:
+            type: string
+          testName:
+            type: string
+          testSha256:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - baselineExit
+          - tests
+          - reportText
+        properties:
+          baselineExit:
+            type: integer
+          tests:
+            type: integer
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    apply-patch:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - vendor-apply
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - targetName
+          - sourceSha256
+          - proposedSha256
+          - patchSha256
+        properties:
+          targetName:
+            type: string
+          sourceSha256:
+            type: string
+          proposedSha256:
+            type: string
+          patchSha256:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - appliedAndVerified
+          - reused
+          - sha256
+          - reportText
+        properties:
+          appliedAndVerified:
+            type: boolean
+          reused:
+            type: boolean
+          sha256:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    test-after:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - vendor-test-after
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - targetName
+          - proposedSha256
+          - baselineTests
+          - testName
+          - testSha256
+        properties:
+          targetName:
+            type: string
+          proposedSha256:
+            type: string
+          baselineTests:
+            type: integer
+          testName:
+            type: string
+          testSha256:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - baselineExit
+          - updatedExit
+          - tests
+          - scope
+          - reportText
+        properties:
+          baselineExit:
+            type: integer
+          updatedExit:
+            type: integer
+          tests:
+            type: integer
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: prepare
+      uses: action:prepare-patch
+      with:
+        targetPath: '${{ inputs.targetPath }}'
+        testPath: '${{ inputs.testPath }}'
+        patchPath: '${{ inputs.patchPath }}'
+    - id: baseline
+      uses: action:test-before
+      needs:
+        - prepare
+      with:
+        targetName: '${{ tasks.prepare.output.targetName }}'
+        sourceSha256: '${{ tasks.prepare.output.sourceSha256 }}'
+        testName: '${{ tasks.prepare.output.testName }}'
+        testSha256: '${{ tasks.prepare.output.testSha256 }}'
+    - id: apply
+      uses: action:apply-patch
+      needs:
+        - prepare
+        - baseline
+      with:
+        targetName: '${{ tasks.prepare.output.targetName }}'
+        sourceSha256: '${{ tasks.prepare.output.sourceSha256 }}'
+        proposedSha256: '${{ tasks.prepare.output.proposedSha256 }}'
+        patchSha256: '${{ tasks.prepare.output.patchSha256 }}'
+    - id: analyze
+      uses: action:test-after
+      needs:
+        - prepare
+        - baseline
+        - apply
+      with:
+        targetName: '${{ tasks.prepare.output.targetName }}'
+        proposedSha256: '${{ tasks.prepare.output.proposedSha256 }}'
+        testName: '${{ tasks.prepare.output.testName }}'
+        testSha256: '${{ tasks.prepare.output.testSha256 }}'
+        baselineTests: '${{ tasks.baseline.output.tests }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    targetPath: fixtures/vendor_version.py
+    testPath: fixtures/test_dependency.py
+    patchPath: fixtures/update.patch
+  outputs:
+    report: '${{ tasks.analyze.output }}'

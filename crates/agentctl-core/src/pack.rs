@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -23,6 +24,9 @@ pub struct PackManifest {
     pub name: String,
     pub version: String,
     pub agentctl: String,
+    /// Manifest-bound digests for instruction and variable files, relative to this manifest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, PackDependency>,
     #[serde(default)]
@@ -66,6 +70,49 @@ impl PackManifest {
             return Err(PackError::Invalid(format!(
                 "agentctl {current} does not satisfy `{requirement}`"
             )));
+        }
+        if self.files.len() > crate::sources::MAX_SOURCE_FILES {
+            return Err(PackError::Invalid(
+                "pack files exceed the 256-source-file limit".to_owned(),
+            ));
+        }
+        for (path, integrity) in &self.files {
+            validate_relative_path(Path::new(path), "pack file")?;
+            if path.contains(['\\', ':'])
+                || path.split('/').any(|part| part.is_empty() || part == ".")
+            {
+                return Err(PackError::Invalid(
+                    "pack files must use normalized relative paths".to_owned(),
+                ));
+            }
+            validate_integrity(integrity)?;
+            if integrity != &integrity.to_ascii_lowercase() {
+                return Err(PackError::Invalid(
+                    "pack files must use lowercase sha256 digests".to_owned(),
+                ));
+            }
+        }
+        let referenced_files = self
+            .agents
+            .values()
+            .flat_map(|agent| {
+                agent
+                    .instructions_file
+                    .iter()
+                    .chain(agent.vars_files.iter())
+            })
+            .chain(self.workflows.values().flat_map(|workflow| {
+                workflow
+                    .tasks
+                    .iter()
+                    .flat_map(|task| task.vars_files.iter())
+            }));
+        for path in referenced_files {
+            if !self.files.contains_key(path) {
+                return Err(PackError::Invalid(format!(
+                    "pack source file `{path}` requires a sha256 digest in files"
+                )));
+            }
         }
         for (name, dependency) in &self.dependencies {
             validate_pack_name(name)?;
@@ -377,18 +424,100 @@ pub enum PackError {
     Io(#[from] std::io::Error),
 }
 
+/// Verify the manifest and every declared ancillary asset without dispatching
+/// providers or executable pack content. The manifest directory is the read root.
 pub fn verify_pack(path: &Path, expected: &str) -> Result<String, PackError> {
-    let bytes = fs::read(path)?;
-    let actual = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
-    if actual == expected {
-        Ok(actual)
-    } else {
-        Err(PackError::Integrity {
+    validate_integrity(expected)?;
+    let canonical = fs::canonicalize(path)?;
+    let bytes = read_pack_file(&canonical)?;
+    let actual = digest_bytes(&bytes);
+    if actual != expected {
+        return Err(PackError::Integrity {
             path: path.to_path_buf(),
             expected: expected.to_owned(),
             actual,
-        })
+        });
     }
+    let manifest = parse_pack(&bytes, &path.display().to_string())?;
+    let root = canonical
+        .parent()
+        .ok_or_else(|| PackError::Invalid("pack manifest has no parent".to_owned()))?;
+    let mut total = 0_u64;
+    for (relative, expected) in &manifest.files {
+        let source = fs::canonicalize(root.join(relative))?;
+        if !source.starts_with(root) {
+            return Err(PackError::Invalid(format!(
+                "pack file `{relative}` resolves outside the manifest directory"
+            )));
+        }
+        let bytes = read_pack_file(&source)?;
+        total = total.saturating_add(bytes.len() as u64);
+        if total > crate::sources::MAX_CAPTURE_BYTES {
+            return Err(PackError::Invalid(
+                "pack files exceed the 16 MiB source capture limit".to_owned(),
+            ));
+        }
+        if std::str::from_utf8(&bytes).is_err() {
+            return Err(PackError::Invalid(format!(
+                "pack file `{relative}` must use UTF-8 encoding"
+            )));
+        }
+        let digest = digest_bytes(&bytes);
+        if &digest != expected {
+            return Err(PackError::Integrity {
+                path: source,
+                expected: expected.clone(),
+                actual: digest,
+            });
+        }
+    }
+    Ok(actual)
+}
+
+fn read_pack_file(path: &Path) -> Result<Vec<u8>, PackError> {
+    read_pack_input(path, crate::sources::MAX_SOURCE_BYTES)
+}
+
+/// Read one bounded regular pack input from a no-follow descriptor. The caller
+/// authorizes and checks path containment before invoking this helper. Binary
+/// lock/signature/archive inputs remain supported; text assets are checked above.
+pub fn read_pack_input(path: &Path, limit: u64) -> Result<Vec<u8>, PackError> {
+    if !path.is_absolute()
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(PackError::Invalid(
+            "pack input requires a normalized absolute path".to_owned(),
+        ));
+    }
+    let mut file = crate::sources::open_regular(path)?;
+    let before = file.metadata()?;
+    if before.len() > limit {
+        return Err(PackError::Invalid(format!(
+            "{} exceeds the {limit}-byte limit",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    if bytes.len() as u64 > limit
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || before.len() != bytes.len() as u64
+    {
+        return Err(PackError::Invalid(format!(
+            "{} changed during verification or exceeds the {limit}-byte limit",
+            path.display()
+        )));
+    }
+    Ok(bytes)
 }
 
 #[must_use]
@@ -397,6 +526,11 @@ pub fn digest_bytes(bytes: &[u8]) -> String {
 }
 
 pub fn parse_pack(bytes: &[u8], display: &str) -> Result<PackManifest, PackError> {
+    if bytes.len() as u64 > crate::sources::MAX_SOURCE_BYTES {
+        return Err(PackError::Invalid(format!(
+            "{display}: pack manifest exceeds the 1 MiB source limit"
+        )));
+    }
     let manifest: PackManifest = serde_yaml_ng::from_slice(bytes)
         .map_err(|error| PackError::Invalid(format!("{display}: {error}")))?;
     manifest.validate()?;
@@ -433,7 +567,9 @@ fn validate_relative_path(path: &Path, label: &str) -> Result<(), PackError> {
         || path.components().any(|component| {
             matches!(
                 component,
-                std::path::Component::ParentDir | std::path::Component::RootDir
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
             )
         })
     {
@@ -489,18 +625,135 @@ mod tests {
     #[test]
     fn detects_pack_tampering() {
         let mut file = tempfile::NamedTempFile::new().expect("temp file");
-        file.write_all(b"trusted").expect("write");
-        let integrity = verify_pack(
-            file.path(),
-            "sha256:a9a089195c68d2adeee23beaa2c3a93b1d4cdf09046e7a9e520b3b166dff3e6a",
-        )
-        .expect("matches");
+        let trusted = b"apiVersion: agentctl.dev/pack/v1alpha1\nname: example.trusted\nversion: 1.0.0\nagentctl: '>=0.3.0, <1.0.0'\n";
+        file.write_all(trusted).expect("write");
+        let integrity = verify_pack(file.path(), &digest_bytes(trusted)).expect("matches");
         assert!(integrity.starts_with("sha256:"));
         file.write_all(b"tampered").expect("tamper");
         assert!(matches!(
             verify_pack(file.path(), &integrity),
             Err(PackError::Integrity { .. })
         ));
+    }
+
+    #[test]
+    fn verifies_declared_assets_and_rejects_tamper_missing_and_invalid_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest_path = directory.path().join("agentctl.pack.yaml");
+        let asset = directory.path().join("review.txt");
+        fs::write(&asset, "review this fixture").unwrap();
+        let manifest = format!(
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.assets\nversion: 1.0.0\nagentctl: '>=0.3.0, <1.0.0'\nfiles:\n  review.txt: {}\n",
+            digest_bytes(b"review this fixture")
+        );
+        fs::write(&manifest_path, &manifest).unwrap();
+        let integrity = digest_bytes(manifest.as_bytes());
+        assert_eq!(verify_pack(&manifest_path, &integrity).unwrap(), integrity);
+        // Even a declared asset not referenced by an agent is verified.
+        fs::write(&asset, "tampered").unwrap();
+        assert!(
+            matches!(verify_pack(&manifest_path, &integrity), Err(PackError::Integrity { path, .. }) if path == fs::canonicalize(&asset).unwrap())
+        );
+        fs::remove_file(&asset).unwrap();
+        assert!(verify_pack(&manifest_path, &integrity).is_err());
+        fs::write(&asset, [0xff]).unwrap();
+        assert!(
+            verify_pack(&manifest_path, &integrity)
+                .unwrap_err()
+                .to_string()
+                .contains("UTF-8")
+        );
+        fs::write(
+            &asset,
+            vec![b'a'; crate::sources::MAX_SOURCE_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(
+            verify_pack(&manifest_path, &integrity)
+                .unwrap_err()
+                .to_string()
+                .contains("1048576-byte")
+        );
+        fs::remove_file(&asset).unwrap();
+        fs::create_dir(&asset).unwrap();
+        assert!(verify_pack(&manifest_path, &integrity).is_err());
+    }
+
+    #[test]
+    fn asset_paths_are_portable_normalized_and_all_source_references_are_bound() {
+        let base = "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.assets\nversion: 1.0.0\nagentctl: '>=0.3.0, <1.0.0'\n";
+        let digest = digest_bytes(b"fixture");
+        for path in [
+            "../escape",
+            "/absolute",
+            "a/../escape",
+            "a//b",
+            "./file",
+            "a/./b",
+            "a\\b",
+            "C:drive-relative",
+            "",
+        ] {
+            let file_map = serde_json::json!({path:digest});
+            let source = format!("{base}files: {file_map}\n");
+            assert!(
+                parse_pack(source.as_bytes(), "fixture.pack.yaml").is_err(),
+                "accepted {path}"
+            );
+        }
+        let source = format!(
+            "{base}agents:\n  worker: {{ provider: fake, model: fake, instructionsFile: missing.txt }}\n"
+        );
+        assert!(
+            parse_pack(source.as_bytes(), "fixture.pack.yaml")
+                .unwrap_err()
+                .to_string()
+                .contains("requires a sha256 digest")
+        );
+        let valid = format!(
+            "{base}files: {{ 'review.txt': '{digest}' }}\nagents:\n  worker: {{ provider: fake, model: fake, instructionsFile: review.txt }}\n"
+        );
+        assert!(parse_pack(valid.as_bytes(), "fixture.pack.yaml").is_ok());
+        assert!(
+            parse_pack(
+                vec![b' '; crate::sources::MAX_SOURCE_BYTES as usize + 1].as_slice(),
+                "too-large"
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asset_symlink_escape_and_fifo_fail_without_blocking() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("review.txt"), "private").unwrap();
+        let manifest = format!(
+            "apiVersion: agentctl.dev/pack/v1alpha1\nname: example.assets\nversion: 1.0.0\nagentctl: '>=0.3.0, <1.0.0'\nfiles: {{ review.txt: '{}' }}\n",
+            digest_bytes(b"private")
+        );
+        let path = directory.path().join("agentctl.pack.yaml");
+        fs::write(&path, &manifest).unwrap();
+        symlink(
+            outside.path().join("review.txt"),
+            directory.path().join("review.txt"),
+        )
+        .unwrap();
+        assert!(
+            verify_pack(&path, &digest_bytes(manifest.as_bytes()))
+                .unwrap_err()
+                .to_string()
+                .contains("outside")
+        );
+        fs::remove_file(directory.path().join("review.txt")).unwrap();
+        nix::unistd::mkfifo(
+            &directory.path().join("review.txt"),
+            nix::sys::stat::Mode::S_IRUSR,
+        )
+        .unwrap();
+        assert!(verify_pack(&path, &digest_bytes(manifest.as_bytes())).is_err());
     }
 
     #[test]

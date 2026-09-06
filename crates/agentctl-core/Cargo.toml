@@ -27,6 +27,13 @@ tokio-util.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+cap-primitives = "4.0.3"
+cap-fs-ext = { version = "4.0.3", default-features = false }
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true

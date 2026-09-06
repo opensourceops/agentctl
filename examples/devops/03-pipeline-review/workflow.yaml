@@ -1,0 +1,158 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-pipeline-review
+  description: Find excess permissions and unbounded timeouts, then check and apply a reviewable Git patch.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    propose-pipeline:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - pipeline-propose
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - sourcePath
+          - maxTimeoutMinutes
+        properties:
+          sourcePath:
+            type: string
+          maxTimeoutMinutes:
+            type: integer
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - proposalPath
+          - patchPath
+          - sourceSha256
+          - proposedSha256
+          - violations
+          - reportText
+        properties:
+          proposalPath:
+            type: string
+          patchPath:
+            type: string
+          sourceSha256:
+            type: string
+          proposedSha256:
+            type: string
+          violations:
+            type: array
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    validate-pipeline:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - pipeline-validate
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - sourcePath
+          - proposalPath
+          - maxTimeoutMinutes
+          - requireActionlint
+          - actionlintPath
+        properties:
+          sourcePath:
+            type: string
+          proposalPath:
+            type: string
+          maxTimeoutMinutes:
+            type: integer
+          requireActionlint:
+            type: boolean
+          actionlintPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - violations
+          - patch
+          - validated
+          - validationScope
+          - actionlint
+          - reportText
+        properties:
+          violations:
+            type: array
+          patch:
+            type: object
+          validated:
+            type: boolean
+          validationScope:
+            type: string
+          actionlint:
+            type: object
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: propose
+      uses: action:propose-pipeline
+      with:
+        sourcePath: '${{ inputs.sourcePath }}'
+        maxTimeoutMinutes: '${{ inputs.maxTimeoutMinutes }}'
+    - id: analyze
+      uses: action:validate-pipeline
+      needs:
+        - propose
+      with:
+        sourcePath: '${{ inputs.sourcePath }}'
+        proposalPath: '${{ tasks.propose.output.proposalPath }}'
+        maxTimeoutMinutes: '${{ inputs.maxTimeoutMinutes }}'
+        requireActionlint: '${{ inputs.requireActionlint }}'
+        actionlintPath: '${{ inputs.actionlintPath }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    sourcePath: fixtures/pipeline.yaml
+    maxTimeoutMinutes: 15
+    requireActionlint: false
+    actionlintPath: tools/actionlint
+  outputs:
+    report: '${{ tasks.analyze.output }}'

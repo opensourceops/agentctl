@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::process::{bounded_output, output_diagnostics};
 
 mod acceptance;
+mod live_config;
 mod process;
 
 fn main() -> Result<()> {
@@ -35,7 +36,9 @@ fn main() -> Result<()> {
         "acceptance-live-openai" => acceptance::live_openai(&root),
         "resource-budget-live-openai" => acceptance::live_openai_budget(&root),
         "examples-verify" => examples_verify(&root),
-        "examples-verify-live-openai" => acceptance::examples_live_openai(&root),
+        "devops-examples" => devops_examples(&root, true),
+        "examples-verify-live-openai" => acceptance::examples_live_openai(&root, false),
+        "examples-verify-live-openai-composites" => acceptance::examples_live_openai(&root, true),
         "examples-verify-live-openai-container" => {
             acceptance::examples_live_openai_container(&root)
         }
@@ -47,7 +50,7 @@ fn main() -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask artifact-store-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask examples-verify-live-openai\ncargo xtask examples-verify-live-openai-container\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
+                "cargo xtask verify\ncargo xtask docs-verify\ncargo xtask artifact-store-verify\ncargo xtask migration-verify\ncargo xtask protocol-resilience\ncargo xtask acceptance\ncargo xtask completeness\ncargo xtask acceptance-container\ncargo xtask acceptance-live-openai\ncargo xtask resource-budget-live-openai\ncargo xtask examples-verify\ncargo xtask devops-examples\ncargo xtask examples-verify-live-openai\ncargo xtask examples-verify-live-openai-composites\ncargo xtask examples-verify-live-openai-container\ncargo xtask generate\ncargo xtask package\ncargo xtask secret-scan"
             );
             Ok(())
         }
@@ -335,6 +338,7 @@ fn verify(root: &Path) -> Result<()> {
     println!("[7/12] examples, inventory, and negative contracts");
     verify_examples(root)?;
     verify_example_matrix(root)?;
+    devops_examples(root, false)?;
 
     println!("[8/12] dependency sources and license metadata");
     verify_metadata(root)?;
@@ -362,7 +366,56 @@ fn examples_verify(root: &Path) -> Result<()> {
     verify_examples(root)?;
     verify_docs_examples(root)?;
     verify_markdown_links(root)?;
+    devops_examples(root, false)?;
     println!("agentctl credential-free example verification passed");
+    Ok(())
+}
+
+fn devops_examples(root: &Path, build: bool) -> Result<()> {
+    if build {
+        run(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
+    }
+    let binary = binary_path(root);
+    let python_path = std::env::var("AGENTCTL_EXAMPLES_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+    let python = python_path.as_str();
+    // Discover every cookbook regression so newly added semantic or packaging
+    // checks cannot silently remain outside the required example gate.
+    run_with_env(
+        root,
+        python,
+        &[
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "examples/devops",
+            "-p",
+            "test_*.py",
+        ],
+        &[(
+            "AGENTCTL_EXAMPLES_BINARY",
+            binary.to_str().context("agentctl binary path")?,
+        )],
+    )?;
+    for pattern in ["test_live_command.py", "test_container_agentctl.py"] {
+        run(
+            root,
+            python,
+            &["-m", "unittest", "discover", "-s", "scripts", "-p", pattern],
+        )?;
+    }
+    run(
+        root,
+        python,
+        &[
+            "examples/devops/run.py",
+            "--agentctl",
+            binary.to_str().context("agentctl binary path")?,
+            "--report",
+            "target/devops-evidence.json",
+        ],
+    )?;
     Ok(())
 }
 
@@ -416,6 +469,8 @@ fn generated_cli_reference(binary: &Path) -> Result<String> {
         &[],
         &["check"],
         &["plan"],
+        &["doctor"],
+        &["explain"],
         &["run"],
         &["resume"],
         &["replay"],

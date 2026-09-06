@@ -1,0 +1,94 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-sbom-triage
+  description: Join CycloneDX component identities to vulnerabilities and enforce severity and expiring exception rules.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    triage-sbom:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - sbom-triage
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - sbomPath
+          - vulnerabilitiesPath
+          - rulesPath
+        properties:
+          sbomPath:
+            type: string
+          vulnerabilitiesPath:
+            type: string
+          rulesPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - findings
+          - decision
+          - asOf
+          - mode
+          - requiresExplicitCiGate
+          - reportText
+        properties:
+          findings:
+            type: array
+          decision:
+            type: string
+          asOf:
+            type: string
+          mode:
+            type: string
+          requiresExplicitCiGate:
+            type: boolean
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: analyze
+      uses: action:triage-sbom
+      with:
+        sbomPath: '${{ inputs.sbomPath }}'
+        vulnerabilitiesPath: '${{ inputs.vulnerabilitiesPath }}'
+        rulesPath: '${{ inputs.rulesPath }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    sbomPath: fixtures/sbom.json
+    vulnerabilitiesPath: fixtures/vulnerabilities.json
+    rulesPath: fixtures/rules.json
+  outputs:
+    report: '${{ tasks.analyze.output }}'

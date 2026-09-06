@@ -1,0 +1,112 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-terraform-plan
+  description: Reject destructive or nonlocal plan changes and require recorded approval before writing isolated local state.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: mutations
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    analyze-plan:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - terraform-analyze
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - planPath
+          - allowedFilename
+        properties:
+          planPath:
+            type: string
+          allowedFilename:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - allowed
+          - denied
+          - reasons
+          - changes
+          - desiredContent
+          - targetPath
+          - scope
+          - reportText
+        properties:
+          allowed:
+            type: boolean
+          denied:
+            type: array
+          reasons:
+            type: object
+          changes:
+            type: array
+          desiredContent:
+            type: string
+          targetPath:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    assert:
+      kind: builtin.assert
+    write:
+      kind: builtin.write
+  tasks:
+    - id: analyze
+      uses: action:analyze-plan
+      with:
+        planPath: '${{ inputs.planPath }}'
+        allowedFilename: '${{ inputs.allowedFilename }}'
+    - id: allow-plan
+      uses: action:assert
+      needs:
+        - analyze
+      with:
+        that: '${{ tasks.analyze.output.allowed }}'
+        message: plan contains destructive, sensitive, unknown or nonlocal changes
+    - id: apply-local
+      uses: action:write
+      needs:
+        - analyze
+        - allow-plan
+      with:
+        path: '${{ tasks.analyze.output.targetPath }}'
+        content: '${{ tasks.analyze.output.desiredContent }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    planPath: fixtures/plan.json
+    allowedFilename: artifacts/local-state.json
+  outputs:
+    report: '${{ tasks.analyze.output }}'

@@ -1,0 +1,102 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-release-notes
+  description: Analyze an existing Git revision range and link release-note entries to commits and changed files.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    collect-release-notes:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - release-notes
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - repositoryPath
+          - fromRef
+          - toRef
+          - outputPath
+        properties:
+          repositoryPath:
+            type: string
+          fromRef:
+            type: string
+          toRef:
+            type: string
+          outputPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - notes
+          - commitsVerified
+          - fromCommit
+          - toCommit
+          - outputPath
+          - scope
+          - reportText
+        properties:
+          notes:
+            type: array
+          commitsVerified:
+            type: integer
+          fromCommit:
+            type: string
+          toCommit:
+            type: string
+          outputPath:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: analyze
+      uses: action:collect-release-notes
+      with:
+        repositoryPath: '${{ inputs.repositoryPath }}'
+        fromRef: '${{ inputs.fromRef }}'
+        toRef: '${{ inputs.toRef }}'
+        outputPath: '${{ inputs.outputPath }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    repositoryPath: fixtures/repository
+    fromRef: fixture-base
+    toRef: HEAD
+    outputPath: artifacts/CHANGELOG.md
+  outputs:
+    report: '${{ tasks.analyze.output }}'

@@ -15,15 +15,9 @@ cargo run -p agentctl-cli -- plan examples/v1/hello.yaml
 cargo run -p agentctl-cli -- run examples/v1/hello.yaml --db .agentctl/quickstart.db
 ```
 
-The last command is credential-free and deterministic. Install from crates.io with:
+The last command is credential-free and deterministic. Install this reviewed checkout with `cargo install --locked --path crates/agentctl-cli`. The [installation guide](docs/guides/INSTALLATION.md) explains exact candidate revisions; an older published crate may not contain these features.
 
-```console
-cargo install --locked agentctl-cli
-```
-
-For local development, use `cargo install --locked --path crates/agentctl-cli`.
-
-For a tool-using credential-free journey, copy `examples/acceptance/mock-tool` to a clean directory and run its `workflow.yaml`. The repository acceptance suite executes that exact journey outside the source tree.
+The CLI and crates remain **pre-1.0**. Workflow API `agentctl.dev/v1` names the document format. Use [Getting started](docs/guides/GETTING_STARTED.md) for complete copyable YAML that works with an installed binary and no source checkout. Then choose a complete package from the [DevOps cookbook](examples/devops/README.md).
 
 ## Workflow
 
@@ -44,6 +38,11 @@ spec:
 ```
 
 Use `check` for strict syntax, references, templates, policy, and provider-capability validation. Use `plan` for deterministic order and predictability, `run --check --diff` for a non-mutating preview, `resume` after interruption, `replay` to reconstruct recorded results without effects, `retry` to rerun failed boundaries of an identical terminal workflow, `repair` to reuse compatible successful task boundaries with a corrected workflow, and `fork` when a broader fresh execution is intentional.
+
+Use `explain` to inspect winning variable origins without values and `doctor`
+for non-dispatching prerequisite checks. [Variables and instruction
+files](docs/VARIABLES.md) documents ordered `varsFiles`, explicit `--var`
+overrides, instruction templates, and captured recovery inputs.
 
 Terminal retry and selective repair are planned before execution:
 

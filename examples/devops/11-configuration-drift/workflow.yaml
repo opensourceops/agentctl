@@ -1,0 +1,102 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-configuration-drift
+  description: Layer external variable files and task overrides, keep invocation inputs separate, and report configuration drift.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    write:
+      kind: builtin.write
+    compare-config:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - configuration-drift
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        required:
+          - actualPath
+          - desired
+          - environment
+        additionalProperties: false
+        properties:
+          actualPath:
+            type: string
+          desired:
+            type: object
+          environment:
+            type: string
+      outputSchema:
+        type: object
+        required:
+          - desired
+          - actual
+          - drift
+          - inputEnvironment
+          - reportText
+        additionalProperties: false
+        properties:
+          desired:
+            type: object
+          actual:
+            type: object
+          drift:
+            type: array
+          inputEnvironment:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+  tasks:
+    - id: analyze
+      uses: action:compare-config
+      with:
+        actualPath: '${{ inputs.actualPath }}'
+        desired:
+          replicas: '${{ vars.replicas }}'
+          region: '${{ vars.region }}'
+          settings: '${{ vars.settings }}'
+        environment: '${{ inputs.environment }}'
+      varsFiles:
+        - vars/task.json
+      vars:
+        replicas: 4
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  varsFiles:
+    - vars/base.yaml
+    - vars/environment.json
+  vars:
+    region: fixture
+  inputs:
+    environment: disposable
+    actualPath: fixtures/actual.json
+  outputs:
+    report: '${{ tasks.analyze.output }}'

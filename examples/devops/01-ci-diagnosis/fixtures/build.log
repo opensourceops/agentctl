@@ -1,0 +1,5 @@
+[1/4] checkout revision abc123
+[2/4] python -m pytest
+ModuleNotFoundError: No module named requests
+[3/4] tests aborted
+[4/4] exit 2

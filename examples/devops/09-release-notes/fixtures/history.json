@@ -1,0 +1,17 @@
+[
+  {
+    "path": "api.py",
+    "content": "VERSION = \"1.0\"\n",
+    "message": "feat: add health API"
+  },
+  {
+    "path": "worker.py",
+    "content": "RETRIES = 2\n",
+    "message": "fix: bound worker retries"
+  },
+  {
+    "path": "README.md",
+    "content": "Fixture service\n",
+    "message": "docs: describe fixture service"
+  }
+]

@@ -1,0 +1,177 @@
+# Host Python is trusted; the YAML exposes snapshot, mutation, probe and recovery boundaries.
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-local-deployment
+  description: Pause before changing a disposable local HTTP service document, approve the exact effect, resume, and probe the service.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: mutations
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    snapshot-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-snapshot
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - desiredPath
+        properties:
+          desiredPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - priorText
+          - priorSha256
+          - priorVersion
+          - desiredText
+          - desiredSha256
+          - desiredVersion
+          - scope
+          - reportText
+        properties:
+          priorText:
+            type: string
+          priorSha256:
+            type: string
+          priorVersion:
+            type: string
+          desiredText:
+            type: string
+          desiredSha256:
+            type: string
+          desiredVersion:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    probe-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-probe
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - endpointPath
+          - expectedText
+          - requireHealthy
+        properties:
+          endpointPath:
+            type: string
+          expectedText:
+            type: string
+          requireHealthy:
+            type: boolean
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - verified
+          - reason
+          - httpStatus
+          - version
+          - healthy
+          - sha256
+          - url
+          - scope
+          - reportText
+        properties:
+          verified:
+            type: boolean
+          reason:
+            type: string
+          httpStatus:
+            type: integer
+          version:
+            type: string
+          healthy:
+            type: boolean
+          sha256:
+            type: string
+          url:
+            type: string
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: snapshot
+      uses: action:snapshot-service
+      with:
+        desiredPath: '${{ inputs.desiredPath }}'
+    - id: deploy
+      uses: action:write
+      needs:
+        - snapshot
+      with:
+        path: artifacts/service.json
+        content: '${{ tasks.snapshot.output.desiredText }}'
+    - id: analyze
+      uses: action:probe-service
+      needs:
+        - snapshot
+        - deploy
+      with:
+        endpointPath: '${{ inputs.endpointPath }}'
+        expectedText: '${{ tasks.snapshot.output.desiredText }}'
+        requireHealthy: true
+    - id: health
+      uses: action:assert
+      needs:
+        - analyze
+      with:
+        that: '${{ tasks.analyze.output.verified }}'
+        message: deployed local service failed actual HTTP validation
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    desiredPath: fixtures/desired-service.json
+    endpointPath: service-endpoint.json
+  outputs:
+    report: '${{ tasks.analyze.output }}'

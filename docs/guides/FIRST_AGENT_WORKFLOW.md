@@ -4,20 +4,112 @@ You will run a tool-using agent with the deterministic fake provider. The model 
 
 ## Prerequisites
 
-- A built `agentctl` binary at `target/debug/agentctl`, or an installed binary
-- The source checkout
+- An installed candidate `agentctl` binary
 - No provider credential
 
-## 1. Copy the verified journey
+## 1. Create the complete example
 
-From the repository root:
+Create `agentctl-first-agent` with this layout:
 
 ```text
-cp -R examples/acceptance/mock-tool /tmp/agentctl-first-agent
-cd /tmp/agentctl-first-agent
+agentctl-first-agent/
+  workflow.yaml
+  fixture/service.txt
+  artifacts/
 ```
 
-The directory contains `workflow.yaml`, `fixture/service.txt`, and an empty artifact directory. The repository acceptance suite copies and runs the same journey outside the source tree.
+Save this as `fixture/service.txt`:
+
+```text
+service=agentctl-acceptance
+status=ready
+marker=READ_TOOL_CONFIRMED
+```
+
+Save the following complete document as `workflow.yaml`, then run the remaining commands inside `agentctl-first-agent`:
+
+```yaml
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: acceptance-mock-tool
+spec:
+  inputs:
+    reportPath: artifacts/mock-report.txt
+  outputs:
+    verdict: "${{ tasks.inspect.output.text }}"
+    artifact: "${{ inputs.reportPath }}"
+  providers:
+    fake:
+      kind: fake
+  policy:
+    workspaceRoot: .
+    writableRoots: [artifacts]
+    approval: never
+  tools:
+    read_fixture:
+      kind: builtin.workspace.read
+      description: Read a UTF-8 file inside the authorized workspace.
+      inputSchema:
+        type: object
+        properties:
+          path: { type: string }
+        required: [path]
+        additionalProperties: false
+      outputSchema:
+        type: object
+        properties:
+          path: { type: string }
+          content: { type: string }
+          bytes: { type: integer }
+          sha256: { type: string }
+        required: [path, content, bytes, sha256]
+        additionalProperties: false
+      capability: filesystem.read
+      risk: low
+      effectClass: observe
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    inspector:
+      provider: fake
+      model: scripted
+      instructions: Read the fixture and report its marker.
+      tools: [read_fixture]
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 32
+      timeoutSeconds: 5
+      providerOptions:
+        toolInput: { path: fixture/service.txt }
+        finalText: AGENTCTL_MOCK_FIXTURE_VERIFIED
+  actions:
+    assert:
+      kind: builtin.assert
+    write:
+      kind: builtin.write
+  tasks:
+    - id: inspect
+      uses: agent:inspector
+      with:
+        prompt: Use read_fixture before answering.
+    - id: verify
+      uses: action:assert
+      needs: [inspect]
+      with:
+        that: "${{ tasks.inspect.output.text == 'AGENTCTL_MOCK_FIXTURE_VERIFIED' }}"
+        message: the mock provider did not complete its tool continuation
+    - id: report
+      uses: action:write
+      needs: [inspect, verify]
+      with:
+        path: "${{ inputs.reportPath }}"
+        content: "${{ tasks.inspect.output.text }}"
+```
+
+The repository acceptance suite executes these same files outside the source tree. No shared helper or provider credential is required.
 
 ## 2. Read the boundary
 
@@ -59,17 +151,17 @@ agentctl inspect RUN_ID --db .agentctl/runtime.db --output json --color never
 
 Look for the provider session, tool call, effect correlation, task transitions, assertion result, artifact write, and run trace ID. The durable record lets you distinguish model output from deterministic verification.
 
-## Optional: use OpenAI
+## Replay and cleanup
 
-Only after the credential-free path works, review `examples/v1/openai-live.yaml`. Export the credential through the environment, never through a flag or YAML value:
-
-```text
-export OPENAI_API_KEY="your-provider-secret"
-agentctl check examples/v1/openai-live.yaml
-agentctl run examples/v1/openai-live.yaml --db .agentctl/openai.db --output json --color never
+```sh
+agentctl replay RUN_ID --db .agentctl/runtime.db --output json --color never
 ```
 
-The live command makes a paid network request to `api.openai.com` and writes provider results to the database. Do not run it in normal documentation verification. Remove the variable from the shell when finished.
+Replay reconstructs the recorded result with no new provider request or tool call. After inspecting the report, remove only this disposable directory when its history is no longer needed.
+
+## Move to a real provider deliberately
+
+The fake provider demonstrates orchestration and contracts; its scripted marker is not evidence that a model understood a file. The [CI diagnosis cookbook](../../examples/devops/01-ci-diagnosis/README.md) offers a separately labeled OpenAI workflow with bounded structured decisions. Keep credentials in the existing runtime secret mechanism, and review network policy, request and token ceilings, pricing assumptions, and the persisted data boundary before a paid run.
 
 ## Troubleshooting
 

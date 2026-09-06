@@ -1,0 +1,150 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-incident-timeline
+  description: Sort timestamped incident logs, calculate incident duration, and validate a model recommendation against source references.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    build-timeline:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - incident-timeline
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - logPath
+        properties:
+          logPath:
+            type: string
+          windowStart:
+            type: string
+          windowEnd:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - timeline
+          - durationSeconds
+          - supportedActions
+          - suggestedDecision
+          - window
+          - validationScope
+          - reportText
+        properties:
+          timeline:
+            type: array
+          durationSeconds:
+            type: number
+          supportedActions:
+            type: object
+          suggestedDecision:
+            type: object
+          window:
+            type: object
+          validationScope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    verify-decision:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - verify-incident-decision
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+          - semanticValidation
+          - validationScope
+          - advisory
+          - reportText
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+          semanticValidation:
+            type: boolean
+          validationScope:
+            type: string
+          advisory:
+            type: object
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: analyze
+      uses: action:build-timeline
+      with:
+        logPath: '${{ inputs.logPath }}'
+        windowStart: '${{ inputs.windowStart }}'
+        windowEnd: '${{ inputs.windowEnd }}'
+    - id: verify
+      uses: action:verify-decision
+      needs:
+        - analyze
+      with:
+        report: '${{ tasks.analyze.output }}'
+        analysis: '${{ tasks.analyze.output.suggestedDecision }}'
+    - id: report
+      uses: action:write
+      needs:
+        - verify
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.verify.output.reportText }}'
+  inputs:
+    logPath: fixtures/incident.log
+    windowStart: ''
+    windowEnd: ''
+  outputs:
+    report: '${{ tasks.verify.output }}'

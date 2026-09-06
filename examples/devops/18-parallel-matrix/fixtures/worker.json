@@ -1,0 +1,4 @@
+{
+  "replicas": 2,
+  "timeoutSeconds": 20
+}

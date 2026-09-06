@@ -57,6 +57,16 @@
     "WorkflowSpec": {
       "type": "object",
       "properties": {
+        "varsFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "inputs": {
           "type": "object",
           "additionalProperties": true,
@@ -352,6 +362,12 @@
           "type": "object",
           "additionalProperties": true,
           "default": {}
+        },
+        "varsFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "tools": {
           "type": "array",
@@ -914,6 +930,12 @@
           "type": "object",
           "additionalProperties": true,
           "default": {}
+        },
+        "varsFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "with": {
           "type": "object",

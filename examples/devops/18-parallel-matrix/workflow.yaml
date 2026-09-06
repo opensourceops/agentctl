@@ -1,0 +1,166 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-parallel-matrix
+  description: Run a bounded two-service/two-check matrix and verify stable ordered aggregation.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 4
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+      maxExpansionItems: 16
+  actions:
+    check-service:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - service-check-item
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - service
+          - check
+          - index
+          - maxReplicas
+          - maxTimeoutSeconds
+        properties:
+          service:
+            type: string
+          check:
+            type: string
+          index:
+            type: integer
+          maxReplicas:
+            type: integer
+          maxTimeoutSeconds:
+            type: integer
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - service
+          - check
+          - passed
+          - index
+          - source
+          - sha256
+          - reportText
+        properties:
+          service:
+            type: string
+          check:
+            type: string
+          passed:
+            type: boolean
+          index:
+            type: integer
+          source:
+            type: string
+          sha256:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    aggregate:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - aggregate-services
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - items
+        properties:
+          items:
+            type: array
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - items
+          - checks
+          - passed
+          - count
+          - scope
+          - reportText
+        properties:
+          items:
+            type: array
+          checks:
+            type: array
+          passed:
+            type: boolean
+          count:
+            type: integer
+          scope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: checks
+      uses: action:check-service
+      with:
+        service: '${{ vars.matrix.service }}'
+        check: '${{ vars.matrix.check }}'
+        index: '${{ vars.matrixIndex }}'
+        maxReplicas: '${{ inputs.maxReplicas }}'
+        maxTimeoutSeconds: '${{ inputs.maxTimeoutSeconds }}'
+      matrix:
+        axes:
+          service:
+            - api
+            - worker
+          check:
+            - syntax
+            - config
+        maxItems: 16
+    - id: analyze
+      uses: action:aggregate
+      needs:
+        - checks
+      with:
+        items: '${{ tasks.checks.output.items }}'
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    maxReplicas: 3
+    maxTimeoutSeconds: 30
+  outputs:
+    report: '${{ tasks.analyze.output }}'
+    items: '${{ tasks.checks.output.items }}'

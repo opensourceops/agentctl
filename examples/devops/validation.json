@@ -1,0 +1,2359 @@
+{
+  "schemaVersion": "agentctl.dev/devops-validation/v1",
+  "recordedAt": "2026-09-05T23:44:11.076777+00:00",
+  "scope": "Historical source-labeled results retained below; reviewFollowup records the separately validated current candidate. No historical run is relabeled.",
+  "deterministic": {
+    "source": {
+      "sourceSha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+      "sourceWorktreeDirty": false,
+      "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+      "catalogSha256": "4a44c798f3bc6ca16aa11d0a957fa2d373005c1cb77035c6622587a2ff00d1a5",
+      "supportSha256": {
+        "run.py": "a43977c8732f9367e3b35231f6c20a7b8d95ee66b62e9c07fc6f4ce614cc83fe",
+        "fixture.py": "d37d0c9c2f12abf23775022f44e9e3678d8f1fb8596ecc21a369f6700fedabb4",
+        "live_budget.py": "2690a47539bf1532dcf40c2c0b4119267ff35c2ca4dd3fdbce6ad79bcc201ade"
+      },
+      "mode": "deterministic",
+      "reportSha256": "27ce607af11f53b066a9bc8c6e1e571c4f1f30f470812ea2a7a5e989fcf299c1",
+      "reportName": "devops-final-ce94443.json"
+    },
+    "results": [
+      {
+        "id": "01",
+        "status": "passed",
+        "runId": "run-01a073f2-e597-7672-a7fb-7ff236953579",
+        "workflowSha256": "9b89ab546d0f9ad72df5f25886904a999f7794ed35c810dd41924b9cc515a7ec",
+        "wallSeconds": 1.723,
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 3099,
+          "artifactBytes": 901,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 1
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "02",
+        "status": "passed",
+        "runId": "run-01a073f2-eaf5-7593-9e77-377e57a49008",
+        "workflowSha256": "508617a7b508ac0263cc775832f677657e0f99b8439050b843b1516be23eaa48",
+        "wallSeconds": 0.63,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1440,
+          "artifactBytes": 552,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "03",
+        "status": "passed",
+        "runId": "run-01a073f2-ed75-79c2-9967-d2b8ba835b5e",
+        "workflowSha256": "1ecc578679e680fd05a05dbd185c9fe9dd17d9bb4b0d4d9afe8f507fdff0af95",
+        "wallSeconds": 0.685,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1110,
+          "artifactBytes": 385,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "04",
+        "status": "passed",
+        "runId": "run-01a073f2-f036-7921-aa71-273ec66a684d",
+        "workflowSha256": "01e6077c412a73ca56ca4eb56dea52fc247eb743ac0ff22a3c305b13728f288f",
+        "wallSeconds": 0.768,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1052,
+          "artifactBytes": 345,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "containerBuild": "not-executed",
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "05",
+        "status": "passed",
+        "runId": "run-01a073f2-f342-7062-9815-c02a6fb05f44",
+        "workflowSha256": "e9fa607a3aafb02a066fb871518f136a3fe6414ed711799d8081deed8f869f01",
+        "wallSeconds": 0.623,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 2301,
+          "artifactBytes": 1089,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "06",
+        "status": "passed",
+        "runId": "run-01a073f2-f5a2-77c2-a980-a443d2a0ca6e",
+        "workflowSha256": "3f2a8ce6e0e250a2b3a65e1d5b285e60d6ccb42bc7d2ffc7fb1a7fa9ecd56193",
+        "wallSeconds": 0.862,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 781,
+          "artifactBytes": 261,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          3,
+          0,
+          0,
+          3,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "07",
+        "status": "passed",
+        "runId": "run-01a073f2-f90f-7e53-a40b-2e83d5a19e37",
+        "workflowSha256": "b6a7c8131b68bc5eaa0791b9086adf84dc131099facf6275daca3f59e42a1ff3",
+        "wallSeconds": 0.957,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1152,
+          "artifactBytes": 388,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "08",
+        "status": "passed",
+        "runId": "run-01a073f2-fcd7-7cd1-8da2-70b8a4992f28",
+        "workflowSha256": "eb1e53294d9482cce1e9952d2938cf687c75e58b7e422a6431084ad7b7c2e534",
+        "wallSeconds": 0.646,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1756,
+          "artifactBytes": 727,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "09",
+        "status": "passed",
+        "runId": "run-01a073f2-ff54-7593-8ff8-e3a72df86dd2",
+        "workflowSha256": "cef14da8680c70a0eb243264accdf4dd44cd0d613790ac53f3c564df0f961efd",
+        "wallSeconds": 0.972,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1449,
+          "artifactBytes": 580,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "10",
+        "status": "passed",
+        "runId": "run-01a073f3-0327-7822-8b07-92e0e6fad5cf",
+        "workflowSha256": "6b6c2cc23f3ff24d50a28be8792e2e6cb6da1cac514a45f4a1edac778a8a90b2",
+        "wallSeconds": 0.658,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1151,
+          "artifactBytes": 420,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "11",
+        "status": "passed",
+        "runId": "run-01a073f3-05e2-7440-bfed-44de76f70876",
+        "workflowSha256": "7a2ffbafc06263db8180cba30b03a56675036a7f9cefdda2f65d789daf45da76",
+        "wallSeconds": 1.115,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1181,
+          "artifactBytes": 433,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "id": "12",
+        "status": "passed",
+        "runId": "run-01a073f3-0a48-7140-84d0-23a68ab5787e",
+        "workflowSha256": "1a05a6503ced80c2365e2bd3e27478e073a6a93421608bb5dc31a5d277d9bcf0",
+        "wallSeconds": 1.373,
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 6158,
+          "artifactBytes": 1980,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 1
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "13",
+        "status": "passed",
+        "runId": "run-01a073f3-0f81-7561-acdd-5f087ce7ac91",
+        "workflowSha256": "e59c8917f5b95bb90f927e27a43537836615f78bccb595a1bf432818e7d1f821",
+        "wallSeconds": 1.1,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 579,
+          "artifactBytes": 147,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          0
+        ]
+      },
+      {
+        "id": "14",
+        "status": "passed",
+        "runId": "run-01a073f3-13f7-7ea3-a406-8cc058713ec6",
+        "workflowSha256": "76efd4dba35ced990a7f52811bfb8ee8c5bbc314654fbf3926e5cc9d825c246b",
+        "wallSeconds": 0.844,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 0,
+          "artifactBytes": 110,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          3,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "15",
+        "status": "passed",
+        "runId": "run-01a073f3-1729-72d2-9856-3e3370a097f6",
+        "workflowSha256": "a909443daa3aa6509ab576974b8f241c533bce89e056325ae79f678bcc4f12e6",
+        "wallSeconds": 3.804,
+        "usage": {
+          "providerRequests": 1,
+          "turns": 1,
+          "toolCalls": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 4,
+          "processOutputBytes": 450,
+          "artifactBytes": 41,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 1
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "16",
+        "status": "passed",
+        "runId": "repair-01a073f3-294f-7a03-b290-985d9e99c319",
+        "workflowSha256": "2451ea32886f3f6db5f8f38e3e548ed710ce57da4604d137867f0e659b9ddc3c",
+        "wallSeconds": 1.12,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 0,
+          "artifactBytes": 0,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "17",
+        "status": "passed",
+        "runId": "compensation-01a073f3-2ab4-75a3-8ce1-350c39de3145",
+        "workflowSha256": "c8d47167eed4593464c279140fa4cebe20281e5e57bba18ee8f7f24c62f11d16",
+        "wallSeconds": 0.396,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 0,
+          "artifactBytes": 23,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "18",
+        "status": "passed",
+        "runId": "run-01a073f3-2c1d-7071-9b3d-13794686a416",
+        "workflowSha256": "37ed416c15e4c90846ba95e11047c32b0b52c0a83fe6917304cd3525ff8cd9db",
+        "wallSeconds": 0.814,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 2100,
+          "artifactBytes": 0,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "19",
+        "status": "passed",
+        "runId": "run-01a073f3-2f4c-7202-8996-1a316cb9434c",
+        "workflowSha256": "be7ea45d1126f59ae91c1385628a298b88420d09cf1ac06ee3c508538252dcf3",
+        "wallSeconds": 0.797,
+        "usage": {
+          "providerRequests": 5,
+          "turns": 5,
+          "toolCalls": 2,
+          "inputTokens": 5,
+          "outputTokens": 5,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 573,
+          "artifactBytes": 123,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 5
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          4,
+          0
+        ]
+      },
+      {
+        "id": "20",
+        "status": "passed",
+        "runId": "run-01a073f3-3266-7500-9605-a7a5771415b2",
+        "workflowSha256": "ae1a1f739f25a72703e45bdbea56c0c3ce6078681295426c6894c5a4ca7e9f27",
+        "wallSeconds": 0.856,
+        "usage": {
+          "providerRequests": 2,
+          "turns": 2,
+          "toolCalls": 1,
+          "inputTokens": 2,
+          "outputTokens": 2,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 605,
+          "artifactBytes": 123,
+          "costMicrousd": 4,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          4,
+          0
+        ]
+      }
+    ],
+    "liveBudget": null
+  },
+  "focused": [
+    {
+      "source": {
+        "sourceSha": "0eef26ae1d8034c8c8f49d5de4bdaa359a4ec494",
+        "sourceWorktreeDirty": false,
+        "binarySha256": "96438d2b32cffa02ad6a6659e9f91f03a44ef165cc17f6c79900a93aa9fc95b2",
+        "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+        "supportSha256": {
+          "run.py": "56178634e2b4737bcdb82feacc03de35007dbc7754a5710c13b267c5ef1bff64",
+          "fixture.py": "710583d43b1c5de1883f49d6aaa5b597c903564124b1b4979149560712214814",
+          "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+        },
+        "mode": "openai",
+        "reportSha256": "4dcd8c7ccb09bfa7c5d2410f71fd7ffd809f9a68755340b652e2cded99828abe",
+        "reportName": "devops-live-failed-0eef26a.json"
+      },
+      "results": [
+        {
+          "id": "01",
+          "status": "failed",
+          "runId": null,
+          "workflowSha256": "b98fc7209e64cd48d7503f191ff5c44e50f4e7647aea47adb0ca5aa61475aef8",
+          "wallSeconds": 4.129,
+          "error": "expected exit (0,), got 4: {\"apiVersion\":\"agentctl.dev/cli/v1\",\"kind\":\"Error\",\"ok\":false,\"error\":{\"message\":\"run `run-01a073c9-fe14-7831-9fc0-37a6d4caa7ee` failed in task `verify` (trace `trace-01a073c9-fe14-7831-9fc0-37bb67bf29bf`): external effect outcome is uncertain: extension invocation exited with exit status: 1 after effect dispatch\",\"exitCode\":4,\"runId\":\"run-01a073c9-fe14-7831-9fc0-37a6d4caa7ee\",\"traceId\":\"trace-01a073c9-fe14-7831-9fc0-37bb67bf29bf\"},\"diagnostics\":[]}",
+          "exitCodes": [
+            0,
+            0,
+            4,
+            0
+          ]
+        }
+      ],
+      "liveBudget": {
+        "limits": {
+          "providerRequests": 100,
+          "totalTokens": 200000,
+          "wallTimeSeconds": 1800,
+          "costMicrousd": 25000000
+        },
+        "charged": {
+          "providerRequests": 47,
+          "totalTokens": 31725,
+          "wallTimeSeconds": 320,
+          "costMicrousd": 2040741
+        },
+        "unreconciled": 1,
+        "costKind": "estimated from versioned public pricing, not an invoice"
+      }
+    },
+    {
+      "source": {
+        "sourceSha": "db7b59b63332dff2c2714e49196185402b5a46d4",
+        "sourceWorktreeDirty": false,
+        "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+        "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+        "supportSha256": {
+          "run.py": "666a04b683c4669714490ec60a788d25d72f349a7a388305abcdb82912953ea2",
+          "fixture.py": "d3815edc4a5508a5b72d347e593d2c2768f762bcfd9884ce58851552d10b9f8a",
+          "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+        },
+        "mode": "openai",
+        "reportSha256": "3a384c7fa541391bf83cd57dc60e419bcb57315f25881e464c9d8ee8aea6bcb3",
+        "reportName": "devops-live-final-db7b59b.json"
+      },
+      "results": [
+        {
+          "id": "01",
+          "status": "passed",
+          "runId": "run-01a073e4-2bfc-7aa2-85b8-0a017e92c02c",
+          "workflowSha256": "4e01dc24f8d28ce83680c0843502d8ef84bd9af414236fc83da514644030a779",
+          "wallSeconds": 7.967,
+          "usage": {
+            "providerRequests": 1,
+            "turns": 1,
+            "toolCalls": 0,
+            "inputTokens": 335,
+            "outputTokens": 366,
+            "reasoningTokens": 64,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 7,
+            "processOutputBytes": 5167,
+            "artifactBytes": 1930,
+            "costMicrousd": 816,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "exitCodes": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            4,
+            0,
+            4,
+            0
+          ]
+        },
+        {
+          "id": "12",
+          "status": "passed",
+          "runId": "run-01a073e4-4b1b-7b42-92b3-d85eea738bbf",
+          "workflowSha256": "8cd1ae21707b02783d5e468e923467b651a200e3fb07069fddabd6fa1b01aa9c",
+          "wallSeconds": 9.776,
+          "usage": {
+            "providerRequests": 1,
+            "turns": 1,
+            "toolCalls": 0,
+            "inputTokens": 555,
+            "outputTokens": 549,
+            "reasoningTokens": 128,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 9,
+            "processOutputBytes": 9462,
+            "artifactBytes": 3623,
+            "costMicrousd": 1237,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "exitCodes": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            4,
+            0,
+            4,
+            0
+          ]
+        },
+        {
+          "id": "19",
+          "status": "passed",
+          "runId": "run-01a073e4-7189-7ce3-962e-619ecf2b13a7",
+          "workflowSha256": "db02758d02fb83ae8e95ebbaec45b65d3a97201347b935572b04c62556916f94",
+          "wallSeconds": 10.683,
+          "usage": {
+            "providerRequests": 5,
+            "turns": 5,
+            "toolCalls": 2,
+            "inputTokens": 1176,
+            "outputTokens": 425,
+            "reasoningTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 11,
+            "processOutputBytes": 573,
+            "artifactBytes": 123,
+            "costMicrousd": 1146,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "exitCodes": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            4,
+            0,
+            4,
+            0
+          ]
+        },
+        {
+          "id": "20",
+          "status": "failed",
+          "runId": "run-01a073e4-9b31-7cd3-bfef-93ddb4942574",
+          "workflowSha256": "de3b39cc25048e5784b859cbbdf4ef8614ddc2cb260cdf1c5d21cf7e8d41260e",
+          "wallSeconds": 1.534,
+          "error": "expected exit (0,), got 4: {\"apiVersion\":\"agentctl.dev/cli/v1\",\"kind\":\"Error\",\"ok\":false,\"error\":{\"message\":\"run `run-01a073e4-9b31-7cd3-bfef-93ddb4942574` failed in task `remediate--0000-95d4b6878dcf` (trace `trace-01a073e4-9b31-7cd3-bfef-93eca28ff66c`): provider returned HTTP 400: Invalid schema for function 'repair_config': In context=('properties', 'content'), \\\" is not allowed in string literals for structured outputs (strict=true). (request id: req_0debb9da018040639ce61677f4abbccd)\",\"exitCode\":4,\"runId\":\"run-01a073e4-9b31-7cd3-bfef-93ddb4942574\",\"traceId\":\"trace-01a073e4-9b31-7cd3-bfef-93eca28ff66c\"},\"diagnostics\":[]}",
+          "exitCodes": [
+            0,
+            0,
+            4,
+            0
+          ]
+        }
+      ],
+      "liveBudget": {
+        "limits": {
+          "providerRequests": 100,
+          "totalTokens": 200000,
+          "wallTimeSeconds": 1800,
+          "costMicrousd": 25000000
+        },
+        "charged": {
+          "providerRequests": 55,
+          "totalTokens": 35131,
+          "wallTimeSeconds": 349,
+          "costMicrousd": 2043940
+        },
+        "unreconciled": 1,
+        "costKind": "estimated from versioned public pricing, not an invoice"
+      }
+    }
+  ],
+  "live": {
+    "source": {
+      "sourceSha": "9c4f6e0c84c8811e6fb015a7b43c311b7de67d73",
+      "sourceWorktreeDirty": false,
+      "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+      "catalogSha256": "4a44c798f3bc6ca16aa11d0a957fa2d373005c1cb77035c6622587a2ff00d1a5",
+      "supportSha256": {
+        "run.py": "8ce8cc214596aa90e88c869e41690e6ccfba192859282e6a7d092ec2c6133aaf",
+        "fixture.py": "d37d0c9c2f12abf23775022f44e9e3678d8f1fb8596ecc21a369f6700fedabb4",
+        "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+      },
+      "mode": "openai",
+      "reportSha256": "6910e10af81971ec157625ab66c5ca996e7d8b56fda7017304a909f8938ba766",
+      "reportName": "devops-live-20-final-9c4f6e0.json"
+    },
+    "results": [
+      {
+        "id": "20",
+        "status": "passed",
+        "runId": "run-01a073ed-467c-7502-9e87-33d1865372a9",
+        "workflowSha256": "6ec56ef637b39544991a100e76d30e0e12ee43c7d5ca65fa0a3c0512f94aedf2",
+        "wallSeconds": 4.053,
+        "usage": {
+          "providerRequests": 2,
+          "turns": 2,
+          "toolCalls": 1,
+          "inputTokens": 641,
+          "outputTokens": 131,
+          "reasoningTokens": 64,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 4,
+          "processOutputBytes": 605,
+          "artifactBytes": 123,
+          "costMicrousd": 423,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0,
+          4,
+          0
+        ]
+      }
+    ],
+    "liveBudget": {
+      "limits": {
+        "providerRequests": 100,
+        "totalTokens": 200000,
+        "wallTimeSeconds": 1800,
+        "costMicrousd": 25000000
+      },
+      "charged": {
+        "providerRequests": 57,
+        "totalTokens": 35903,
+        "wallTimeSeconds": 353,
+        "costMicrousd": 2044363
+      },
+      "unreconciled": 1,
+      "costKind": "estimated from versioned public pricing, not an invoice"
+    }
+  },
+  "container": {
+    "source": {
+      "sourceSha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+      "sourceWorktreeDirty": false,
+      "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+      "catalogSha256": "4a44c798f3bc6ca16aa11d0a957fa2d373005c1cb77035c6622587a2ff00d1a5",
+      "supportSha256": {
+        "run.py": "a43977c8732f9367e3b35231f6c20a7b8d95ee66b62e9c07fc6f4ce614cc83fe",
+        "fixture.py": "d37d0c9c2f12abf23775022f44e9e3678d8f1fb8596ecc21a369f6700fedabb4",
+        "live_budget.py": "2690a47539bf1532dcf40c2c0b4119267ff35c2ca4dd3fdbce6ad79bcc201ade"
+      },
+      "mode": "deterministic",
+      "reportSha256": "f44b5d08852dcdc6efd972f51099f91e06ee96acf81f626e77c953a38f83f167",
+      "reportName": "devops-container-final-ce94443.json"
+    },
+    "results": [
+      {
+        "id": "04",
+        "status": "passed",
+        "runId": "run-01a073f4-183e-7d52-9887-2af4afe6edd8",
+        "workflowSha256": "01e6077c412a73ca56ca4eb56dea52fc247eb743ac0ff22a3c305b13728f288f",
+        "wallSeconds": 10.909,
+        "usage": {
+          "providerRequests": 0,
+          "turns": 0,
+          "toolCalls": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "wallTimeSeconds": 1,
+          "processOutputBytes": 1052,
+          "artifactBytes": 345,
+          "costMicrousd": 0,
+          "unpricedProviderRequests": 0
+        },
+        "assertions": [
+          "case-specific-semantics",
+          "audit-trace-correlation",
+          "zero-fresh-effect-replay",
+          "denial-without-forbidden-artifacts"
+        ],
+        "containerBuild": "passed",
+        "exitCodes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          0
+        ]
+      }
+    ],
+    "liveBudget": null,
+    "image": {
+      "baseImageId": "4f8d1afed6d58037c680221ca6dd9fb4737b7ecfa7d4809ca809fdc0c7d9b786",
+      "baseReference": "docker.io/library/python@sha256:3949e4271b0a3ff82afac7306764c313dcc8edeeb89c0376a3c2ac6007c66b1d",
+      "imageId": "19f63f49969286aabfaf747d8fb4f1b6fd83a367ffb44af51141bf5f1d40af30",
+      "response": {
+        "service": "fixture",
+        "healthy": true
+      },
+      "performanceClaim": null
+    }
+  },
+  "liveCoverage": {
+    "scope": "Union of individually passed cases at their recorded sources; failures remain in attempts. This is not a whole-invocation or final-source release verdict.",
+    "requiredIds": [
+      "01",
+      "12",
+      "19",
+      "20"
+    ],
+    "allRequiredIdsHavePassed": true,
+    "cases": {
+      "01": {
+        "passed": true,
+        "attempts": [
+          {
+            "source": {
+              "sourceSha": "0eef26ae1d8034c8c8f49d5de4bdaa359a4ec494",
+              "sourceWorktreeDirty": false,
+              "binarySha256": "96438d2b32cffa02ad6a6659e9f91f03a44ef165cc17f6c79900a93aa9fc95b2",
+              "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+              "supportSha256": {
+                "run.py": "56178634e2b4737bcdb82feacc03de35007dbc7754a5710c13b267c5ef1bff64",
+                "fixture.py": "710583d43b1c5de1883f49d6aaa5b597c903564124b1b4979149560712214814",
+                "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+              },
+              "mode": "openai",
+              "reportSha256": "4dcd8c7ccb09bfa7c5d2410f71fd7ffd809f9a68755340b652e2cded99828abe",
+              "reportName": "devops-live-failed-0eef26a.json"
+            },
+            "result": {
+              "id": "01",
+              "status": "failed",
+              "runId": null,
+              "workflowSha256": "b98fc7209e64cd48d7503f191ff5c44e50f4e7647aea47adb0ca5aa61475aef8",
+              "wallSeconds": 4.129,
+              "error": "expected exit (0,), got 4: {\"apiVersion\":\"agentctl.dev/cli/v1\",\"kind\":\"Error\",\"ok\":false,\"error\":{\"message\":\"run `run-01a073c9-fe14-7831-9fc0-37a6d4caa7ee` failed in task `verify` (trace `trace-01a073c9-fe14-7831-9fc0-37bb67bf29bf`): external effect outcome is uncertain: extension invocation exited with exit status: 1 after effect dispatch\",\"exitCode\":4,\"runId\":\"run-01a073c9-fe14-7831-9fc0-37a6d4caa7ee\",\"traceId\":\"trace-01a073c9-fe14-7831-9fc0-37bb67bf29bf\"},\"diagnostics\":[]}",
+              "exitCodes": [
+                0,
+                0,
+                4,
+                0
+              ]
+            }
+          },
+          {
+            "source": {
+              "sourceSha": "db7b59b63332dff2c2714e49196185402b5a46d4",
+              "sourceWorktreeDirty": false,
+              "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+              "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+              "supportSha256": {
+                "run.py": "666a04b683c4669714490ec60a788d25d72f349a7a388305abcdb82912953ea2",
+                "fixture.py": "d3815edc4a5508a5b72d347e593d2c2768f762bcfd9884ce58851552d10b9f8a",
+                "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+              },
+              "mode": "openai",
+              "reportSha256": "3a384c7fa541391bf83cd57dc60e419bcb57315f25881e464c9d8ee8aea6bcb3",
+              "reportName": "devops-live-final-db7b59b.json"
+            },
+            "result": {
+              "id": "01",
+              "status": "passed",
+              "runId": "run-01a073e4-2bfc-7aa2-85b8-0a017e92c02c",
+              "workflowSha256": "4e01dc24f8d28ce83680c0843502d8ef84bd9af414236fc83da514644030a779",
+              "wallSeconds": 7.967,
+              "usage": {
+                "providerRequests": 1,
+                "turns": 1,
+                "toolCalls": 0,
+                "inputTokens": 335,
+                "outputTokens": 366,
+                "reasoningTokens": 64,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "wallTimeSeconds": 7,
+                "processOutputBytes": 5167,
+                "artifactBytes": 1930,
+                "costMicrousd": 816,
+                "unpricedProviderRequests": 0
+              },
+              "assertions": [
+                "case-specific-semantics",
+                "audit-trace-correlation",
+                "zero-fresh-effect-replay",
+                "denial-without-forbidden-artifacts"
+              ],
+              "exitCodes": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                4,
+                0,
+                4,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "12": {
+        "passed": true,
+        "attempts": [
+          {
+            "source": {
+              "sourceSha": "db7b59b63332dff2c2714e49196185402b5a46d4",
+              "sourceWorktreeDirty": false,
+              "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+              "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+              "supportSha256": {
+                "run.py": "666a04b683c4669714490ec60a788d25d72f349a7a388305abcdb82912953ea2",
+                "fixture.py": "d3815edc4a5508a5b72d347e593d2c2768f762bcfd9884ce58851552d10b9f8a",
+                "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+              },
+              "mode": "openai",
+              "reportSha256": "3a384c7fa541391bf83cd57dc60e419bcb57315f25881e464c9d8ee8aea6bcb3",
+              "reportName": "devops-live-final-db7b59b.json"
+            },
+            "result": {
+              "id": "12",
+              "status": "passed",
+              "runId": "run-01a073e4-4b1b-7b42-92b3-d85eea738bbf",
+              "workflowSha256": "8cd1ae21707b02783d5e468e923467b651a200e3fb07069fddabd6fa1b01aa9c",
+              "wallSeconds": 9.776,
+              "usage": {
+                "providerRequests": 1,
+                "turns": 1,
+                "toolCalls": 0,
+                "inputTokens": 555,
+                "outputTokens": 549,
+                "reasoningTokens": 128,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "wallTimeSeconds": 9,
+                "processOutputBytes": 9462,
+                "artifactBytes": 3623,
+                "costMicrousd": 1237,
+                "unpricedProviderRequests": 0
+              },
+              "assertions": [
+                "case-specific-semantics",
+                "audit-trace-correlation",
+                "zero-fresh-effect-replay",
+                "denial-without-forbidden-artifacts"
+              ],
+              "exitCodes": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                4,
+                0,
+                4,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "19": {
+        "passed": true,
+        "attempts": [
+          {
+            "source": {
+              "sourceSha": "db7b59b63332dff2c2714e49196185402b5a46d4",
+              "sourceWorktreeDirty": false,
+              "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+              "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+              "supportSha256": {
+                "run.py": "666a04b683c4669714490ec60a788d25d72f349a7a388305abcdb82912953ea2",
+                "fixture.py": "d3815edc4a5508a5b72d347e593d2c2768f762bcfd9884ce58851552d10b9f8a",
+                "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+              },
+              "mode": "openai",
+              "reportSha256": "3a384c7fa541391bf83cd57dc60e419bcb57315f25881e464c9d8ee8aea6bcb3",
+              "reportName": "devops-live-final-db7b59b.json"
+            },
+            "result": {
+              "id": "19",
+              "status": "passed",
+              "runId": "run-01a073e4-7189-7ce3-962e-619ecf2b13a7",
+              "workflowSha256": "db02758d02fb83ae8e95ebbaec45b65d3a97201347b935572b04c62556916f94",
+              "wallSeconds": 10.683,
+              "usage": {
+                "providerRequests": 5,
+                "turns": 5,
+                "toolCalls": 2,
+                "inputTokens": 1176,
+                "outputTokens": 425,
+                "reasoningTokens": 256,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "wallTimeSeconds": 11,
+                "processOutputBytes": 573,
+                "artifactBytes": 123,
+                "costMicrousd": 1146,
+                "unpricedProviderRequests": 0
+              },
+              "assertions": [
+                "case-specific-semantics",
+                "audit-trace-correlation",
+                "zero-fresh-effect-replay",
+                "denial-without-forbidden-artifacts"
+              ],
+              "exitCodes": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                4,
+                0,
+                4,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "20": {
+        "passed": true,
+        "attempts": [
+          {
+            "source": {
+              "sourceSha": "db7b59b63332dff2c2714e49196185402b5a46d4",
+              "sourceWorktreeDirty": false,
+              "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+              "catalogSha256": "f3d11e3ae8d96cfbc3c951855d837342bb3adb2be65d8bc024a918775fa93f0b",
+              "supportSha256": {
+                "run.py": "666a04b683c4669714490ec60a788d25d72f349a7a388305abcdb82912953ea2",
+                "fixture.py": "d3815edc4a5508a5b72d347e593d2c2768f762bcfd9884ce58851552d10b9f8a",
+                "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+              },
+              "mode": "openai",
+              "reportSha256": "3a384c7fa541391bf83cd57dc60e419bcb57315f25881e464c9d8ee8aea6bcb3",
+              "reportName": "devops-live-final-db7b59b.json"
+            },
+            "result": {
+              "id": "20",
+              "status": "failed",
+              "runId": "run-01a073e4-9b31-7cd3-bfef-93ddb4942574",
+              "workflowSha256": "de3b39cc25048e5784b859cbbdf4ef8614ddc2cb260cdf1c5d21cf7e8d41260e",
+              "wallSeconds": 1.534,
+              "error": "expected exit (0,), got 4: {\"apiVersion\":\"agentctl.dev/cli/v1\",\"kind\":\"Error\",\"ok\":false,\"error\":{\"message\":\"run `run-01a073e4-9b31-7cd3-bfef-93ddb4942574` failed in task `remediate--0000-95d4b6878dcf` (trace `trace-01a073e4-9b31-7cd3-bfef-93eca28ff66c`): provider returned HTTP 400: Invalid schema for function 'repair_config': In context=('properties', 'content'), \\\" is not allowed in string literals for structured outputs (strict=true). (request id: req_0debb9da018040639ce61677f4abbccd)\",\"exitCode\":4,\"runId\":\"run-01a073e4-9b31-7cd3-bfef-93ddb4942574\",\"traceId\":\"trace-01a073e4-9b31-7cd3-bfef-93eca28ff66c\"},\"diagnostics\":[]}",
+              "exitCodes": [
+                0,
+                0,
+                4,
+                0
+              ]
+            }
+          },
+          {
+            "source": {
+              "sourceSha": "9c4f6e0c84c8811e6fb015a7b43c311b7de67d73",
+              "sourceWorktreeDirty": false,
+              "binarySha256": "ae802ab15468e769297e175ce29407001b28c92055aff5431a878a7e967cdf4d",
+              "catalogSha256": "4a44c798f3bc6ca16aa11d0a957fa2d373005c1cb77035c6622587a2ff00d1a5",
+              "supportSha256": {
+                "run.py": "8ce8cc214596aa90e88c869e41690e6ccfba192859282e6a7d092ec2c6133aaf",
+                "fixture.py": "d37d0c9c2f12abf23775022f44e9e3678d8f1fb8596ecc21a369f6700fedabb4",
+                "live_budget.py": "9e5cef66374bd5709d099160a5d39f06f1467bf0cc8bca4e44e7390add08321c"
+              },
+              "mode": "openai",
+              "reportSha256": "6910e10af81971ec157625ab66c5ca996e7d8b56fda7017304a909f8938ba766",
+              "reportName": "devops-live-20-final-9c4f6e0.json"
+            },
+            "result": {
+              "id": "20",
+              "status": "passed",
+              "runId": "run-01a073ed-467c-7502-9e87-33d1865372a9",
+              "workflowSha256": "6ec56ef637b39544991a100e76d30e0e12ee43c7d5ca65fa0a3c0512f94aedf2",
+              "wallSeconds": 4.053,
+              "usage": {
+                "providerRequests": 2,
+                "turns": 2,
+                "toolCalls": 1,
+                "inputTokens": 641,
+                "outputTokens": 131,
+                "reasoningTokens": 64,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "wallTimeSeconds": 4,
+                "processOutputBytes": 605,
+                "artifactBytes": 123,
+                "costMicrousd": 423,
+                "unpricedProviderRequests": 0
+              },
+              "assertions": [
+                "case-specific-semantics",
+                "audit-trace-correlation",
+                "zero-fresh-effect-replay",
+                "denial-without-forbidden-artifacts"
+              ],
+              "exitCodes": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                4,
+                0,
+                4,
+                0
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "reviewFollowup": {
+    "recordedAt": "2026-09-06T09:51:14.113744+00:00",
+    "frameworkCodeSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+    "documentationCodeSha": "8b3cdda50dea34a7282365f0d09dc7eef219848c",
+    "evidenceFile": "../../docs/execution/PR_REVIEW_FINAL_EVIDENCE.json",
+    "reportFile": "../../docs/execution/PR_REVIEW_REPORT.md",
+    "directInstalledJourneys": {
+      "status": "passed",
+      "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "sourceWorktreeDirty": false,
+      "binarySha256": "55462ef9413222fd1bd0b1755544e675a223a767d183e2f26744fd2433f5d01d",
+      "imageId": "028e9c6e396df864557156c594bf435f970f06dbb70005e1a62244d57c8080f3",
+      "install": {
+        "argv": [
+          "cargo",
+          "install",
+          "--locked",
+          "--git",
+          "https://github.com/opensourceops/agentctl",
+          "--rev",
+          "4a22f7f733c5c722263b956b59f36107ec398fc7",
+          "agentctl-cli",
+          "--root",
+          "/work/installed-4a22f7f"
+        ],
+        "exitCode": 0,
+        "wallSeconds": 5.820957899093628,
+        "cargoInstalledMetadataSha256": "7e44270dc361ef1b5d3517dfa08afb1d0e5239f01d34304ab7eadecdf3ba0a12"
+      },
+      "direct": {
+        "primaryCasesPassed": 20,
+        "supplementalCasesPassed": 1,
+        "wallSeconds": 112.14191484451294,
+        "sourceUnchanged": true,
+        "binaryUnchanged": true,
+        "cases": [
+          {
+            "case": "01",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/01/baseline/package/example.json",
+            "packageManifestSha256": "dc4820e3ce0ce3f270407661f11d3ca914939753711301ac2664fe25d26df33d",
+            "reportSha256": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976"
+            },
+            "wallSeconds": 1.141
+          },
+          {
+            "case": "02",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/02/baseline/package/example.json",
+            "packageManifestSha256": "9051cd85fc7bc7976f5091e85d4d05520134aad5ba6e48f057734f9e15ad926c",
+            "reportSha256": "a8071d2812ab9d47b653eea11c40cf4867e9ec5b6138ba628b5e58a220a04be1",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "a8071d2812ab9d47b653eea11c40cf4867e9ec5b6138ba628b5e58a220a04be1"
+            },
+            "wallSeconds": 0.863
+          },
+          {
+            "case": "03",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/03-primary/example.json",
+            "packageManifestSha256": "0d05217f1d60421b918da25affd5da2af428c3f3c75d8c854125fbc42aea9c33",
+            "reportSha256": "ee32228f44cff03fad00fde646f79763225f39265df06dc92e393e3d02dd9aec",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/patch-workspace/pipeline.yaml": "b0841ef1f6a33711b2903d152ba1fe80eb6ed77047419aca778f202a5072deb1",
+              "artifacts/proposed/pipeline.yaml": "b0841ef1f6a33711b2903d152ba1fe80eb6ed77047419aca778f202a5072deb1",
+              "artifacts/proposed.patch": "36d513ff93d10193944a8a5606a1d1ab4563bae865935646360c6e8cdb9e49b3",
+              "artifacts/report.json": "ee32228f44cff03fad00fde646f79763225f39265df06dc92e393e3d02dd9aec"
+            },
+            "wallSeconds": 1.073
+          },
+          {
+            "case": "04",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/04-primary/example.json",
+            "packageManifestSha256": "51facf4f493eae2c294dfe2b627537d28f190d32507a4ff3ed1964d369cbddf7",
+            "reportSha256": "3786c6781edaa2a522367d0d8c42449e0e592e8431e98397c51de7cbfa5e208e",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/Dockerfile": "b3b3be3302317d2208a5fc263feffa69acf0cb59c117c6cf0accb3fa60f5704e",
+              "artifacts/app.py": "e75d7b57ccf207fab312497b53ac7f0c733a40ea8849f61c661f7f3399805ad6",
+              "artifacts/patch-workspace/Dockerfile": "b3b3be3302317d2208a5fc263feffa69acf0cb59c117c6cf0accb3fa60f5704e",
+              "artifacts/proposed/Dockerfile": "b3b3be3302317d2208a5fc263feffa69acf0cb59c117c6cf0accb3fa60f5704e",
+              "artifacts/proposed.patch": "de24ac66c4799509d2bac5c63adaba42bebdad5a2d760db0e7f46c6fc8d39522",
+              "artifacts/report.json": "3786c6781edaa2a522367d0d8c42449e0e592e8431e98397c51de7cbfa5e208e"
+            },
+            "wallSeconds": 1.213
+          },
+          {
+            "case": "05",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/05-primary/example.json",
+            "packageManifestSha256": "c5f717aa8345bce12c8acccc19fe36454ec0b5817371a69b72e06ba97db656a2",
+            "reportSha256": "96ba687c7e1756a0b63c7b0d48ea7ec31ff530b51c582923a2cca902fba26397",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/deployment.json": "f258257f6b9f0b064c0f92ae980c54d701bbfe5dcb5c409975b56d3dd1d0ce4d",
+              "artifacts/deployment.yaml": "51929c748a4c148b8f4c9c319f4fdbc4259438f51ac36cca5f8d10646cec84fe",
+              "artifacts/proposed/deployment.yaml": "51929c748a4c148b8f4c9c319f4fdbc4259438f51ac36cca5f8d10646cec84fe",
+              "artifacts/proposed.patch": "d615ccc19860e5738c3fea27564b87b4ea1e6fd7df3cbe88e6e2ac3eda9e3a53",
+              "artifacts/report.json": "96ba687c7e1756a0b63c7b0d48ea7ec31ff530b51c582923a2cca902fba26397"
+            },
+            "wallSeconds": 1.273
+          },
+          {
+            "case": "06",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/06-primary/example.json",
+            "packageManifestSha256": "81fd831f5db1de734f8dbbef62c70201867c13b024928e87bd7b7bcbd311c6d9",
+            "reportSha256": "48a50c3c47d7199eb121f9741057479ebf26c57584e829e73b14a3ffd4a230e4",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/local-state.json": "aad55c5f88c897c4fd055ce78bfbd9d3e14bc357a0173b851a0662970d9fc9ac",
+              "artifacts/report.json": "48a50c3c47d7199eb121f9741057479ebf26c57584e829e73b14a3ffd4a230e4"
+            },
+            "wallSeconds": 1.834
+          },
+          {
+            "case": "07",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/07-primary/example.json",
+            "packageManifestSha256": "b603c4058809395abf34b3048652c46d779922ae401fed1840bbe3897e45e048",
+            "reportSha256": "9f3313ece4259813f352bf96ce8dec99aa44b176afbe6ac6b18de8e5c5ad5163",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/patch-workspace/test_dependency.py": "b5a4dda01359d29de2a490fdb15dac42f252dff217db92fbb5884d8292584100",
+              "artifacts/patch-workspace/vendor_version.py": "4351ce10da90c5dc5a9e9acc8a4e863702097123f6038ea26dd6ba75cf724822",
+              "artifacts/proposal-workspace/.git/HEAD": "f6f2b945f6c411b02ba3da9c7ace88dcf71b6af65ba2e0d89aa82900042b5a10",
+              "artifacts/proposal-workspace/.git/config": "9521128740784e9183224f2279fd3ff585dbb5e36c3a25bd4c6484faaf8138ca",
+              "artifacts/proposal-workspace/.git/description": "85ab6c163d43a17ea9cf7788308bca1466f1b0a8d1cc92e26e9bf63da4062aee",
+              "artifacts/proposal-workspace/.git/hooks/applypatch-msg.sample": "0223497a0b8b033aa58a3a521b8629869386cf7ab0e2f101963d328aa62193f7",
+              "artifacts/proposal-workspace/.git/hooks/commit-msg.sample": "1f74d5e9292979b573ebd59741d46cb93ff391acdd083d340b94370753d92437",
+              "artifacts/proposal-workspace/.git/hooks/fsmonitor-watchman.sample": "e0549964e93897b519bd8e333c037e51fff0f88ba13e086a331592bf801fa1d0",
+              "artifacts/proposal-workspace/.git/hooks/post-update.sample": "81765af2daef323061dcbc5e61fc16481cb74b3bac9ad8a174b186523586f6c5",
+              "artifacts/proposal-workspace/.git/hooks/pre-applypatch.sample": "e15c5b469ea3e0a695bea6f2c82bcf8e62821074939ddd85b77e0007ff165475",
+              "artifacts/proposal-workspace/.git/hooks/pre-commit.sample": "f9af7d95eb1231ecf2eba9770fedfa8d4797a12b02d7240e98d568201251244a",
+              "artifacts/proposal-workspace/.git/hooks/pre-merge-commit.sample": "d3825a70337940ebbd0a5c072984e13245920cdf8898bd225c8d27a6dfc9cb53",
+              "artifacts/proposal-workspace/.git/hooks/pre-push.sample": "ecce9c7e04d3f5dd9d8ada81753dd1d549a9634b26770042b58dda00217d086a",
+              "artifacts/proposal-workspace/.git/hooks/pre-rebase.sample": "4febce867790052338076f4e66cc47efb14879d18097d1d61c8261859eaaa7b3",
+              "artifacts/proposal-workspace/.git/hooks/pre-receive.sample": "a4c3d2b9c7bb3fd8d1441c31bd4ee71a595d66b44fcf49ddb310252320169989",
+              "artifacts/proposal-workspace/.git/hooks/prepare-commit-msg.sample": "e9ddcaa4189fddd25ed97fc8c789eca7b6ca16390b2392ae3276f0c8e1aa4619",
+              "artifacts/proposal-workspace/.git/hooks/push-to-checkout.sample": "a53d0741798b287c6dd7afa64aee473f305e65d3f49463bb9d7408ec3b12bf5f",
+              "artifacts/proposal-workspace/.git/hooks/update.sample": "8d5f2fa83e103cf08b57eaa67521df9194f45cbdbcb37da52ad586097a14d106",
+              "artifacts/proposal-workspace/.git/info/exclude": "6671fe83b7a07c8932ee89164d1f2793b2318058eb8b98dc5c06ee0a5a3b0ec1",
+              "artifacts/proposal-workspace/vendor_version.py": "4351ce10da90c5dc5a9e9acc8a4e863702097123f6038ea26dd6ba75cf724822",
+              "artifacts/proposed.patch": "ace25dee534de873f766eb665ca2c65c950134ff9ce327a861efaaba39031510",
+              "artifacts/report.json": "9f3313ece4259813f352bf96ce8dec99aa44b176afbe6ac6b18de8e5c5ad5163",
+              "artifacts/test-after.txt": "fb0433ee2f87074895f396f8db1fd1673941e0645f8d80b0defaca78f4c37a1d",
+              "artifacts/test-before.txt": "3db0a52c1c3ac786e8b5bdca8463fccc1a1adf5b0b6b9fde21d7937801e1fef3"
+            },
+            "wallSeconds": 2.567
+          },
+          {
+            "case": "08",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/08/baseline/package/example.json",
+            "packageManifestSha256": "ec6c355fc591165bbda6758a5cc506e999bac10985f608ffc0bd488a90145e19",
+            "reportSha256": "193b33abfe559a63413721a58bdd26ba1dc98b72d12c4abbcc0c260340490845",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "193b33abfe559a63413721a58bdd26ba1dc98b72d12c4abbcc0c260340490845"
+            },
+            "wallSeconds": 1.295
+          },
+          {
+            "case": "09",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/09/baseline/package/example.json",
+            "packageManifestSha256": "5959e13a4aa34a2e33ee9e7947caa01758c6eca54785d454ef4e9be32fbe6d28",
+            "reportSha256": "f900be8ebc601bb9b3854569a8dc04e4e1bd4475687905cac42a7a11ba9435d1",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/CHANGELOG.md": "cdee3b8870890487da7835400cc3a19a79eeda5bededb96cf9173cd92699c07c",
+              "artifacts/report.json": "f900be8ebc601bb9b3854569a8dc04e4e1bd4475687905cac42a7a11ba9435d1"
+            },
+            "wallSeconds": 2.056
+          },
+          {
+            "case": "10",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/10/baseline/package/example.json",
+            "packageManifestSha256": "b65528377f93f1ccc55e1650183d2fa6e2b8f57c0579abce1ab99def7b84924e",
+            "reportSha256": "aa6dbb24bb58a1d8a59cfdd7205c2637234b40f70c9a25fc2d6cde2240d4ff82",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "aa6dbb24bb58a1d8a59cfdd7205c2637234b40f70c9a25fc2d6cde2240d4ff82"
+            },
+            "wallSeconds": 1.052
+          },
+          {
+            "case": "11",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/11/baseline/package/example.json",
+            "packageManifestSha256": "45270486ac121755f31e66805baa76331636c5d36ceae029bd3dea005f77c7ff",
+            "reportSha256": "e66674b49e831566414a479515374367155bdc3b4fe8cef83e603ad25a08902b",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "e66674b49e831566414a479515374367155bdc3b4fe8cef83e603ad25a08902b"
+            },
+            "wallSeconds": 0.872
+          },
+          {
+            "case": "12",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/12/baseline/package/example.json",
+            "packageManifestSha256": "f34729e6f550d2cfd41631d30ee6fe1b292a09a78328f60f7c69fb00b8663a4f",
+            "reportSha256": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9"
+            },
+            "wallSeconds": 1.217
+          },
+          {
+            "case": "13",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/analysis/13/baseline/package/example.json",
+            "packageManifestSha256": "f8dcde20f648af914273e7b0888500779002405bc661db018f796ffb16b434bc",
+            "reportSha256": "436c317a3d8821ea5a600f6a1fe321dd29bd32478eb8a1d64406c3e78917b456",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/promotion.json": "81b2394836773ce5178edf79c6064cd47afa5bc624d1b3ae77209c4094762c0e",
+              "artifacts/report.json": "436c317a3d8821ea5a600f6a1fe321dd29bd32478eb8a1d64406c3e78917b456"
+            },
+            "wallSeconds": 1.063
+          },
+          {
+            "case": "14",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/services/14-primary/package/example.json",
+            "packageManifestSha256": "b66d0b2a096ee1be83e4de45ae3557665cd9707682bab3f70cbc340394a2a58e",
+            "reportSha256": "78cf71e9b5a376fd893c0be0bb64b4e9b280e796b8e0c5613335e92d9032a88b",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/prior-service.json": "5be1f1d5ff1d1e887a72695cdd83dc8a82a8c4f4c8ec93dd9b0a2820c66560f5",
+              "artifacts/report.json": "78cf71e9b5a376fd893c0be0bb64b4e9b280e796b8e0c5613335e92d9032a88b",
+              "artifacts/service.json": "8440b7db182f5017b0cf2b627dede29133011e55bad84b59449b4cb0e207dcb7"
+            },
+            "wallSeconds": 7.683
+          },
+          {
+            "case": "15",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/services/15-primary/package/example.json",
+            "packageManifestSha256": "ce21295b92387b31eebd385543d39f47df879f6a4727573db67dc7abd4b6e9a8",
+            "reportSha256": "eba5130e4b9511d7bc6a1e36503ce3a894c4883956e0cc7173b043e851c6d3fd",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/deployment-journal.json": "a98b2b86bd88509930dc643706956e2571026886cc043b80c4e991f502de7b2c",
+              "artifacts/mutations.txt": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+              "artifacts/report.json": "eba5130e4b9511d7bc6a1e36503ce3a894c4883956e0cc7173b043e851c6d3fd",
+              "artifacts/service.json": "4e5de4fd1b4092b03c0c13d25d4f6a4fa6bfca9b70feb5a932d559e69c086bb6"
+            },
+            "wallSeconds": 8.092
+          },
+          {
+            "case": "16",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/services/16-primary/package/example.json",
+            "packageManifestSha256": "6a2f706566761f766de585febb486cab12fe46d6d36a8c73717831ad882173d1",
+            "reportSha256": "0bf410383f9c59d8d1f7b00a8edb87fdb1998160a2420042deaab2e6596f46bf",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/deployment-journal.json": "f207f1f2ee95a37cb046a052bce30ebb106e96f4e4631e3734885848b45f12ea",
+              "artifacts/mutations.txt": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+              "artifacts/report.json": "0bf410383f9c59d8d1f7b00a8edb87fdb1998160a2420042deaab2e6596f46bf",
+              "artifacts/service.json": "ae0080bcb621e0f64398d40c93895da8c0469bc8b88f76364440a275e2abac8e"
+            },
+            "wallSeconds": 9.698
+          },
+          {
+            "case": "17",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/services/17-primary/package/example.json",
+            "packageManifestSha256": "eb24df3e90dae18342c09f076334ad3a58730e9e70365d5bcf6481ca7a6394ad",
+            "reportSha256": null,
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/prior-service.json": "02f9f923565f695376c09a62f3973fe4c90d1674372b842aa348f0ea17e59cfd",
+              "artifacts/reconciliation.json": "f69fe498849ebcff765bbaae9a98f9cedf6948fa71aac8b9414c96c1bf2c2218",
+              "artifacts/service.json": "02f9f923565f695376c09a62f3973fe4c90d1674372b842aa348f0ea17e59cfd"
+            },
+            "wallSeconds": 12.32
+          },
+          {
+            "case": "18",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/services/18-primary/package/example.json",
+            "packageManifestSha256": "9bcd3171255b61ab4611acb030f9f4a5633927cde7d2606bc7ded431f7f0c30a",
+            "reportSha256": "54b7fc714924a49f16f9598cfc88b7952bad6dbbc04b2f39755acc38fc33f2fa",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "54b7fc714924a49f16f9598cfc88b7952bad6dbbc04b2f39755acc38fc33f2fa"
+            },
+            "wallSeconds": 11.353
+          },
+          {
+            "case": "19",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/19-primary/example.json",
+            "packageManifestSha256": "cc419e99c96bb887dd7ff031ab2d627ea61f0920e2db877a90e5cd2dafdf1a66",
+            "reportSha256": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/report.json": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b",
+              "artifacts/reviewed-configuration.json": "baa63bdbda5e0b23f91f58802f13bb33bda412ca78f449e3c6a9477488a1b8bc"
+            },
+            "wallSeconds": 1.671
+          },
+          {
+            "case": "20",
+            "status": "passed",
+            "packageManifestPath": "direct-4a22f7f/formats/20-primary/example.json",
+            "packageManifestSha256": "e117df08ab9c2d8e9f05b0fa56d1dd67eac393edc5ceee6b88bd57b8a77847a5",
+            "reportSha256": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07",
+            "semanticArtifactsSha256": {
+              "artifacts/.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "artifacts/remediation.json": "9018d862edc9898c569aa5c2129ff9f786402bafcead18b7dc60a8bc8ecc6731",
+              "artifacts/report.json": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07"
+            },
+            "wallSeconds": 1.868
+          }
+        ],
+        "detailedCommandLogHashesIn": [
+          "direct-4a22f7f/analysis.json",
+          "direct-4a22f7f/formats.json",
+          "direct-4a22f7f/services.json"
+        ]
+      },
+      "onboarding": {
+        "casesPassed": 2,
+        "cases": [
+          {
+            "page": "GETTING_STARTED.md",
+            "status": "passed",
+            "pageSha256": "1e9a4212ec51d04fca65cd949fc8590a5d19894c613b0cfd1f61bae9804600b8",
+            "runId": "run-01a0760c-6045-74a2-88a0-2de98391e64a",
+            "replayRunId": "replay-01a0760c-60e2-7871-b1cd-554631d5d6f2",
+            "providerRequests": 0,
+            "providerQualification": "no provider used",
+            "replayEffects": 0,
+            "replayProviderRequests": 0
+          },
+          {
+            "page": "FIRST_AGENT_WORKFLOW.md",
+            "status": "passed",
+            "pageSha256": "aa4c25ecffc40d1a7ea024cb53f6da2f507741c6b67b4f7689c06b3a1ac3da83",
+            "runId": "run-01a0760c-62d9-7811-80c9-75846f1f69d0",
+            "replayRunId": "replay-01a0760c-6428-7bf2-be31-2b18bf0d59a3",
+            "providerRequests": 2,
+            "providerQualification": "Explicit fake provider; no remote credentials or network",
+            "replayEffects": 0,
+            "replayProviderRequests": 0
+          }
+        ]
+      },
+      "environment": {
+        "platform": "aarch64-unknown-linux-gnu",
+        "rustVersion": "1.88.0",
+        "pythonVersion": "3.11.2",
+        "credentialsInjected": false,
+        "directAndOnboardingNetwork": "none",
+        "packageDependencies": "Pinned offline image wheelhouse; service packages use new independent venvs",
+        "windowsConditionalSetupExecuted": false,
+        "qualification": "Linux container fallback. The Windows-only SYSTEMROOT setup branch requires separately recorded native Windows evidence; this does not replace hosted platform gates."
+      },
+      "priorEvidencePreserved": [
+        "45d0995",
+        "9090a76"
+      ],
+      "evidenceSha256": {
+        "install-4a22f7f-command.json": "bcb620e0db3db03a9d5eb54063a8838e1a1d36efc6870135341e80aba32517f6",
+        "install-4a22f7f-result.json": "d2f84d72ab7a63e4d78cd18d680a8d1d8f3202bda3cfd96828f391db69121c7f",
+        "install-4a22f7f.log": "58a1977470e2e32dabc131c04910c61591974d20df2c8ddd8de47f6658a21a60",
+        "installed-4a22f7f-provenance.json": "902cffbae2a2413722420b0e746138f3cd0f625ccc9a822e0ff42758eed7978e",
+        "installed-4a22f7f/.crates2.json": "7e44270dc361ef1b5d3517dfa08afb1d0e5239f01d34304ab7eadecdf3ba0a12",
+        "direct-4a22f7f-command.json": "aa188270d37a0ed47218dfbb50bf16dab637b5c87ab3df21e4099e7759d0e8e6",
+        "direct-4a22f7f-result.json": "568a0e14c56606e02c746618a7753fc4fc595ae0f3da6cf557cf57a823530ef3",
+        "direct-4a22f7f.log": "98ccc6bb794f52def4a351e72dfb91005cd67163c0185ab489ac622237e1494f",
+        "direct-4a22f7f/report.json": "deca5aca9c10dcf0fc0bf299a7f71b38429eeff3f4a354300666658e0af003c2",
+        "direct-4a22f7f/analysis.json": "7b595384f8427256f8524729c8ca50f43f8d87e59a7949ac32383e7065e434aa",
+        "direct-4a22f7f/formats.json": "5f573979679b68aba5b441e600689325b857a620cb8da6ae1c8d43f1bb47fa07",
+        "direct-4a22f7f/services.json": "2dc1717e2318f9054c4d6ed18be039002568c23f8e0691f1543da86de694ba59",
+        "onboarding-4a22f7f-command.json": "5e6e82fab0599b72dcd92a0801f1511044aa3ec33e7a7f45923b9f5d908f0fea",
+        "onboarding-4a22f7f-result.json": "af99dc54b32dec57407d9cca394ad763d2fd5661a60ead1ba170064f5d755f8c",
+        "onboarding-4a22f7f.log": "dc8ac61772c056cd440bf367cfbb02a50dbb749ef534fbfea159112f688ff50a",
+        "onboarding-4a22f7f/report.json": "ec9b72adfbd8f6e57af54980287dca5b3f2392f369906e3a3f4d2826e26c0baa"
+      }
+    },
+    "changedOpenAI": {
+      "schemaVersion": "agentctl.dev/review-live-evidence/v1",
+      "sourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+      "sourceWorktreeDirty": false,
+      "binarySha256": "55462ef9413222fd1bd0b1755544e675a223a767d183e2f26744fd2433f5d01d",
+      "model": "gpt-5-mini",
+      "reportSha256": "1a854aee3362c8f28c600f985ac33e0a62d8e5ecd9e89b89a487e5246bebaf9f",
+      "cases": [
+        {
+          "id": "01",
+          "status": "passed",
+          "runId": "run-01a075e4-3b94-75d0-9148-ffa694dea9f4",
+          "usage": {
+            "providerRequests": 1,
+            "turns": 1,
+            "toolCalls": 0,
+            "inputTokens": 555,
+            "outputTokens": 151,
+            "reasoningTokens": 64,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 5,
+            "processOutputBytes": 7439,
+            "artifactBytes": 2095,
+            "costMicrousd": 441,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "artifacts": {
+            "artifacts/report.json": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976",
+            "artifacts/sha256/89/8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976": "8926406e0881e32febe5299b14c8408841e40cddd8de3f25e7508589c53f4976"
+          },
+          "workflowSha256": "244f33e7ef705faa7e16f2e7159d07c26bcf4fbef30a0c365c271994a54cdc76"
+        },
+        {
+          "id": "12",
+          "status": "passed",
+          "runId": "run-01a075e4-533b-7692-9006-16234db14f31",
+          "usage": {
+            "providerRequests": 1,
+            "turns": 1,
+            "toolCalls": 0,
+            "inputTokens": 806,
+            "outputTokens": 185,
+            "reasoningTokens": 128,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 4,
+            "processOutputBytes": 10505,
+            "artifactBytes": 3150,
+            "costMicrousd": 572,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "artifacts": {
+            "artifacts/report.json": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9",
+            "artifacts/sha256/48/48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9": "48e0a72a6361befad1922df40666677ffd331254da18206bccb471dcac4211e9"
+          },
+          "workflowSha256": "8321e728a721a8962e6a65b692a68e060cc12a713b2e64894f87c055258f4e90"
+        },
+        {
+          "id": "19",
+          "status": "passed",
+          "runId": "run-01a075e4-690f-7432-a43d-3c57f2f67bbb",
+          "usage": {
+            "providerRequests": 5,
+            "turns": 5,
+            "toolCalls": 2,
+            "inputTokens": 2260,
+            "outputTokens": 614,
+            "reasoningTokens": 320,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 12,
+            "processOutputBytes": 4885,
+            "artifactBytes": 327,
+            "costMicrousd": 1795,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "artifacts": {
+            "artifacts/report.json": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b",
+            "artifacts/reviewed-configuration.json": "baa63bdbda5e0b23f91f58802f13bb33bda412ca78f449e3c6a9477488a1b8bc",
+            "artifacts/role-timeout.txt": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
+            "artifacts/sha256/62/624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
+            "artifacts/sha256/f9/f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b": "f9c0a93a04fb73666984adc91450a9da23b56509c5e4eda45f13ad500919d18b"
+          },
+          "workflowSha256": "3db442107b4791f35df919b7d611978d3683c6d013f6678b5bd98e6ce8668c97"
+        },
+        {
+          "id": "20",
+          "status": "passed",
+          "runId": "run-01a075e4-a3ad-7b31-831f-c740a140c2a2",
+          "usage": {
+            "providerRequests": 2,
+            "turns": 2,
+            "toolCalls": 1,
+            "inputTokens": 1335,
+            "outputTokens": 117,
+            "reasoningTokens": 64,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "wallTimeSeconds": 5,
+            "processOutputBytes": 9149,
+            "artifactBytes": 403,
+            "costMicrousd": 569,
+            "unpricedProviderRequests": 0
+          },
+          "assertions": [
+            "case-specific-semantics",
+            "audit-trace-correlation",
+            "zero-fresh-effect-replay",
+            "denial-without-forbidden-artifacts"
+          ],
+          "artifacts": {
+            "artifacts/remediation.json": "9018d862edc9898c569aa5c2129ff9f786402bafcead18b7dc60a8bc8ecc6731",
+            "artifacts/report.json": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07",
+            "artifacts/sha256/42/42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07": "42f8cbc0d576f177aace1353662b6cb67e35128c25f37a1475bedd293c203b07",
+            "artifacts/sha256/62/624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
+            "artifacts/timeout-seconds.txt": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4"
+          },
+          "workflowSha256": "68afa981a94e22fa9bba0beb77efccc8c38c6177a7d7b06080716e9d2df20b42"
+        }
+      ],
+      "newTotals": {
+        "providerRequests": 9,
+        "inputTokens": 4956,
+        "outputTokens": 1067,
+        "toolCalls": 3,
+        "costMicrousd": 3377,
+        "totalTokens": 6023,
+        "chargedWallTimeSeconds": 27
+      },
+      "originalLedger": {
+        "originalLedgerPath": "/Users/ompragash/Documents/Codex/2026-09-06/prior-conversation-with-codex-conversation-role/work/evidence/live-budget.sqlite3",
+        "charged": {
+          "providerRequests": 66,
+          "totalTokens": 41926,
+          "wallTimeSeconds": 380,
+          "costMicrousd": 2047740
+        },
+        "knownReconciled": {
+          "providerRequests": 54,
+          "totalTokens": 16390,
+          "wallTimeSeconds": 140,
+          "costMicrousd": 47740
+        },
+        "unresolvedReservations": 1,
+        "limits": {
+          "providerRequests": 100,
+          "totalTokens": 200000,
+          "wallTimeSeconds": 1800,
+          "costMicrousd": 25000000
+        },
+        "unreconciledReserved": {
+          "providerRequests": 12,
+          "totalTokens": 25536,
+          "wallTimeSeconds": 240,
+          "costMicrousd": 2000000
+        },
+        "remaining": {
+          "providerRequests": 34,
+          "totalTokens": 158074,
+          "wallTimeSeconds": 1420,
+          "costMicrousd": 22952260
+        },
+        "knownModels": [
+          {
+            "id": "gpt-5-mini",
+            "requests": 23,
+            "totalTokens": 10845,
+            "costMicrousd": 7754
+          },
+          {
+            "id": "gpt-5.6-sol",
+            "requests": 27,
+            "totalTokens": 4492,
+            "costMicrousd": 26816
+          },
+          {
+            "id": "gpt-6-astra",
+            "requests": 4,
+            "totalTokens": 1053,
+            "costMicrousd": 13170
+          }
+        ]
+      },
+      "applicability": {
+        "liveSourceSha": "45d0995345ba048d8a8368466f56c388cc8cb992",
+        "candidateSourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "changedFiles": [
+          ".github/workflows/ci.yml",
+          ".github/workflows/release-prep.yml",
+          "docs/execution/PR_REVIEW_FOLLOWUP.md",
+          "examples/devops/14-local-deployment/README.md",
+          "examples/devops/17-compensated-rollout/README.md",
+          "examples/devops/fixture.py",
+          "examples/devops/package.py",
+          "examples/devops/setup_example.py",
+          "examples/devops/test_cookbook_packaging.py",
+          "examples/devops/test_fixture_portability.py",
+          "examples/devops/test_runner_contracts.py",
+          "examples/devops/test_service_operations.py"
+        ],
+        "productionRuntimeProviderAndPaidWorkflowBytesUnchanged": true,
+        "paidRunnerAndNamedOperationBytesUnchanged": true,
+        "sharedSupportChanges": {
+          "package.py": "Portable ZIP manifest/member path serialization; independently revalidated package contract.",
+          "fixture.py": "Only redacted failure diagnostics now retain integer errno/winerror codes; successful operations and output schemas are unchanged.",
+          "setup_example.py": "Only Windows service-probe actions gain the explicit SYSTEMROOT prerequisite; no such actions exist in paid01/12/19/20. Setup report adds environmentRequirements metadata, empty on their tested Linux platform."
+        },
+        "paidCases": [
+          "01",
+          "12",
+          "19",
+          "20"
+        ],
+        "liveReportSha256": "1a854aee3362c8f28c600f985ac33e0a62d8e5ecd9e89b89a487e5246bebaf9f",
+        "qualification": "Live results remain tied to clean45d0995 and its installed binary. Review of the exact diff supports applying those successful Linux paid-scenario results to unchanged provider requests, operation implementations and workflows. No whole-helper byte identity or fresh4a22 paid execution is claimed. Current installed/package and full platform/site gates provide separate source-specific evidence; no repeat provider dispatch is justified."
+      },
+      "costKind": "Estimate from explicit versioned pricing; not invoiced or billed-cost evidence.",
+      "priorLiveEvidencePolicy": "Original mini, Sol and Astra evidence remains tied to its recorded source revisions in LAUNCH_FINAL_EVIDENCE.json and FEATURE_EVIDENCE.md. Earlier failed whole invocations remain failed; scoped passing continuations are not relabeled as a whole-suite pass."
+    },
+    "hostedRuns": [
+      {
+        "id": 34024602218,
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602218",
+        "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "success"
+      },
+      {
+        "id": 34024619321,
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34024619321",
+        "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "success"
+      },
+      {
+        "id": 34024602216,
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602216",
+        "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "success"
+      },
+      {
+        "id": 34024602237,
+        "url": "https://github.com/opensourceops/agentctl/actions/runs/34024602237",
+        "sourceSha": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+        "status": "success"
+      }
+    ],
+    "documentationRun": "https://github.com/opensourceops/opensourceops.github.io/actions/runs/34024704916",
+    "downloadedSiteArtifact": {
+      "status": "passed",
+      "frameworkSource": "4a22f7f733c5c722263b956b59f36107ec398fc7",
+      "artifactId": 9986762734,
+      "artifactCreatedAt": "2026-09-06T09:34:12Z",
+      "artifactExpiresAt": "2026-09-20T09:34:10Z",
+      "archiveSha256": "3ca6d20ecce358c40981be658a254fd9935437ca143c1a6b2c8fa34144af7333",
+      "actionsDigest": "sha256:3ca6d20ecce358c40981be658a254fd9935437ca143c1a6b2c8fa34144af7333",
+      "archiveBytes": 4358390,
+      "catalogSha256": "42aceaf0146274a5b65f3883331f82f4ad20adf3888a34a6a9501849ecdd6d47",
+      "sourceMetadataSha256": "6e9afdf6b8383303d6726550c6416abe14bc960720091d638012fee0fb1bd11c",
+      "htmlPages": 93,
+      "nojekyll": true,
+      "visibleCanonicalBoilerplate": false,
+      "packages": [
+        {
+          "directory": "01-ci-diagnosis",
+          "sha256": "9c37a796d84606f93dadb11b9255ea8e875382cb31cb8d2fa286edd7051f72fe",
+          "bytes": 37377,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "02-junit-triage",
+          "sha256": "2d8a522df3ddda83142ff2424e0b495812fb4b9c1abe72d686e487483a9a6e8d",
+          "bytes": 33335,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "03-pipeline-review",
+          "sha256": "6d9a35ba563354dab7817f0bef1d323b41fdd1966447f67ddb59816a645ef0c5",
+          "bytes": 34285,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "04-dockerfile-review",
+          "sha256": "0740bff9423cb854721c08370e79c4ec0f2ad3fab2ec3abe3038daa4327cdfa5",
+          "bytes": 34249,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "05-kubernetes-review",
+          "sha256": "7ec3549de4122cd9b938e92832c3afca4c81704aa3800c8e4b659dbb96509e6a",
+          "bytes": 86237,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "06-terraform-plan",
+          "sha256": "615e561826332498ba84655c65ea4e6409405cae22e9829246830b3ce0d14588",
+          "bytes": 33860,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "07-dependency-update",
+          "sha256": "e8017080c3ac0d484bf4208bf767d79007207be401442db78003db01b6f017c8",
+          "bytes": 34438,
+          "manifestFiles": 13
+        },
+        {
+          "directory": "08-sbom-triage",
+          "sha256": "afe55b4fdeab44761d873d3d3a7ae532a838d71a6f4cee9d9320053d513b2db6",
+          "bytes": 35497,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "09-release-notes",
+          "sha256": "dca2b1225df3928d6fcf94a23d4d18561eb1c65eec4c75a91ae00f49fbac122c",
+          "bytes": 33399,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "10-release-readiness",
+          "sha256": "a6079e4c2acc3066ff9689d03437fcff2c4d3de03fb02a6f9bc533ba39fbb1d5",
+          "bytes": 35069,
+          "manifestFiles": 13
+        },
+        {
+          "directory": "11-configuration-drift",
+          "sha256": "d35b43553712287368bad53f85118b45762d81f757215d3c9f9f79fa8ee6b5ac",
+          "bytes": 34241,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "12-incident-timeline",
+          "sha256": "9fe3677f060bb3c392bc039c0a27d827edca91291f72457d9c7abe1371b32d70",
+          "bytes": 37399,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "13-canary-evaluation",
+          "sha256": "97ce2ee14b14813039330bb990648a240636c65fe4f1959bd7a9eba7035c350a",
+          "bytes": 33645,
+          "manifestFiles": 11
+        },
+        {
+          "directory": "14-local-deployment",
+          "sha256": "389ddd029889ef4ea11282156b760f5dcbb251532199799e74e15609cc4f7c14",
+          "bytes": 34563,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "15-interrupted-deployment",
+          "sha256": "a2956f695ee5ede9ea2b97cc72a14b3ccc986d7c01a9c006303669e5022d3333",
+          "bytes": 36204,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "16-retry-repair",
+          "sha256": "2017359e2329a537e1f3f034b8d2b8f035388c25e66b1b80a946fa707020710b",
+          "bytes": 34802,
+          "manifestFiles": 12
+        },
+        {
+          "directory": "17-compensated-rollout",
+          "sha256": "d0ab0772368f7438054b4d105a62a6912839a111c7790e55903f1b788a3960ec",
+          "bytes": 36117,
+          "manifestFiles": 13
+        },
+        {
+          "directory": "18-parallel-matrix",
+          "sha256": "8a885cd6f21fbb8772f95b50bdf19c774a4e3680ddf519d46c8ffb99eeb18a52",
+          "bytes": 34578,
+          "manifestFiles": 14
+        },
+        {
+          "directory": "19-role-subworkflow",
+          "sha256": "e0a1f83f32943ecc0c3c3fcff825007758af3f6313120964c0b5f3c697f04a53",
+          "bytes": 41021,
+          "manifestFiles": 17
+        },
+        {
+          "directory": "20-bounded-remediation",
+          "sha256": "58cde19db1a23ba5c12c5ef9d6d5849712afa04d4d0ce9595fe3faa878f437b1",
+          "bytes": 38916,
+          "manifestFiles": 14
+        }
+      ]
+    }
+  }
+}

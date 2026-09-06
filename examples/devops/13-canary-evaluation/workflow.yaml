@@ -1,0 +1,166 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-canary-evaluation
+  description: Aggregate canary metrics and use typed routing to choose an isolated promotion or rollback artifact.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    evaluate-canary:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - canary-evaluate
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - metricsPath
+          - errorLimit
+          - minRequests
+          - minSamples
+        properties:
+          metricsPath:
+            type: string
+          errorLimit:
+            type: number
+          minRequests:
+            type: integer
+          minSamples:
+            type: integer
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - requests
+          - errors
+          - errorRatio
+          - errorLimit
+          - sampleCount
+          - minRequests
+          - minSamples
+          - sufficientData
+          - route
+          - reportText
+        properties:
+          requests:
+            type: integer
+          errors:
+            type: integer
+          errorRatio:
+            type:
+              - number
+              - 'null'
+          errorLimit:
+            type: number
+          sampleCount:
+            type: integer
+          minRequests:
+            type: integer
+          minSamples:
+            type: integer
+          sufficientData:
+            type: boolean
+          route:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: analyze
+      uses: action:evaluate-canary
+      with:
+        metricsPath: '${{ inputs.metricsPath }}'
+        errorLimit: '${{ inputs.errorLimit }}'
+        minRequests: '${{ inputs.minRequests }}'
+        minSamples: '${{ inputs.minSamples }}'
+      outputSchema:
+        type: object
+        required:
+          - route
+          - sufficientData
+        properties:
+          route:
+            type: string
+            enum:
+              - promote
+              - rollback
+              - hold
+          sufficientData:
+            type: boolean
+    - id: route
+      uses: router
+      needs:
+        - analyze
+      route:
+        select: '${{ tasks.analyze.output.route }}'
+        cases:
+          - equals: promote
+            tasks:
+              - promote
+          - equals: rollback
+            tasks:
+              - rollback
+        default:
+          - hold
+    - id: promote
+      uses: action:write
+      needs:
+        - route
+      with:
+        path: artifacts/promotion.json
+        content: |
+          {"scope":"local fixture","promoted":true}
+    - id: rollback
+      uses: action:write
+      needs:
+        - route
+      with:
+        path: artifacts/rollback.json
+        content: |
+          {"scope":"local fixture","rolledBack":true}
+    - id: hold
+      uses: action:write
+      needs:
+        - route
+      with:
+        path: artifacts/hold.json
+        content: |
+          {"scope":"local decision","reason":"insufficient-data"}
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  inputs:
+    metricsPath: fixtures/metrics.json
+    errorLimit: 0.01
+    minRequests: 100
+    minSamples: 2
+  outputs:
+    report: '${{ tasks.analyze.output }}'

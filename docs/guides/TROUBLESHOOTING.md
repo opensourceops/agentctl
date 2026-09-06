@@ -183,3 +183,11 @@ gates pass for the current candidate.
 ## Safe issue report
 
 Include the exact `agentctl version`, operating system, redacted command, exit code, diagnostic code, workflow API version, minimal non-secret workflow, and relevant run/trace IDs. Share a narrow redacted `inspect` excerpt only when needed. Report security problems through the private process in [Security](../SECURITY.md), not a public issue.
+
+## Doctor reports missing or unverified host prerequisites
+
+Run `agentctl doctor workflow.yaml --workspace . --output json` before dispatch. A missing explicit interpreter or helper file produces `ready: false`. Install the required tool or correct the configured path, then rerun the check.
+
+A bare command such as `python3` is unverified because runtime process environments are cleared; the invoking shell's `PATH` is not proof that dispatch resolves the same executable. Cookbook `setup.py` uses the selected virtual environment's absolute interpreter path and updates the explicit interpreter-basename allowlist before producing `local.workflow.yaml`.
+
+Doctor checks metadata and executable permissions where supported. It does not execute helpers, import Python modules, invoke child Git commands, contact a service, or read secret contents. Transitive dependencies and module availability can remain unverified even when the declared executable is present. Its readiness result covers the reported static checks, not successful runtime handshakes or a passing workflow.

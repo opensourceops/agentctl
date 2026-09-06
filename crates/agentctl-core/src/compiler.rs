@@ -36,6 +36,8 @@ pub struct CompiledTask {
     pub memory_writes: Vec<String>,
     pub when: Option<String>,
     pub vars: JsonMap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     pub input: JsonMap,
     pub retry: RetryDefinition,
     pub timeout_seconds: u64,
@@ -740,6 +742,7 @@ fn instantiate_subworkflow_task(
         || task.loop_definition.is_some()
         || task.when.is_some()
         || !task.vars.is_empty()
+        || !task.vars_files.is_empty()
         || !task.memory_writes.is_empty()
         || task.retry != RetryDefinition::default()
         || task.timeout_seconds.is_some()
@@ -805,6 +808,17 @@ fn instantiate_subworkflow_task(
         if !child.needs.contains(&input_id) {
             child.needs.push(input_id.clone());
         }
+        if let Some(agent) = child.uses.strip_prefix("agent:") {
+            child.compiled_instructions =
+                crate::sources::instruction_text(workflow, agent).map(|text| {
+                    rewrite_subworkflow_string(
+                        text,
+                        &local_ids,
+                        &input_id,
+                        &format!("{}__", task.id.replace('-', "_")),
+                    )
+                });
+        }
         rewrite_subworkflow_task(
             &mut child,
             &local_ids,
@@ -865,6 +879,8 @@ fn synthetic_task(source: &TaskDefinition, id: String, needs: Vec<String>) -> Ta
     task.memory_writes.clear();
     task.when = None;
     task.vars.clear();
+    task.vars_files.clear();
+    task.compiled_instructions = None;
     task.input.clear();
     task.compensate = None;
     task.retry = RetryDefinition::default();
@@ -1071,7 +1087,33 @@ fn rewrite_subworkflow_string(
 }
 
 pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diagnostic>> {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = crate::sources::validate_workflow_variables(workflow, file);
+    let unresolved_vars = workflow.spec.source_snapshot.is_none()
+        && (!workflow.spec.vars_files.is_empty()
+            || workflow
+                .spec
+                .agents
+                .values()
+                .any(|agent| !agent.vars_files.is_empty())
+            || workflow
+                .spec
+                .tasks
+                .iter()
+                .any(|task| !task.vars_files.is_empty())
+            || workflow.spec.subworkflows.values().any(|definition| {
+                definition
+                    .tasks
+                    .iter()
+                    .any(|task| !task.vars_files.is_empty())
+            }));
+    if unresolved_vars {
+        diagnostics.push(Diagnostic::error(
+            DiagnosticCode::SchemaViolation,
+            file,
+            "varsFiles must be captured with resolve_workflow_sources before compilation",
+        ));
+        return Err(diagnostics);
+    }
     let mut tasks = BTreeMap::new();
     let mut declaration_order = Vec::new();
     let mut source_positions = BTreeMap::new();
@@ -1216,7 +1258,8 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 &mut diagnostics,
             )
         };
-        let mut vars = match &task_use {
+        let mut vars = workflow.spec.vars.clone();
+        let defaults = match &task_use {
             TaskUse::Agent(name) => workflow
                 .spec
                 .agents
@@ -1230,7 +1273,20 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
             | TaskUse::SubworkflowInput(_)
             | TaskUse::SubworkflowAggregate(_) => JsonMap::new(),
         };
+        vars.extend(defaults);
         vars.extend(task.vars.clone());
+        if let Some(snapshot) = &workflow.spec.source_snapshot {
+            vars.extend(snapshot.invocation_vars.clone());
+        }
+        let instructions = task
+            .compiled_instructions
+            .clone()
+            .or_else(|| match &task_use {
+                TaskUse::Agent(name) => {
+                    crate::sources::instruction_text(&workflow, name).map(ToOwned::to_owned)
+                }
+                _ => None,
+            });
         let compensate =
             compile_compensation(&workflow, task, &task_use, file, position, &mut diagnostics);
         declaration_order.push(task.id.clone());
@@ -1246,6 +1302,7 @@ pub fn compile(workflow: &Workflow, file: &str) -> Result<CompiledPlan, Vec<Diag
                 memory_writes,
                 when: task.when.clone(),
                 vars,
+                instructions,
                 input,
                 retry: task.retry.clone(),
                 timeout_seconds: task
@@ -2245,7 +2302,13 @@ fn validate_task_templates(
     position: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let mut values: Vec<&Value> = task.input.values().chain(task.vars.values()).collect();
+    let instruction_value = task.instructions.clone().map(Value::String);
+    let mut values: Vec<&Value> = task
+        .input
+        .values()
+        .chain(task.vars.values())
+        .chain(instruction_value.iter())
+        .collect();
     if let Some(condition) = &task.when {
         if let Err(error) = validate_expression(condition) {
             push_template_error(error, task, file, position, "when", diagnostics);

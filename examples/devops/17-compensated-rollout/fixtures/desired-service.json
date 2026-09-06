@@ -1,0 +1,8 @@
+{
+  "version": "2.0.0",
+  "healthy": false,
+  "settings": {
+    "replicas": 1
+  },
+  "scope": "disposable failed rollout"
+}

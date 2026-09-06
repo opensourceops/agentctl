@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.10.5",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "local_file.fixture",
+          "mode": "managed",
+          "type": "local_file",
+          "name": "fixture",
+          "provider_name": "registry.terraform.io/hashicorp/local",
+          "schema_version": 0,
+          "values": {
+            "filename": "artifacts/local-state.json",
+            "content": "{\"scope\":\"local fixture\",\"applied\":true,\"version\":\"2.0.0\"}\n"
+          },
+          "sensitive_values": {}
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "local_file.fixture",
+      "mode": "managed",
+      "type": "local_file",
+      "name": "fixture",
+      "provider_name": "registry.terraform.io/hashicorp/local",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "filename": "artifacts/local-state.json",
+          "content": "{\"scope\":\"local fixture\",\"applied\":true,\"version\":\"2.0.0\"}\n"
+        },
+        "after_unknown": {
+          "id": true,
+          "content_sha256": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    }
+  ]
+}

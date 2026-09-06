@@ -1,0 +1,11 @@
+{
+  "kubernetesVersion": "v1.35.0",
+  "source": "https://raw.githubusercontent.com/kubernetes/kubernetes/v1.35.0/api/openapi-spec/swagger.json",
+  "sourceSha256": "483500149ee52ce5753d75f5639101d985bb4f5e902cc05b1ba7627465d62446",
+  "schemaSha256": "7ecfcb16d4e530e985608d4b1e0ad08e802f15f8a4004ab47ec86d3f64ef42fb",
+  "rootDefinition": "io.k8s.api.apps.v1.Deployment",
+  "definitionCount": 120,
+  "transform": "Copy root Deployment and all 120 transitively referenced definitions; retain Kubernetes extension annotations. Translate OpenAPI IntOrString format to JSON Schema type [integer,string] according to its upstream definition; no field removals.",
+  "license": "Apache-2.0",
+  "licenseSource": "https://github.com/kubernetes/kubernetes/blob/v1.35.0/LICENSE"
+}

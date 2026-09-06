@@ -5,20 +5,39 @@ You will validate, plan, run, and inspect a credential-free workflow from a clea
 ## Prerequisites
 
 - A built or installed `agentctl` binary
-- The `agentctl` source checkout
 - No provider credential
 
 ## 1. Create a clean workspace
 
-From the repository root:
+Create an empty directory and save the complete document below as `workflow.yaml`. The same document is checked as `examples/v1/hello.yaml` in source verification.
 
-```text
-mkdir -p /tmp/agentctl-first-run
-cp examples/v1/hello.yaml /tmp/agentctl-first-run/workflow.yaml
-cd /tmp/agentctl-first-run
+```sh
+mkdir agentctl-first-run
+cd agentctl-first-run
 ```
 
-The copy is the canonical checked example. The commands write only beneath the temporary workspace.
+```yaml
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: hello
+  description: Deterministic hello world with typed inputs and outputs.
+spec:
+  inputs:
+    name: world
+  outputs:
+    greeting: "${{ tasks.greet.output.output.message }}"
+  actions:
+    assign:
+      kind: builtin.assign
+  tasks:
+    - id: greet
+      uses: action:assign
+      with:
+        message: "hello, ${{ inputs.name }}"
+```
+
+`spec.inputs.name` is editable data. The `greet` task uses a deterministic assignment, and `spec.outputs.greeting` exposes its result. This first workflow grants no host process or network access. Its only persistent runtime output is the local history database.
 
 ## 2. Validate the workflow
 
@@ -54,7 +73,13 @@ This command writes durable state to `.agentctl/runtime.db`. It makes no network
 {"greeting":"hello, world"}
 ```
 
-Copy the returned `runId` for inspection.
+Copy the returned `runId` for inspection. To change the input for a fresh run:
+
+```sh
+agentctl run workflow.yaml --input name=platform --db .agentctl/runtime.db --output json --color never
+```
+
+The new result is `{"greeting":"hello, platform"}`. Each invocation creates a distinct run; the first run remains inspectable.
 
 ## 5. Inspect durable history
 
@@ -80,6 +105,14 @@ The tutorial is complete when all of these are true:
 - `inspect` returns the same successful run.
 
 If a command fails, read [Troubleshooting](TROUBLESHOOTING.md).
+
+## Replay and cleanup
+
+```sh
+agentctl replay RUN_ID --db .agentctl/runtime.db --output json --color never
+```
+
+Replay reconstructs recorded output without invoking an executor. After inspection, remove this tutorial's `agentctl-first-run` directory if you no longer need its history; do not remove an operational database to recover a failed production run.
 
 ## Next step
 

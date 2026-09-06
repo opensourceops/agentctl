@@ -1,0 +1,2 @@
+# This represents package bytes: checkout newline conversion changes its digest.
+/10-release-readiness/fixtures/package.txt -text

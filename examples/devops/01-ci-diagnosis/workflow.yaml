@@ -1,0 +1,145 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-ci-diagnosis
+  description: Parse a failed build log, classify its root cause, and verify model citations against exact log lines.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    diagnose-ci:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - ci-diagnose
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - logPath
+        properties:
+          logPath:
+            type: string
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - findings
+          - rootCause
+          - evidence
+          - lineCount
+          - supportedActions
+          - suggestedDecision
+          - validationScope
+          - reportText
+        properties:
+          findings:
+            type: array
+          rootCause:
+            type: string
+          evidence:
+            type: array
+          lineCount:
+            type: integer
+          supportedActions:
+            type: object
+          suggestedDecision:
+            type: object
+          validationScope:
+            type: string
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    verify-decision:
+      kind: extension.process
+      command: python3
+      args:
+        - helper.py
+        - verify-ci-decision
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - report
+          - analysis
+          - semanticValidation
+          - validationScope
+          - advisory
+          - reportText
+        properties:
+          report:
+            type: object
+          analysis:
+            type: object
+          semanticValidation:
+            type: boolean
+          validationScope:
+            type: string
+          advisory:
+            type: object
+          reportText:
+            type: string
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+  tasks:
+    - id: analyze
+      uses: action:diagnose-ci
+      with:
+        logPath: '${{ inputs.logPath }}'
+    - id: verify
+      uses: action:verify-decision
+      needs:
+        - analyze
+      with:
+        report: '${{ tasks.analyze.output }}'
+        analysis: '${{ tasks.analyze.output.suggestedDecision }}'
+    - id: report
+      uses: action:write
+      needs:
+        - verify
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.verify.output.reportText }}'
+  inputs:
+    logPath: fixtures/build.log
+  outputs:
+    report: '${{ tasks.verify.output }}'

@@ -1,0 +1,559 @@
+{
+  "schemaVersion": "agentctl.dev/launch-evidence/v1",
+  "verdict": "launch-ready pre-1.0 candidate for review; unpublished",
+  "frameworkCodeSha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+  "evidenceCommitScope": "This record is committed after the tested source; only evidence documents and validation metadata differ.",
+  "frameworkPr": "https://github.com/opensourceops/agentctl/pull/7",
+  "docsPr": "https://github.com/opensourceops/opensourceops.github.io/pull/6",
+  "hosted": {
+    "repository": "opensourceops/agentctl",
+    "sourceSha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+    "observedAt": "2026-09-06T00:03:32.032628+00:00",
+    "runs": [
+      {
+        "id": 33999337160,
+        "name": "credential-free-ci",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337160",
+        "head_sha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101395281683,
+            "name": "gates (x86_64-unknown-linux-gnu)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337160/job/101395281683"
+          },
+          {
+            "id": 101395281702,
+            "name": "gates (aarch64-apple-darwin)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337160/job/101395281702"
+          },
+          {
+            "id": 101395281756,
+            "name": "gates (x86_64-pc-windows-msvc)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337160/job/101395281756"
+          },
+          {
+            "id": 101397704120,
+            "name": "production SBOM",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337160/job/101397704120"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": 9979265304,
+            "name": "agentctl-production-sbom-cyclonedx",
+            "size_in_bytes": 41510,
+            "digest": "sha256:6de30e39f1755d59cea050afa8d25c4c31c7034e4e9b66e531f13c35a73cb2b1",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-production.cdx.json",
+                "bytes": 347246,
+                "sha256": "f4b9d247e488828796b5a189e829d4193275e07ec85d8eb63a2bc5af0178fed8",
+                "bomFormat": "CycloneDX",
+                "componentCount": 279,
+                "imageIds": []
+              }
+            ]
+          },
+          {
+            "id": 9979261000,
+            "name": "agentctl-x86_64-pc-windows-msvc",
+            "size_in_bytes": 10215206,
+            "digest": "sha256:dfba0f26d560d7884ae7fe33dc381fd8324bf4f3b99adee68c6ccecaa798e0ba",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/LICENSE",
+                "bytes": 575,
+                "sha256": "93c37b21b3718acce2597b99a2dfcb6c55c493afebebcc4b4d30091d3403b278"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/README.md",
+                "bytes": 8114,
+                "sha256": "6e2a89098604c273321c50c692d7bf3b3289e47754ff066983f43091d79653d7"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/SHA256SUMS",
+                "bytes": 79,
+                "sha256": "8791668b0035dd9492b081943ca74f39589e358c1fcf8e4fbdd00d8db0cbc118",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe",
+                "bytes": 27484160,
+                "sha256": "b2c5fdb350a3e1203ce947a4c1c0a23f7540fbbf5574d71513a5cd3331e0c305"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9979119132,
+            "name": "agentctl-aarch64-apple-darwin",
+            "size_in_bytes": 10727000,
+            "digest": "sha256:07da74f7db8dd56d08a412923ecaeafdb7f239c397599fc7bcbaf81b11796b16",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/README.md",
+                "bytes": 7986,
+                "sha256": "a13b8976da127efdde93762b50fc00e7d594e0d1661ae668bc037dd0dd590b82"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "ef2fadd7b45d1184e4fe65bb7590a90c8c1713752da7f2bbf8d53d386ac01b27",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-aarch64-apple-darwin/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl",
+                "bytes": 26410336,
+                "sha256": "f778cf74fef7abf6a08398ac11451a1c2f00aa36dfee9672c333c544a74af7e7"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9979115399,
+            "name": "agentctl-x86_64-unknown-linux-gnu",
+            "size_in_bytes": 11805872,
+            "digest": "sha256:9b4da01a9e5c75a434db7d557a08735676ab997a822a5f9ba4bec10641502f81",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/README.md",
+                "bytes": 7986,
+                "sha256": "a13b8976da127efdde93762b50fc00e7d594e0d1661ae668bc037dd0dd590b82"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "f3a6ebca0e6d75e7f81d5d762c8bf97881735fb376aad555c155760da2f4224d",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl",
+                "bytes": 31815872,
+                "sha256": "7e0d933f815215d72e0e34d2811d8270abc6b406075e13a92704b7394e758036"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 33999340847,
+        "name": "rc-release-preparation",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999340847",
+        "head_sha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101395293263,
+            "name": "RC (x86_64-unknown-linux-gnu)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999340847/job/101395293263"
+          },
+          {
+            "id": 101395293357,
+            "name": "RC (x86_64-pc-windows-msvc)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999340847/job/101395293357"
+          },
+          {
+            "id": 101395293382,
+            "name": "RC (aarch64-apple-darwin)",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999340847/job/101395293382"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": 9979209028,
+            "name": "agentctl-rc-x86_64-pc-windows-msvc",
+            "size_in_bytes": 10215207,
+            "digest": "sha256:f7c260b3caa25dde6a3ec2eae7deb07e177432be51a948e77d786bfc89c9e8e2",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/LICENSE",
+                "bytes": 575,
+                "sha256": "93c37b21b3718acce2597b99a2dfcb6c55c493afebebcc4b4d30091d3403b278"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/README.md",
+                "bytes": 8114,
+                "sha256": "6e2a89098604c273321c50c692d7bf3b3289e47754ff066983f43091d79653d7"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/SHA256SUMS",
+                "bytes": 79,
+                "sha256": "7f9b511e9ef0c151e86fb02fddb8ea6e0a7e7ef9868b6bd8c25f17c69b2872a7",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.exe",
+                "bytes": 27484160,
+                "sha256": "bd2e34f5438c9facf73661be7688a0f4f631bc7d88af1f7179e24d8d8b8c9799"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-pc-windows-msvc/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9979155201,
+            "name": "agentctl-rc-aarch64-apple-darwin",
+            "size_in_bytes": 10727000,
+            "digest": "sha256:a85187457fee6ede83f27d6839e9569ada8db8ef5ff1f357cf5a42b6f5776053",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/README.md",
+                "bytes": 7986,
+                "sha256": "a13b8976da127efdde93762b50fc00e7d594e0d1661ae668bc037dd0dd590b82"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "ef2fadd7b45d1184e4fe65bb7590a90c8c1713752da7f2bbf8d53d386ac01b27",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-aarch64-apple-darwin/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl",
+                "bytes": 26410336,
+                "sha256": "f778cf74fef7abf6a08398ac11451a1c2f00aa36dfee9672c333c544a74af7e7"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-aarch64-apple-darwin/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          },
+          {
+            "id": 9979114522,
+            "name": "agentctl-rc-x86_64-unknown-linux-gnu",
+            "size_in_bytes": 11805872,
+            "digest": "sha256:67c1f070098c0fa07e16a212d20d93faf61a7da2bb5d74305e6271b78b0d02f3",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/LICENSE",
+                "bytes": 562,
+                "sha256": "799e7db8ab877d5279dd2c22cc456f68e7566789e02aad1346f9b119ca086bc8"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/README.md",
+                "bytes": 7986,
+                "sha256": "a13b8976da127efdde93762b50fc00e7d594e0d1661ae668bc037dd0dd590b82"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/SHA256SUMS",
+                "bytes": 75,
+                "sha256": "f3a6ebca0e6d75e7f81d5d762c8bf97881735fb376aad555c155760da2f4224d",
+                "verifiedPackageEntries": [
+                  "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl"
+                ]
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl",
+                "bytes": 48240,
+                "sha256": "bab8854018b09d0e1720bbf599d39e9441da0809649bf38914b03a49f525ed28"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/_agentctl.ps1",
+                "bytes": 81291,
+                "sha256": "8091f1e0d7f3c0716bf795434b805d8bee88b0a07c672bf05f9893653d1b575d"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl",
+                "bytes": 31815872,
+                "sha256": "7e0d933f815215d72e0e34d2811d8270abc6b406075e13a92704b7394e758036"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.bash",
+                "bytes": 71912,
+                "sha256": "c98558905ab7806cb8cb42e6bd554e3b54744c47d9b820a5a8e3f94f0f259622"
+              },
+              {
+                "path": "agentctl-0.3.0-x86_64-unknown-linux-gnu/agentctl.fish",
+                "bytes": 73459,
+                "sha256": "aeb37b8bebfd77a8ea29ea1f77887ee063d105f5c47295176b23fd20435d8eca"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 33999337167,
+        "name": "container-security",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337167",
+        "head_sha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101395281685,
+            "name": "container",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337167/job/101395281685"
+          }
+        ],
+        "artifacts": [
+          {
+            "id": 9979077486,
+            "name": "agentctl-image-sbom-cyclonedx",
+            "size_in_bytes": 2966,
+            "digest": "sha256:5d96a7112b6fdb36167c021e4d11cc8f7c7f91abc2486428b94b6636e706c4c5",
+            "expired": false,
+            "zipDigestVerified": true,
+            "files": [
+              {
+                "path": "agentctl-image.cdx.json",
+                "bytes": 21703,
+                "sha256": "f9f614b9d1ef9b85fb8cc5c5ae4815160c6f793f81150da56c6d395692615a03",
+                "bomFormat": "CycloneDX",
+                "componentCount": 12,
+                "imageIds": [
+                  "sha256:a757f1ed75b30cc4cf243da4086a27a513531d637be1be47e3cab4cd50aa4b09"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 33999337162,
+        "name": "supply-chain-security",
+        "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337162",
+        "head_sha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 101395281533,
+            "name": "security",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/opensourceops/agentctl/actions/runs/33999337162/job/101395281533"
+          }
+        ],
+        "artifacts": []
+      }
+    ]
+  },
+  "documentation": {
+    "runId": 33999609203,
+    "runUrl": "https://github.com/opensourceops/opensourceops.github.io/actions/runs/33999609203",
+    "frameworkSha": "ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8",
+    "siteHeadSha": "d4b79f833d0a9d9983a44782d86453cc2e41061e",
+    "siteCodeSha": "e2f766449d6c278247b7ab8b8fb3e92a2e5d88a3",
+    "artifactId": 9979136405,
+    "zipSha256": "117f043649be7a972d5f0a7b9e10a3e5637b81e320beb1d90a4ac398877fd0a8",
+    "sizeBytes": 3140949,
+    "requiredHiddenFilePresent": true,
+    "files": 280,
+    "htmlPages": 73,
+    "importCount": 64,
+    "manifestSha256": "3bfb485aaff31d02711e2c1242550789c6d3b991a52455ac28694f4d40ec4606",
+    "deployment": "skipped",
+    "downloadedArtifactCheck": "passed"
+  },
+  "paidAccounting": {
+    "schemaVersion": "agentctl.dev/launch-paid-accounting/v1",
+    "limits": {
+      "providerRequests": 100,
+      "totalTokens": 200000,
+      "wallTimeSeconds": 1800,
+      "costMicrousd": 25000000
+    },
+    "knownReconciled": {
+      "providerRequests": 45,
+      "totalTokens": 10367,
+      "wallTimeSeconds": 113,
+      "costMicrousd": 44363
+    },
+    "unreconciledReserved": {
+      "providerRequests": 12,
+      "totalTokens": 25536,
+      "wallTimeSeconds": 240,
+      "costMicrousd": 2000000
+    },
+    "charged": {
+      "providerRequests": 57,
+      "totalTokens": 35903,
+      "wallTimeSeconds": 353,
+      "costMicrousd": 2044363
+    },
+    "costKind": "estimate from versioned official pricing, not an invoice",
+    "knownModels": [
+      {
+        "id": "gpt-5-mini",
+        "requests": 14,
+        "totalTokens": 4822,
+        "costMicrousd": 4377
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "requests": 27,
+        "totalTokens": 4492,
+        "costMicrousd": 26816
+      },
+      {
+        "id": "gpt-6-astra",
+        "requests": 4,
+        "totalTokens": 1053,
+        "costMicrousd": 13170
+      }
+    ],
+    "unknownScope": "Earlier failed Sol composite with incomplete usage; full reservation retained. These reserved counters are not actual usage."
+  },
+  "exampleValidation": "examples/devops/validation.json",
+  "liveSourcePolicy": "Passing source-labeled cases and focused continuations establish coverage; earlier failed whole invocations remain failed. Unchanged successful paid cases were not rerun for later connection-cleanup or evidence-only changes.",
+  "unresolvedReleaseGates": [],
+  "intentionalBoundaries": [
+    "Bounded compiled graphs, external scheduling and local SQLite ownership.",
+    "Fresh model responses are nondeterministic; remote mutation is not exactly once and uncertain effects require reconciliation.",
+    "Compensation is best-effort inverse execution, not transactional rollback.",
+    "Fresh HTTPS Git pack fetch fails closed; contained local Git, exact cached commits and governed immutable archives remain supported.",
+    "Host process allowlisting is not an OS sandbox; existing state encryption protects selected fields only when enabled.",
+    "Live evidence covers OpenAI and disposable local/OCI fixtures; other providers, real MCP/A2A peers, cloud accounts and production deployment are not live-validated.",
+    "One pre-existing duplicate mobile-search browser test remains skipped; the required responsive, search, accessibility, link, anchor, Mermaid and freshness checks passed."
+  ]
+}
