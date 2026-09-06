@@ -272,6 +272,13 @@ def merge_oci_archives(archives, output, identity, variant):
         root_descriptor = {"mediaType": index["mediaType"], "digest": "sha256:" + sha256(payload), "size": len(payload)}
         layout_index = json.dumps({"schemaVersion": 2, "manifests": [root_descriptor]}, separators=(",", ":")).encode()
         with tarfile.open(output, "x") as target:
+            # Skopeo can unpack explicit root-owned directories without chown,
+            # but its implicit parent-directory creation tries to chown them.
+            # Emit parents first so the archive works for unprivileged users.
+            for name in ["blobs", "blobs/sha256"]:
+                member = tarfile.TarInfo(name)
+                member.type, member.mode = tarfile.DIRTYPE, 0o755
+                target.addfile(member)
             for name, data in [("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'), ("index.json", layout_index), ("blobs/sha256/" + sha256(payload), payload)]:
                 member = tarfile.TarInfo(name)
                 member.size, member.mode = len(data), 0o644

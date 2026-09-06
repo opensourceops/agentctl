@@ -290,11 +290,17 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release-bundle/release-bundle.json
-      - name: Retain attestation for durable release verification
+      - name: Retain and verify the durable release attestation
         env:
           ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           cp "$ATTESTATION_BUNDLE" release-bundle/release-bundle.sigstore.json
+          gh attestation verify release-bundle/release-bundle.json --repo opensourceops/agentctl \
+            --signer-workflow opensourceops/agentctl/.github/workflows/release-prep.yml \
+            --source-digest "$SOURCE_SHA" --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            --bundle release-bundle/release-bundle.sigstore.json
           (cd release-bundle && sha256sum -- * | sed '/  SHA256SUMS$/d' > "$RUNNER_TEMP/release-checksums")
           mv "$RUNNER_TEMP/release-checksums" release-bundle/SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

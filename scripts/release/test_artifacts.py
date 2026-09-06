@@ -3,7 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tarfile
 import tempfile
 import unittest
@@ -313,6 +313,23 @@ class OciTests(unittest.TestCase):
         self.assertEqual(repeated["manifestDigest"], initial["manifestDigest"])
         with artifacts.OciArchive(second) as archive:
             self.assertEqual(len(archive.images(IDENTITY, "minimal")["images"]), 2)
+
+    def test_merged_layout_declares_parents_before_blobs_for_unprivileged_skopeo(self):
+        left, _, _ = self.image("amd64.tar")
+        right, _, _ = self.image("arm64.tar", architecture="arm64", oci_artifact=True)
+        output = self.root / "combined.tar"
+        artifacts.merge_oci_archives([left, right], output, IDENTITY, "minimal")
+        declared = {"."}
+        with tarfile.open(output) as archive:
+            for member in archive:
+                self.assertIn(str(PurePosixPath(member.name).parent), declared,
+                              "implicit parents cause Skopeo to chown as an unprivileged user")
+                if member.isdir():
+                    self.assertEqual(member.mode, 0o755)
+                    self.assertEqual((member.uid, member.gid, member.mtime), (0, 0, 0))
+                    self.assertNotIn(member.name, declared)
+                    declared.add(member.name)
+        self.assertEqual(declared, {".", "blobs", "blobs/sha256"})
 
 
 if __name__ == "__main__":
