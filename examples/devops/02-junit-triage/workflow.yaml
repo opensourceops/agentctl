@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-junit-triage
-  description: Parse actual JUnit XML and classify assertion failures separately from infrastructure
-    errors.
+  description: Parse actual JUnit XML and classify assertion failures separately from infrastructure errors.
 spec:
   policy:
     workspaceRoot: .

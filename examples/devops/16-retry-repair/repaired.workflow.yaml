@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-retry-repair
-  description: Demonstrate terminal failure, retry after fixture recovery, and selective repair 
-    while reusing a successful mutation.
+  description: Demonstrate terminal failure, retry after fixture recovery, and selective repair while reusing a successful mutation.
 spec:
   policy:
     workspaceRoot: .

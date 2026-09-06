@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-local-deployment
-  description: Pause before changing a disposable local HTTP service document, approve the exact 
-    effect, resume, and probe the service.
+  description: Pause before changing a disposable local HTTP service document, approve the exact effect, resume, and probe the service.
 spec:
   policy:
     workspaceRoot: .

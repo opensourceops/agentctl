@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-ci-diagnosis-openai
-  description: Parse a failed build log, classify its root cause, and verify model citations against
-    exact log lines.
+  description: Parse a failed build log, classify its root cause, and verify model citations against exact log lines.
 spec:
   policy:
     workspaceRoot: .
@@ -113,8 +112,7 @@ spec:
               - test_failure
               - configuration_error
               - unknown
-            description: Machine-readable classification code from the parsed report; put prose in 
-              recommendation.
+            description: Machine-readable classification code from the parsed report; put prose in recommendation.
           evidence:
             type: array
             items:

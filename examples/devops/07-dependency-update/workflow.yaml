@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-dependency-update
-  description: Apply a vendored dependency update in a disposable workspace and prove three 
-    behavioral tests change from failing to passing.
+  description: Apply a vendored dependency update in a disposable workspace and prove three behavioral tests change from failing to passing.
 spec:
   policy:
     workspaceRoot: .

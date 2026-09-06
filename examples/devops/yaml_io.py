@@ -49,7 +49,7 @@ def dumps(value):
     writer = YAML()
     writer.default_flow_style = False
     writer.allow_unicode = True
-    writer.width = 100
+    writer.width = 4096  # Avoid emitter-inserted trailing spaces in wrapped plain scalars.
     writer.indent(mapping=2, sequence=4, offset=2)
     writer.representer.ignore_aliases = lambda data: True
     stream = StringIO()

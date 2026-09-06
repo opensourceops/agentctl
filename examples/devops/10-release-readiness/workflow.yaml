@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-release-readiness
-  description: Combine deterministic gate results and package digest evidence into an explicit 
-    go/no-go decision.
+  description: Combine deterministic gate results and package digest evidence into an explicit go/no-go decision.
 spec:
   policy:
     workspaceRoot: .

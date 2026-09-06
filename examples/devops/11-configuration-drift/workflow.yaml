@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-configuration-drift
-  description: Layer external variable files and task overrides, keep invocation inputs separate, 
-    and report configuration drift.
+  description: Layer external variable files and task overrides, keep invocation inputs separate, and report configuration drift.
 spec:
   policy:
     workspaceRoot: .

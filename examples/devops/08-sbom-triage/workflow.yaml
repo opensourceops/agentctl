@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-sbom-triage
-  description: Join CycloneDX component identities to vulnerabilities and enforce severity and 
-    expiring exception rules.
+  description: Join CycloneDX component identities to vulnerabilities and enforce severity and expiring exception rules.
 spec:
   policy:
     workspaceRoot: .

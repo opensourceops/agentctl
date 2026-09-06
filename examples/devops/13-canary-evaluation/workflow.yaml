@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-canary-evaluation
-  description: Aggregate canary metrics and use typed routing to choose an isolated promotion or 
-    rollback artifact.
+  description: Aggregate canary metrics and use typed routing to choose an isolated promotion or rollback artifact.
 spec:
   policy:
     workspaceRoot: .

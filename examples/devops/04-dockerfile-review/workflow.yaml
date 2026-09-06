@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-dockerfile-review
-  description: Narrow copied files, use a non-root identity, validate Python syntax, and optionally 
-    build and execute the container.
+  description: Narrow copied files, use a non-root identity, validate Python syntax, and optionally build and execute the container.
 spec:
   policy:
     workspaceRoot: .

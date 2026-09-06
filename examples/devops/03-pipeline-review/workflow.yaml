@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-pipeline-review
-  description: Find excess permissions and unbounded timeouts, then check and apply a reviewable Git
-    patch.
+  description: Find excess permissions and unbounded timeouts, then check and apply a reviewable Git patch.
 spec:
   policy:
     workspaceRoot: .

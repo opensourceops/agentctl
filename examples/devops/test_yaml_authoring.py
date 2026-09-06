@@ -20,6 +20,12 @@ class YamlAuthoringTests(unittest.TestCase):
         self.assertIn("instructions: |\n", encoded)
         self.assertIn("  - false\n", encoded)
 
+    def test_long_prose_does_not_generate_trailing_whitespace(self):
+        value = {"description": "Review actual source evidence and preserve unrelated fields. " * 5}
+        encoded = yaml_io.dumps(value)
+        self.assertEqual(yaml_io.loads(encoded), value)
+        self.assertTrue(all(line == line.rstrip() for line in encoded.splitlines()))
+
     def test_yaml_12_keeps_github_actions_on_as_a_string_key(self):
         self.assertEqual(yaml_io.loads("on: [push]\nyes: no\n"), {"on": ["push"], "yes": "no"})
 

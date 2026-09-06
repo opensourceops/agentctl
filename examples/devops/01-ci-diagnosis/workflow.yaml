@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-ci-diagnosis
-  description: Parse a failed build log, classify its root cause, and verify model citations against
-    exact log lines.
+  description: Parse a failed build log, classify its root cause, and verify model citations against exact log lines.
 spec:
   policy:
     workspaceRoot: .
@@ -102,8 +101,7 @@ spec:
               - test_failure
               - configuration_error
               - unknown
-            description: Machine-readable classification code from the parsed report; put prose in 
-              recommendation.
+            description: Machine-readable classification code from the parsed report; put prose in recommendation.
           evidence:
             type: array
             items:
@@ -111,7 +109,6 @@ spec:
           recommendation:
             type: string
       providerOptions:
-        finalText: '{"rootCause": "missing_dependency", "evidence": ["fixtures/build.log:3"], "recommendation":
-          "Install the declared requests dependency before running tests."}'
+        finalText: '{"rootCause": "missing_dependency", "evidence": ["fixtures/build.log:3"], "recommendation": "Install the declared requests dependency before running tests."}'
   outputs:
     report: '${{ tasks.verify.output }}'

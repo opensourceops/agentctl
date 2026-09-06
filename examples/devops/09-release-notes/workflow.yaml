@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-release-notes
-  description: Build actual fixture Git history and link release-note entries to commits and changed
-    files.
+  description: Build actual fixture Git history and link release-note entries to commits and changed files.
 spec:
   policy:
     workspaceRoot: .

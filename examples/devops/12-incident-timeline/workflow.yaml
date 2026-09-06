@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-incident-timeline
-  description: Sort timestamped incident logs, calculate incident duration, and validate a model 
-    recommendation against source references.
+  description: Sort timestamped incident logs, calculate incident duration, and validate a model recommendation against source references.
 spec:
   policy:
     workspaceRoot: .
@@ -105,7 +104,6 @@ spec:
           recommendation:
             type: string
       providerOptions:
-        finalText: '{"durationSeconds": 120, "evidence": ["fixtures/incident.log:2", "fixtures/incident.log:1"],
-          "recommendation": "Check database connection-pool capacity before restarting the API."}'
+        finalText: '{"durationSeconds": 120, "evidence": ["fixtures/incident.log:2", "fixtures/incident.log:1"], "recommendation": "Check database connection-pool capacity before restarting the API."}'
   outputs:
     report: '${{ tasks.verify.output }}'

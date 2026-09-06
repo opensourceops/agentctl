@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-kubernetes-review
-  description: Repair fixture replica typing and non-root security settings; enforce a bundled 
-    Deployment subset schema without a cluster.
+  description: Repair fixture replica typing and non-root security settings; enforce a bundled Deployment subset schema without a cluster.
 spec:
   policy:
     workspaceRoot: .

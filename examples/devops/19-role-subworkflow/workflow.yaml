@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-role-subworkflow
-  description: Connect planner, reviewer, and executor through typed handoffs in a reusable 
-    sub-workflow with distinct tool visibility.
+  description: Connect planner, reviewer, and executor through typed handoffs in a reusable sub-workflow with distinct tool visibility.
 spec:
   policy:
     workspaceRoot: .

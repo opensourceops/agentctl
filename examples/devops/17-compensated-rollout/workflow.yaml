@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-compensated-rollout
-  description: Fail after a local rollout, plan and execute its explicit inverse, and inspect linked
-    reconciliation evidence.
+  description: Fail after a local rollout, plan and execute its explicit inverse, and inspect linked reconciliation evidence.
 spec:
   policy:
     workspaceRoot: .

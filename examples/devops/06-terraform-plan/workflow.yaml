@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-terraform-plan
-  description: Reject destructive or nonlocal plan changes and require recorded approval before 
-    writing isolated local state.
+  description: Reject destructive or nonlocal plan changes and require recorded approval before writing isolated local state.
 spec:
   policy:
     workspaceRoot: .

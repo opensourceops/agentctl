@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-bounded-remediation
-  description: Run a bounded model/tool remediation loop, validate the resulting local 
-    configuration, and retain token/cost/audit evidence.
+  description: Run a bounded model/tool remediation loop, validate the resulting local configuration, and retain token/cost/audit evidence.
 spec:
   policy:
     workspaceRoot: .

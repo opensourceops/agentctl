@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-incident-timeline-openai
-  description: Sort timestamped incident logs, calculate incident duration, and validate a model 
-    recommendation against source references.
+  description: Sort timestamped incident logs, calculate incident duration, and validate a model recommendation against source references.
 spec:
   policy:
     workspaceRoot: .

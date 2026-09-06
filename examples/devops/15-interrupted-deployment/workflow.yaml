@@ -2,8 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: devops-interrupted-deployment
-  description: Interrupt a run after a non-idempotent local mutation and prove resume does not 
-    repeat its confirmed effect.
+  description: Interrupt a run after a non-idempotent local mutation and prove resume does not repeat its confirmed effect.
 spec:
   policy:
     workspaceRoot: .
