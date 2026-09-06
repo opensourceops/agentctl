@@ -17367,7 +17367,10 @@ spec:
             };
             let effect = &store.list_effects(&run_id).expect("effects")[0];
             assert!(
-                directory.path().join(format!("{behavior}-invoked")).exists(),
+                directory
+                    .path()
+                    .join(format!("{behavior}-invoked"))
+                    .exists(),
                 "{behavior} failed before the intended invocation boundary: {:?}",
                 effect.error
             );
