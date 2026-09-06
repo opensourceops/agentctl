@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 import fixture
 import package
@@ -150,9 +151,20 @@ class CookbookPackagingTests(unittest.TestCase):
     def test_zip_bytes_are_deterministic_and_existing_work_is_not_replaced(self):
         with tempfile.TemporaryDirectory(prefix="agentctl-cookbook-archives-") as directory:
             root = Path(directory)
-            package.package_example("03", root / "first", root / "first.zip")
+            metadata = package.package_example("03", root / "first", root / "first.zip")
             package.package_example("03", root / "second", root / "second.zip")
             self.assertEqual(digest(root / "first.zip"), digest(root / "second.zip"))
+            with zipfile.ZipFile(root / "first.zip") as zipped:
+                prefix = metadata["directory"] + "/"
+                names = zipped.namelist()
+                self.assertTrue(all(name.startswith(prefix) and "\\" not in name for name in names))
+                manifest = json.loads(zipped.read(prefix + "example.json"))
+                self.assertEqual(manifest, metadata)
+                self.assertEqual(set(manifest["files"]),
+                                 {name.removeprefix(prefix) for name in names} - {"example.json"})
+                for name, expected in manifest["files"].items():
+                    self.assertNotIn("\\", name, "manifest keys must address portable ZIP member paths")
+                    self.assertEqual(hashlib.sha256(zipped.read(prefix + name)).hexdigest(), expected)
             before = authored_files(root / "first")
             with self.assertRaisesRegex(ValueError, "existing work"):
                 package.package_example("03", root / "first")

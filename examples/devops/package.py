@@ -83,7 +83,7 @@ def package_example(identifier, output, archive=None):
     if readme.is_file():
         rendered = render_readme_links(readme.read_bytes().decode("utf-8"), source, destination, revision)
         readme.write_bytes(rendered.encode("utf-8"))
-    files = {str(p.relative_to(destination)): hashlib.sha256(p.read_bytes()).hexdigest()
+    files = {p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(destination.rglob("*")) if p.is_file()}
     metadata = {"schemaVersion": "agentctl.dev/cookbook-package/v1", "exampleId": identifier,
                 "directory": selected["directory"], "sourceSha": revision, "sourceWorktreeDirty": bool(dirty),
@@ -98,7 +98,7 @@ def package_example(identifier, output, archive=None):
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipped:
             for filename in sorted(destination.rglob("*")):
                 if filename.is_file():
-                    info = zipfile.ZipInfo(str(Path(selected["directory"]) / filename.relative_to(destination)), (1980, 1, 1, 0, 0, 0))
+                    info = zipfile.ZipInfo((Path(selected["directory"]) / filename.relative_to(destination)).as_posix(), (1980, 1, 1, 0, 0, 0))
                     info.create_system = 3
                     info.external_attr = 0o100644 << 16
                     info.compress_type = zipfile.ZIP_DEFLATED
