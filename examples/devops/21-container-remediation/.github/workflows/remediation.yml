@@ -1,0 +1,223 @@
+name: Bounded container remediation
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Remediate with a new lease, or reconcile an exact previously validated artifact without model calls
+        type: choice
+        options: [remediate, reconcile]
+        default: remediate
+        required: true
+      prior_run_id:
+        description: Prior workflow run ID (reconcile only)
+        type: string
+        required: false
+      prior_run_attempt:
+        description: Prior workflow run attempt (reconcile only)
+        type: string
+        required: false
+      image_mode:
+        description: Published immutable tooling image, or the allowlisted candidate source build
+        type: choice
+        options: [published, candidate]
+        default: published
+        required: true
+      framework_sha:
+        description: Exact reviewed framework commit (candidate mode only; must be allowlisted)
+        type: string
+        required: false
+      budget_lease:
+        description: Nonsecret preallocated lease JSON bound to this source, workflow run number, attempt and remediate job
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: bounded-remediation-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install trusted helper dependencies in an isolated environment
+        run: |
+          python -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install -r remediation/requirements-tools.txt
+      - name: Run deterministic contracts without credentials or application dependency installation
+        run: "$RUNNER_TEMP/tools/bin/python -m unittest discover -s tests -p 'test_contract*.py' -v"
+      - name: Run adapter and publisher negative cases
+        run: "$RUNNER_TEMP/tools/bin/python -m unittest discover -s tests -p 'test_adapter.py' -v"
+  remediate:
+    if: inputs.operation == 'remediate' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'Ompragash/agentctl-remediation-demo'
+    needs: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      eligible: ${{ steps.decision.outputs.eligible }}
+    env:
+      AGENTCTL_MODEL: ${{ vars.AGENTCTL_MODEL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Prepare trusted helpers and verify the exported package
+        run: |
+          test "$AGENTCTL_MODEL" = gpt-6-astra
+          python -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install -r remediation/requirements-tools.txt
+          "$RUNNER_TEMP/tools/bin/python" remediation/export.py --verify .
+      - name: Select immutable tooling image
+        id: tooling
+        env:
+          IMAGE_MODE: ${{ inputs.image_mode }}
+          FRAMEWORK_SHA: ${{ inputs.framework_sha }}
+          AGENTCTL_IMAGE: ${{ vars.AGENTCTL_IMAGE }}
+        run: |
+          if [ "$IMAGE_MODE" = candidate ]; then REF="$FRAMEWORK_SHA"; else REF="$AGENTCTL_IMAGE"; fi
+          "$RUNNER_TEMP/tools/bin/python" remediation/bootstrap.py --mode "$IMAGE_MODE" --reference "$REF" --output "$RUNNER_TEMP/tooling.json"
+      - name: Build and test application; capture a real scan with one fixed database snapshot
+        env:
+          TOOLING_IMAGE: ${{ steps.tooling.outputs.image }}
+        run: |
+          "$RUNNER_TEMP/tools/bin/python" remediation/runner.py prepare --out "$GITHUB_WORKSPACE/state/remediation" --tooling-image "$TOOLING_IMAGE"
+          cp "$RUNNER_TEMP/tooling.json" state/remediation/tooling.json
+      - name: Run two bounded Astra roles with the preallocated lease
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LEASE_JSON: ${{ inputs.budget_lease }}
+        run: |
+          umask 077
+          printf '%s\n' "$LEASE_JSON" > "$RUNNER_TEMP/lease.json"
+          "$RUNNER_TEMP/tools/bin/python" remediation/runner.py remediate --out "$GITHUB_WORKSPACE/state/remediation" --lease "$RUNNER_TEMP/lease.json"
+      - name: Rebuild, test and rescan the exact patched tree; run agentctl publication eligibility
+        run: |
+          "$RUNNER_TEMP/tools/bin/python" remediation/runner.py validate --out "$GITHUB_WORKSPACE/state/remediation"
+      - name: Package exact publication evidence
+        id: decision
+        run: |
+          "$RUNNER_TEMP/tools/bin/python" remediation/runner.py bundle --out "$GITHUB_WORKSPACE/state/remediation"
+          "$RUNNER_TEMP/tools/bin/python" - <<'PY'
+          import json, os
+          value = json.load(open('state/remediation/workspace/state/publication.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('eligible=' + ('true' if value['eligible'] else 'false') + '\n')
+          PY
+      - name: Preserve execution, reports, database snapshot and uncertain budget reservations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: remediation-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            state/remediation/workspace
+            state/remediation/logs
+            state/remediation/ci-budget
+            state/remediation/trivy-cache/db
+            state/remediation/tooling.json
+            state/remediation/prepared.json
+            state/remediation/validated.patch
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Export publication bundle from this exact successful run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: state/remediation/publication-bundle
+          retention-days: 7
+          if-no-files-found: error
+  publish:
+    needs: remediate
+    if: needs.remediate.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication
+          digest-mismatch: error
+      - name: Install trusted publisher dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install -r remediation/requirements-tools.txt
+      - name: Reconcile the exact branch and create or reuse its draft PR
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/tools/bin/python" remediation/publisher.py --bundle "$RUNNER_TEMP/publication" --checkout "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/publication-result.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: publication-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication-result.json
+          if-no-files-found: warn
+  reconcile:
+    if: inputs.operation == 'reconcile' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'Ompragash/agentctl-remediation-demo'
+    needs: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install trusted reconciliation helpers
+        run: |
+          python -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install -r remediation/requirements-tools.txt
+      - name: Verify exact source, workflow, attempt, successful remediation job and artifact
+        id: prior
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PRIOR_RUN_ID: ${{ inputs.prior_run_id }}
+          PRIOR_RUN_ATTEMPT: ${{ inputs.prior_run_attempt }}
+        run: |
+          "$RUNNER_TEMP/tools/bin/python" remediation/reconcile_guard.py --run-id "$PRIOR_RUN_ID" --attempt "$PRIOR_RUN_ATTEMPT" --output "$RUNNER_TEMP/reconciliation-source.json"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.prior.outputs.artifact-id }}
+          run-id: ${{ inputs.prior_run_id }}
+          repository: Ompragash/agentctl-remediation-demo
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/publication
+          digest-mismatch: error
+      - name: Revalidate the preserved tree and reconcile its draft PR without model calls
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/tools/bin/python" remediation/publisher.py --bundle "$RUNNER_TEMP/publication" --checkout "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/publication-result.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: reconciliation-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/reconciliation-source.json
+            ${{ runner.temp }}/publication-result.json
+          if-no-files-found: warn

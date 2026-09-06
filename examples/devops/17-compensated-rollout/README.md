@@ -6,7 +6,7 @@ Capture prior state, attempt a rollout and run an explicit best-effort inverse w
 
 ## Get the complete example
 
-Install the [matching candidate binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
+Install the [matching agentctl binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
 
 ```sh
 python3 examples/devops/package.py --example 17 --output ./example-17

@@ -1,10 +1,10 @@
 # DevOps and CI/CD workflows
 
-Choose a complete local workflow for a concrete CI, platform, SRE, release or security problem. The twenty tutorials below lead with editable YAML, input files and direct `agentctl` commands. The CLI is pre-1.0; `agentctl.dev/v1` names its workflow document format.
+Choose a complete local workflow for a concrete CI, platform, SRE, release or security problem. The twenty tutorials below lead with editable YAML, input files and direct `agentctl` commands. `agentctl.dev/v1` names the workflow document format.
 
 ## Get a complete package
 
-Install the [matching candidate binary](../../docs/guides/INSTALLATION.md). On the documentation site, each tutorial offers a ZIP containing its workflow, fixtures, instructions, schemas and reviewed helper. From a source checkout, the equivalent packaging command is:
+Install the [matching agentctl binary](../../docs/guides/INSTALLATION.md). On the documentation site, each tutorial offers a ZIP containing its workflow, fixtures, instructions, schemas and reviewed helper. From a source checkout, the equivalent packaging command is:
 
 ```sh
 python3 examples/devops/package.py --example 02 --output ./junit-example

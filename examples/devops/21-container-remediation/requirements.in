@@ -1,0 +1,2 @@
+# Deliberately vulnerable sample dependency; never install into the tooling environment.
+urllib3==2.6.2

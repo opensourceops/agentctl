@@ -6,7 +6,7 @@ Inspect durable evidence after execution stops and resume confirmed work without
 
 ## Get the complete example
 
-Install the [matching candidate binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
+Install the [matching agentctl binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
 
 ```sh
 python3 examples/devops/package.py --example 15 --output ./example-15
@@ -91,7 +91,7 @@ Inspect until task `deploy` is `succeeded` and the effect with operation `fake` 
 kill -KILL "$FAULT_PID"
 ```
 
-If the fixture already completed, retain its result and use another fresh package for the interruption exercise. The SQL query is an explicit test aid for this pinned candidate's SQLite schema, not an instruction to edit engine state or an application integration API.
+If the fixture already completed, retain its result and use another fresh package for the interruption exercise. The SQL query is an explicit test aid for this source revision's SQLite schema, not an instruction to edit engine state or an application integration API.
 
 ## Inspect before resuming
 

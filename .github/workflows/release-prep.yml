@@ -1,24 +1,71 @@
-name: rc-release-preparation
+name: release-preparation
 
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact reviewed commit (must equal the selected workflow ref)
+        type: string
+        required: true
+      release_tag:
+        description: Tag matching Cargo.toml, including v prefix
+        type: string
+        required: true
+      attach_draft:
+        description: Attach complete assets to a draft (requires an existing matching tag)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-preparation-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
 env:
   RUST_TOOLCHAIN: "1.88.0"
   CARGO_DENY_VERSION: "0.20.2"
+  CARGO_CYCLONEDX_VERSION: "0.5.9"
 
 jobs:
-  release-candidate:
-    name: RC (${{ matrix.target }})
+  identity:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Bind workflow, tag and reviewed source
+        id: identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ATTACH_DRAFT: ${{ inputs.attach_draft }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          python3 scripts/release/bundle.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" identity > identity.json
+          echo "version=$(jq -r .version identity.json)" >> "$GITHUB_OUTPUT"
+          if [[ "$ATTACH_DRAFT" == true ]]; then
+            git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          fi
+          python3 -m unittest discover -s scripts/release -p 'test_*.py'
+
+  packages:
+    name: Native package (${{ matrix.target }})
+    needs: identity
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - runner: macos-14
             target: aarch64-apple-darwin
           - runner: windows-2022
@@ -28,55 +75,251 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout exact revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_sha }}
           persist-credentials: false
-
-      - name: Install pinned release toolchain
+      - name: Install pinned native toolchain
         run: |
-          set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           rustup default "$RUST_TOOLCHAIN"
           cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
-
-      - name: Select cookbook Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+          cargo install cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION" --locked
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-
-      - name: Install pinned example authoring dependencies
+      - name: Install bounded example authoring dependencies
         run: |
-          set -euo pipefail
           python -m venv "$RUNNER_TEMP/agentctl-examples"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
+          if [[ "$RUNNER_OS" == Windows ]]; then
             example_python="$RUNNER_TEMP/agentctl-examples/Scripts/python.exe"
           else
             example_python="$RUNNER_TEMP/agentctl-examples/bin/python"
           fi
           "$example_python" -m pip install -r examples/devops/requirements.txt
           echo "AGENTCTL_EXAMPLES_PYTHON=$example_python" >> "$GITHUB_ENV"
-
       - name: Verify Windows service subprocess prerequisites
         if: runner.os == 'Windows'
         run: '"$AGENTCTL_EXAMPLES_PYTHON" -m unittest discover -s examples/devops -p test_service_operations.py'
-
-      - name: Run full credential-free RC gate
+      - name: Preserve full release gates
         run: |
           cargo xtask verify
           cargo xtask acceptance
           cargo xtask completeness
           cargo xtask package
-
-      - name: Upload RC package
-        id: package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Produce target-specific production SBOM and packaged executable evidence
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo cyclonedx --manifest-path crates/agentctl-cli/Cargo.toml --format json \
+            --describe binaries --target "$TARGET" --spec-version 1.5 --no-build-deps
+          python scripts/release/bundle.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" package \
+            --target "$TARGET" --sbom crates/agentctl-cli/agentctl_bin.cdx.json --output release-package
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: agentctl-rc-${{ matrix.target }}
-          path: dist/
+          name: release-package-${{ matrix.target }}
+          path: release-package/
           if-no-files-found: error
           retention-days: 14
 
-      - name: Record RC artifact digest
-        run: echo "agentctl-rc-${{ matrix.target }} artifact digest ${{ steps.package.outputs.artifact-digest }}" >> "$GITHUB_STEP_SUMMARY"
+  images:
+    name: Native image (${{ matrix.arch }}, ${{ matrix.variant }})
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        variant: [minimal, tooling]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Prepare disposable registry and OCI transport
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+          skopeo --version
+          docker run -d --name release-registry -p 127.0.0.1:5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          mkdir release-image
+      - name: Prepare optional protected build CA
+        env:
+          BUILD_CA_PEM: ${{ secrets.AGENTCTL_BUILD_CA_PEM }}
+        run: |
+          if [[ -n "$BUILD_CA_PEM" ]]; then
+            umask 077
+            printf '%s' "$BUILD_CA_PEM" > "$RUNNER_TEMP/agentctl-build-ca.pem"
+            echo "AGENTCTL_BUILD_CA_FILE=$RUNNER_TEMP/agentctl-build-ca.pem" >> "$GITHUB_ENV"
+          fi
+      - name: Build native archive with provenance, without registry credentials
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Containerfile
+          target: ${{ matrix.variant }}
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            AGENTCTL_VERSION=${{ needs.identity.outputs.version }}
+            AGENTCTL_REVISION=${{ inputs.source_sha }}
+          provenance: mode=max
+          secret-files: ${{ env.AGENTCTL_BUILD_CA_FILE && format('agentctl_ca={0}', env.AGENTCTL_BUILD_CA_FILE) || '' }}
+          outputs: type=oci,dest=release-image/${{ matrix.variant }}-${{ matrix.arch }}.oci.tar
+      - name: Transport exact native image to disposable registry and execute it
+        env:
+          ARCH: ${{ matrix.arch }}
+          VARIANT: ${{ matrix.variant }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          skopeo copy --all --preserve-digests --dest-tls-verify=false \
+            "oci-archive:release-image/$VARIANT-$ARCH.oci.tar" docker://127.0.0.1:5000/agentctl:native
+          docker pull --platform "linux/$ARCH" 127.0.0.1:5000/agentctl:native
+          python3 scripts/release/image_smoke.py --image 127.0.0.1:5000/agentctl:native \
+            --variant "$VARIANT" --source "$SOURCE_SHA" --version "$VERSION" \
+            --work "$RUNNER_TEMP/image-smoke" --output "release-image/$VARIANT-$ARCH.smoke.json"
+      - name: Block fixed HIGH and CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 127.0.0.1:5000/agentctl:native
+          version: v0.72.0
+          scanners: vuln
+          format: json
+          output: release-image/${{ matrix.variant }}-${{ matrix.arch }}.scan.json
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Generate platform-specific CycloneDX image SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 127.0.0.1:5000/agentctl:native
+          version: v0.72.0
+          format: cyclonedx
+          output: release-image/${{ matrix.variant }}-${{ matrix.arch }}.cdx.json
+          exit-code: "1"
+      - name: Bind native execution, scanner, SBOM and provenance to transported OCI bytes
+        env:
+          ARCH: ${{ matrix.arch }}
+          VARIANT: ${{ matrix.variant }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python3 scripts/release/bundle.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" image \
+            --archive "release-image/$VARIANT-$ARCH.oci.tar" --variant "$VARIANT" --platform "linux/$ARCH" \
+            --scan "release-image/$VARIANT-$ARCH.scan.json" --sbom "release-image/$VARIANT-$ARCH.cdx.json" \
+            --smoke "release-image/$VARIANT-$ARCH.smoke.json" --output "release-image/$VARIANT-$ARCH.record.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-${{ matrix.variant }}-${{ matrix.arch }}
+          path: release-image/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove disposable registry
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/agentctl-build-ca.pem"
+          docker rm -f release-registry || true
+
+  bundle:
+    needs: [identity, packages, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: incoming
+      - name: Assemble complete durable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python3 scripts/release/hosted_checks.py --source "$SOURCE_SHA" --output incoming/required-hosted-checks.json
+          python3 scripts/release/bundle.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" assemble \
+            --incoming incoming --output release-bundle
+      - name: Prove full index push, pull and rerun reconciliation in a disposable registry
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+          docker run -d --name release-registry -p 127.0.0.1:5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          python3 scripts/release/publish.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" \
+            --directory release-bundle --registry 127.0.0.1:5000/agentctl --disposable --output first-promotion.json
+          python3 scripts/release/publish.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" \
+            --directory release-bundle --registry 127.0.0.1:5000/agentctl --disposable --output rerun-promotion.json
+          python3 scripts/release/registry_smoke.py --bundle release-bundle/release-bundle.json \
+            --registry 127.0.0.1:5000/agentctl --output registry-smoke.json
+      - name: Attest the complete gated checksum manifest
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-bundle/release-bundle.json
+      - name: Retain attestation for durable release verification
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$ATTESTATION_BUNDLE" release-bundle/release-bundle.sigstore.json
+          (cd release-bundle && sha256sum -- * | sed '/  SHA256SUMS$/d' > "$RUNNER_TEMP/release-checksums")
+          mv "$RUNNER_TEMP/release-checksums" release-bundle/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-release-bundle
+          path: release-bundle/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-disposable-registry-evidence
+          path: |
+            first-promotion.json
+            rerun-promotion.json
+            registry-smoke.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove disposable registry
+        if: always()
+        run: docker rm -f release-registry || true
+
+  draft:
+    if: inputs.attach_draft
+    needs: [identity, packages, images, bundle]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agentctl-release-bundle
+          path: release-bundle
+      - name: Attach all assets before publication; never publish here
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python3 scripts/release/draft.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" --directory release-bundle

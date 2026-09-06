@@ -1,22 +1,18 @@
 # Supported boundaries and operational limits
 
-This classification is part of the product contract. The
-[framework limitation burn-down](execution/LIMITATION_BURNDOWN.md) retains the
-earlier completeness program, while the [current launch limitation
-review](execution/LAUNCH_LIMITATION_REVIEW.md) classifies the continuation's
-defects, developer-experience gaps, optional integrations, and evidence gates.
-Capabilities outside the product thesis remain explicit non-goals.
+These boundaries are part of the product contract. Choose an execution environment,
+provider and recovery strategy that satisfy your workflow's requirements. Features
+outside this scope remain explicit non-goals.
 
-## Release blockers
+## Validation scope
 
-The expanded launch-readiness task requires fresh evidence for its final
-source commit, all twenty DevOps examples, bounded live OpenAI workflows,
-hosted platform/security/container/package/SBOM gates, and the exact-source
-documentation build. The [execution ledger](execution/AUTONOMOUS_LAUNCH_READINESS.md)
-records completed checks, failures, and remaining requirements. Historical
-passing runs do not establish that this new candidate passes. Version 0.3 uses
-workflow API `agentctl.dev/v1`; the CLI and crates remain pre-1.0 and do not
-imply long-term support.
+Validation evidence applies to a specific source commit, executable or image digest,
+workflow and environment. Passing fixture tests does not establish live provider,
+registry, cluster or hosted CI behavior. Consult the [release process](RELEASE_PROCESS.md)
+and the associated source-linked records for the artifact you use.
+
+The workflow document API is `agentctl.dev/v1`. Pin the executable checksum or image
+digest and review [compatibility](COMPATIBILITY.md) before upgrading persistent state.
 
 ## Implemented controls
 

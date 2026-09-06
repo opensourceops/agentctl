@@ -398,13 +398,30 @@ fn devops_examples(root: &Path, build: bool) -> Result<()> {
             binary.to_str().context("agentctl binary path")?,
         )],
     )?;
-    for pattern in ["test_live_command.py", "test_container_agentctl.py"] {
+    for pattern in [
+        "test_live_command.py",
+        "test_container_agentctl.py",
+        "test_release_live_budget.py",
+    ] {
         run(
             root,
             python,
             &["-m", "unittest", "discover", "-s", "scripts", "-p", pattern],
         )?;
     }
+    run(
+        root,
+        python,
+        &[
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "scripts/release",
+            "-p",
+            "test_*.py",
+        ],
+    )?;
     run(
         root,
         python,

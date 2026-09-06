@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "agentctl-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "cap-fs-ext",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "agentctl-observability"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "agentctl-core",
  "chrono",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "agentctl-protocols"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "agentctl-core",
  "agentctl-runtime",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "agentctl-runtime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "agentctl-core",
  "agentctl-observability",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "agentctl-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "agentctl-core",

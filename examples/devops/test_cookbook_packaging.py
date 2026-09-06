@@ -47,8 +47,10 @@ class CookbookPackagingTests(unittest.TestCase):
         catalog = json.loads((ROOT / "catalog.json").read_text(encoding="utf-8"))
         entries = catalog["examples"]
         self.assertEqual([entry["id"] for entry in entries], [f"{number:02}" for number in range(1, 21)])
-        self.assertEqual({entry["directory"] for entry in entries},
+        standalone = json.loads((ROOT / "standalone-catalog.json").read_text(encoding="utf-8"))["examples"]
+        self.assertEqual({entry["directory"] for entry in entries} | {entry["directory"] for entry in standalone},
                          {path.name for path in ROOT.glob("[0-9][0-9]-*") if path.is_dir()})
+        self.assertFalse({entry["directory"] for entry in entries} & {entry["directory"] for entry in standalone})
         for entry in entries:
             with self.subTest(example=entry["id"]):
                 folder = ROOT / entry["directory"]

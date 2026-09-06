@@ -6,7 +6,7 @@ Declaration-order scheduling among ready tasks, `needs` dataflow, exact typed te
 
 ## Migrated
 
-Agentctl 0.3 promotes the workflow document identifier from
+The workflow document identifier changed from
 `agentctl.dev/v1alpha1` to `agentctl.dev/v1` without changing the document
 shape. Update the `apiVersion` line before upgrading; the retired identifier is
 rejected with an explicit diagnostic. The separate pack-manifest identifier

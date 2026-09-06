@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Maintainer generation of readable authored YAML; runtime reads those YAML files."""
+from pathlib import Path
+import schemas
+from adapter import expected_files
+from yaml_io import dump
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def action(name):
+    return {"kind": "extension.process", "command": "/usr/bin/python3", "args": ["source/remediation/adapter.py", name],
+            "idempotency": "idempotent", "protocolVersion": "agentctl.dev/process-extension/v1", "inputSchema": schemas.INPUTS[name],
+            "outputSchema": schemas.OUTPUTS[name], "capabilities": ["remediation.validate"], "timeoutSeconds": 30,
+            "stdoutLimitBytes": 262144, "stderrLimitBytes": 8192, "combinedOutputLimitBytes": 270336}
+
+
+def write_tool(filename, content):
+    return {"kind": "builtin.workspace.write", "description": "Write only the reviewed dependency bytes to the bounded staging file",
+            "inputSchema": schemas.obj({"path": {"type": "string", "enum": ["patch/" + filename]},
+                                        "content": {"type": "string", "enum": [content.decode()]}}),
+            "outputSchema": {"type": "object"}, "capability": "filesystem.write", "effectClass": "workspace_mutate", "risk": "medium",
+            "idempotency": "idempotent", "retrySafe": True, "timeoutSeconds": 5, "approval": "policy"}
+
+
+def build():
+    workflow = {"apiVersion": "agentctl.dev/v1", "kind": "Workflow", "metadata": {"name": "container-dependency-remediation",
+                "description": "Two bounded model roles propose and stage a validated dependency fix; trusted outer CI rebuilds and rescans."}, "spec": {
+        "policy": {"workspaceRoot": ".", "writableRoots": ["patch", "state"], "processAllowlist": ["python3"], "networkAllowlist": ["api.openai.com"], "approval": "never"},
+        "providers": {"openai": {"kind": "openai", "credential": {"env": "OPENAI_API_KEY"}}},
+        "runtime": {"maxConcurrency": 1, "budgets": {"maxProviderRequests": 4, "maxTurns": 4, "maxToolCalls": 2, "maxTotalTokens": 20000,
+                     "maxWallTimeSeconds": 600, "maxCostMicrousd": 1000000, "maxProcessOutputBytes": 1048576, "maxArtifactBytes": 1048576},
+                    "pricing": {"version": "openai-public-2026-09-06-estimate", "models": {"openai/gpt-6-astra": {
+                        "inputMicrousdPerMillionTokens": 10000000, "outputMicrousdPerMillionTokens": 50000000}}}},
+        "actions": {name: action(name) for name in ["capture", "validate-plan", "validate-patch"]},
+        "tools": {name: write_tool(filename, content) for name, (filename, content) in zip(["write_manifest", "write_lock"], expected_files("2.7.0").items())},
+        "agents": {}, "tasks": [
+            {"id": "capture", "uses": "action:capture", "with": {}},
+            {"id": "analyze", "uses": "agent:analyzer", "needs": ["capture"], "with": {"prompt": "${{ tasks.capture.output }}"}},
+            {"id": "validate-plan", "uses": "action:validate-plan", "needs": ["capture", "analyze"],
+             "with": {"context": "${{ tasks.capture.output }}", "plan": "${{ tasks.analyze.output }}"}},
+            {"id": "implement", "uses": "agent:implementer", "needs": ["validate-plan"], "with": {"prompt": "${{ tasks.validate-plan.output }}"}},
+            {"id": "validate-patch", "uses": "action:validate-patch", "needs": ["capture", "validate-plan", "implement"],
+             "with": {"context": "${{ tasks.capture.output }}", "plan": "${{ tasks.validate-plan.output }}", "implementation": "${{ tasks.implement.output }}"}}],
+        "outputs": {"patch": "${{ tasks.validate-patch.output }}"}}}
+    for name, instruction, turns, tools, output in [("analyzer", "analyze", 1, [], schemas.PLAN),
+                                                   ("implementer", "implement", 3, ["write_manifest", "write_lock"], schemas.IMPLEMENTATION)]:
+        workflow["spec"]["agents"][name] = {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
+            "instructionsFile": "instructions/" + instruction + ".md", "tools": tools, "maxTurns": turns, "maxToolCalls": len(tools),
+            "maxOutputTokens": 2048, "timeoutSeconds": 180, "structuredOutput": output, "providerOptions": {"store": False}}
+    dump(ROOT / "agentctl/remediate.yaml", workflow)
+    eligibility = {"apiVersion": "agentctl.dev/v1", "kind": "Workflow", "metadata": {"name": "container-remediation-publication-eligibility",
+                   "description": "Validate exact trusted build/test/rescan evidence without a provider or GitHub credential."}, "spec": {
+        "policy": {"workspaceRoot": ".", "writableRoots": ["state"], "processAllowlist": ["python3"], "approval": "never"},
+        "runtime": {"budgets": {"maxWallTimeSeconds": 60, "maxProcessOutputBytes": 1048576}},
+        "actions": {"eligibility": action("eligibility")}, "tasks": [{"id": "eligibility", "uses": "action:eligibility", "with": {}}],
+        "outputs": {"publication": "${{ tasks.eligibility.output }}"}}}
+    dump(ROOT / "agentctl/eligibility.yaml", eligibility)
+
+
+if __name__ == "__main__":
+    build()

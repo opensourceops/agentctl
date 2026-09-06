@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "registry": "docker.io/opensourceops/agentctl",
+  "source": "https://github.com/opensourceops/agentctl",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "targets": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc"
+  ],
+  "images": {
+    "docker.io/library/rust:1.88.0-bookworm": "sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
+    "docker.io/library/debian:bookworm-slim": "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+    "docker.io/library/python:3.12-slim-bookworm": "sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254",
+    "docker.io/aquasec/trivy:0.72.0": "sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f",
+    "docker.io/library/registry:2": "sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373",
+    "gcr.io/distroless/cc-debian12:nonroot": "sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f"
+  },
+  "actions": {
+    "docker/setup-buildx-action": {
+      "version": "v4.3.0",
+      "sha": "37fe631027851001ddb9b187196cc803df7f5f0e"
+    },
+    "docker/build-push-action": {
+      "version": "v7.3.0",
+      "sha": "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a"
+    },
+    "docker/login-action": {
+      "version": "v4.6.0",
+      "sha": "dbcb813823bdd20940b903addbd779551569679f"
+    },
+    "actions/download-artifact": {
+      "version": "v8.0.1",
+      "sha": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    },
+    "actions/attest-build-provenance": {
+      "version": "v4.2.2",
+      "sha": "4d101475d8b20a2381f78447822ac1eab6504dd8"
+    }
+  }
+}

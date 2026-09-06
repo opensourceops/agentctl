@@ -178,7 +178,7 @@ and do not weaken TLS to make the probe pass.
 **Resolve:** Use native absolute paths and quote paths with spaces. Windows
 cannot express Unix database mode bits, so rely on the user profile ACL. The
 exact-head hosted Windows verification, acceptance, completeness, and package
-gates pass for the current candidate.
+gates pass for the source and artifacts you intend to use.
 
 ## Safe issue report
 

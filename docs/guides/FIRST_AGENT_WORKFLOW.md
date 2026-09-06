@@ -4,7 +4,7 @@ You will run a tool-using agent with the deterministic fake provider. The model 
 
 ## Prerequisites
 
-- An installed candidate `agentctl` binary
+- An installed `agentctl` binary
 - No provider credential
 
 ## 1. Create the complete example

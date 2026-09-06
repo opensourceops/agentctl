@@ -1,0 +1,3 @@
+# Trusted tooling only. Do not install the intentionally vulnerable application here.
+packaging==25.0
+ruamel.yaml==0.19.1
