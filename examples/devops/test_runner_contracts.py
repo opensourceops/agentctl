@@ -21,7 +21,7 @@ class RunnerContractsTests(unittest.TestCase):
             self.assertEqual(before, artifact_digests(root))
             (artifacts / "nested").mkdir()
             (artifacts / "nested/.lock").write_bytes(b"user artifact")
-            self.assertIn("artifacts/nested/.lock", artifact_digests(root))
+            self.assertIn(str(Path("artifacts") / "nested" / ".lock"), artifact_digests(root))
             (artifacts / "service.json").write_text('{"healthy":true}')
             observed = artifact_digests(root)
             (artifacts / "service.json").write_text('{"healthy":false}')
