@@ -1,223 +1,157 @@
-{
-  "apiVersion": "agentctl.dev/v1",
-  "kind": "Workflow",
-  "metadata": {
-    "name": "devops-kubernetes-review",
-    "description": "Repair fixture replica typing and non-root security settings; enforce a bundled Deployment subset schema without a cluster."
-  },
-  "spec": {
-    "policy": {
-      "workspaceRoot": ".",
-      "writableRoots": [
-        "artifacts"
-      ],
-      "processAllowlist": [
-        "python3"
-      ],
-      "approval": "never"
-    },
-    "runtime": {
-      "maxConcurrency": 1,
-      "budgets": {
-        "maxProviderRequests": 8,
-        "maxTurns": 8,
-        "maxToolCalls": 4,
-        "maxTotalTokens": 16000,
-        "maxProcessOutputBytes": 1048576,
-        "maxArtifactBytes": 1048576,
-        "maxTasks": 32,
-        "maxWallTimeSeconds": 120
-      }
-    },
-    "actions": {
-      "fixture": {
-        "kind": "extension.process",
-        "command": "python3",
-        "args": [
-          "../fixture.py",
-          "05"
-        ],
-        "idempotency": "idempotent",
-        "protocolVersion": "agentctl.dev/process-extension/v1",
-        "inputSchema": {
-          "type": "object"
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capabilities": [
-          "devops.fixture"
-        ],
-        "timeoutSeconds": 30,
-        "stdoutLimitBytes": 65536,
-        "stderrLimitBytes": 8192,
-        "combinedOutputLimitBytes": 73728
-      },
-      "write": {
-        "kind": "builtin.write"
-      },
-      "assign": {
-        "kind": "builtin.assign"
-      },
-      "assert": {
-        "kind": "builtin.assert"
-      }
-    },
-    "tasks": [
-      {
-        "id": "analyze",
-        "uses": "action:fixture",
-        "with": {},
-        "outputSchema": {
-          "type": "object",
-          "required": [
-            "manifest"
-          ],
-          "properties": {
-            "manifest": {
-              "type": "object",
-              "required": [
-                "apiVersion",
-                "kind",
-                "metadata",
-                "spec"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "apiVersion": {
-                  "const": "apps/v1"
-                },
-                "kind": {
-                  "const": "Deployment"
-                },
-                "metadata": {
-                  "type": "object",
-                  "required": [
-                    "name"
-                  ],
-                  "additionalProperties": false,
-                  "properties": {
-                    "name": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  }
-                },
-                "spec": {
-                  "type": "object",
-                  "required": [
-                    "replicas",
-                    "selector",
-                    "template"
-                  ],
-                  "additionalProperties": false,
-                  "properties": {
-                    "replicas": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 3
-                    },
-                    "selector": {
-                      "type": "object",
-                      "required": [
-                        "matchLabels"
-                      ],
-                      "additionalProperties": false,
-                      "properties": {
-                        "matchLabels": {
-                          "type": "object"
-                        }
-                      }
-                    },
-                    "template": {
-                      "type": "object",
-                      "required": [
-                        "metadata",
-                        "spec"
-                      ],
-                      "additionalProperties": false,
-                      "properties": {
-                        "metadata": {
-                          "type": "object",
-                          "required": [
-                            "labels"
-                          ],
-                          "additionalProperties": false,
-                          "properties": {
-                            "labels": {
-                              "type": "object"
-                            }
-                          }
-                        },
-                        "spec": {
-                          "type": "object",
-                          "required": [
-                            "containers"
-                          ],
-                          "additionalProperties": false,
-                          "properties": {
-                            "containers": {
-                              "type": "array",
-                              "minItems": 1,
-                              "items": {
-                                "type": "object",
-                                "required": [
-                                  "name",
-                                  "image",
-                                  "securityContext"
-                                ],
-                                "additionalProperties": false,
-                                "properties": {
-                                  "name": {
-                                    "type": "string"
-                                  },
-                                  "image": {
-                                    "type": "string"
-                                  },
-                                  "securityContext": {
-                                    "type": "object",
-                                    "required": [
-                                      "runAsNonRoot",
-                                      "allowPrivilegeEscalation"
-                                    ],
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "runAsNonRoot": {
-                                        "const": true
-                                      },
-                                      "allowPrivilegeEscalation": {
-                                        "const": false
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      {
-        "id": "report",
-        "uses": "action:write",
-        "needs": [
-          "analyze"
-        ],
-        "with": {
-          "path": "artifacts/report.json",
-          "content": "${{ tasks.analyze.output.reportText }}"
-        }
-      }
-    ],
-    "outputs": {
-      "report": "${{ tasks.analyze.output }}"
-    }
-  }
-}
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-kubernetes-review
+  description: Repair fixture replica typing and non-root security settings; enforce a bundled 
+    Deployment subset schema without a cluster.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 8
+      maxTurns: 8
+      maxToolCalls: 4
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    fixture:
+      kind: extension.process
+      command: python3
+      args:
+        - ../fixture.py
+        - '05'
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+      outputSchema:
+        type: object
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: analyze
+      uses: action:fixture
+      with: {}
+      outputSchema:
+        type: object
+        required:
+          - manifest
+        properties:
+          manifest:
+            type: object
+            required:
+              - apiVersion
+              - kind
+              - metadata
+              - spec
+            additionalProperties: false
+            properties:
+              apiVersion:
+                const: apps/v1
+              kind:
+                const: Deployment
+              metadata:
+                type: object
+                required:
+                  - name
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    minLength: 1
+              spec:
+                type: object
+                required:
+                  - replicas
+                  - selector
+                  - template
+                additionalProperties: false
+                properties:
+                  replicas:
+                    type: integer
+                    minimum: 1
+                    maximum: 3
+                  selector:
+                    type: object
+                    required:
+                      - matchLabels
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                  template:
+                    type: object
+                    required:
+                      - metadata
+                      - spec
+                    additionalProperties: false
+                    properties:
+                      metadata:
+                        type: object
+                        required:
+                          - labels
+                        additionalProperties: false
+                        properties:
+                          labels:
+                            type: object
+                      spec:
+                        type: object
+                        required:
+                          - containers
+                        additionalProperties: false
+                        properties:
+                          containers:
+                            type: array
+                            minItems: 1
+                            items:
+                              type: object
+                              required:
+                                - name
+                                - image
+                                - securityContext
+                              additionalProperties: false
+                              properties:
+                                name:
+                                  type: string
+                                image:
+                                  type: string
+                                securityContext:
+                                  type: object
+                                  required:
+                                    - runAsNonRoot
+                                    - allowPrivilegeEscalation
+                                  additionalProperties: false
+                                  properties:
+                                    runAsNonRoot:
+                                      const: true
+                                    allowPrivilegeEscalation:
+                                      const: false
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  outputs:
+    report: '${{ tasks.analyze.output }}'

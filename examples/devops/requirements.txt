@@ -1,0 +1,2 @@
+# Development/example authoring dependency only; the Rust CLI does not use Python.
+ruamel.yaml==0.19.1

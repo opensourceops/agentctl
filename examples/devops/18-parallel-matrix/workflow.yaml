@@ -1,95 +1,68 @@
-{
-  "apiVersion": "agentctl.dev/v1",
-  "kind": "Workflow",
-  "metadata": {
-    "name": "devops-parallel-matrix",
-    "description": "Run a bounded two-service/two-check matrix and verify stable ordered aggregation."
-  },
-  "spec": {
-    "policy": {
-      "workspaceRoot": ".",
-      "writableRoots": [
-        "artifacts"
-      ],
-      "processAllowlist": [
-        "python3"
-      ],
-      "approval": "never"
-    },
-    "runtime": {
-      "maxConcurrency": 4,
-      "budgets": {
-        "maxProviderRequests": 8,
-        "maxTurns": 8,
-        "maxToolCalls": 4,
-        "maxTotalTokens": 16000,
-        "maxProcessOutputBytes": 1048576,
-        "maxArtifactBytes": 1048576,
-        "maxTasks": 32,
-        "maxWallTimeSeconds": 120,
-        "maxExpansionItems": 4
-      }
-    },
-    "actions": {
-      "fixture": {
-        "kind": "extension.process",
-        "command": "python3",
-        "args": [
-          "../fixture.py",
-          "18"
-        ],
-        "idempotency": "idempotent",
-        "protocolVersion": "agentctl.dev/process-extension/v1",
-        "inputSchema": {
-          "type": "object"
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capabilities": [
-          "devops.fixture"
-        ],
-        "timeoutSeconds": 30,
-        "stdoutLimitBytes": 65536,
-        "stderrLimitBytes": 8192,
-        "combinedOutputLimitBytes": 73728
-      },
-      "write": {
-        "kind": "builtin.write"
-      },
-      "assign": {
-        "kind": "builtin.assign"
-      },
-      "assert": {
-        "kind": "builtin.assert"
-      }
-    },
-    "tasks": [
-      {
-        "id": "checks",
-        "uses": "action:fixture",
-        "with": {
-          "service": "${{ vars.matrix.service }}",
-          "check": "${{ vars.matrix.check }}",
-          "index": "${{ vars.matrixIndex }}"
-        },
-        "matrix": {
-          "axes": {
-            "service": [
-              "api",
-              "worker"
-            ],
-            "check": [
-              "syntax",
-              "config"
-            ]
-          },
-          "maxItems": 4
-        }
-      }
-    ],
-    "outputs": {
-      "items": "${{ tasks.checks.output.items }}"
-    }
-  }
-}
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-parallel-matrix
+  description: Run a bounded two-service/two-check matrix and verify stable ordered aggregation.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 4
+    budgets:
+      maxProviderRequests: 8
+      maxTurns: 8
+      maxToolCalls: 4
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+      maxExpansionItems: 4
+  actions:
+    fixture:
+      kind: extension.process
+      command: python3
+      args:
+        - ../fixture.py
+        - '18'
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+      outputSchema:
+        type: object
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: checks
+      uses: action:fixture
+      with:
+        service: '${{ vars.matrix.service }}'
+        check: '${{ vars.matrix.check }}'
+        index: '${{ vars.matrixIndex }}'
+      matrix:
+        axes:
+          service:
+            - api
+            - worker
+          check:
+            - syntax
+            - config
+        maxItems: 4
+  outputs:
+    items: '${{ tasks.checks.output.items }}'

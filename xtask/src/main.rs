@@ -376,7 +376,9 @@ fn devops_examples(root: &Path, build: bool) -> Result<()> {
         run(root, "cargo", &["build", "-p", "agentctl-cli", "--locked"])?;
     }
     let binary = binary_path(root);
-    let python = if cfg!(windows) { "python" } else { "python3" };
+    let python_path = std::env::var("AGENTCTL_EXAMPLES_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+    let python = python_path.as_str();
     run(
         root,
         python,
@@ -388,7 +390,11 @@ fn devops_examples(root: &Path, build: bool) -> Result<()> {
             "target/devops-evidence.json",
         ],
     )?;
-    for pattern in ["test_live_budget.py", "test_fixture_portability.py"] {
+    for pattern in [
+        "test_live_budget.py",
+        "test_fixture_portability.py",
+        "test_yaml_authoring.py",
+    ] {
         run(
             root,
             python,

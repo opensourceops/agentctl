@@ -1,101 +1,73 @@
-{
-  "apiVersion": "agentctl.dev/v1",
-  "kind": "Workflow",
-  "metadata": {
-    "name": "devops-local-deployment",
-    "description": "Pause before changing a disposable local HTTP service document, approve the exact effect, resume, and probe the service."
-  },
-  "spec": {
-    "policy": {
-      "workspaceRoot": ".",
-      "writableRoots": [
-        "artifacts"
-      ],
-      "processAllowlist": [
-        "python3"
-      ],
-      "approval": "mutations"
-    },
-    "runtime": {
-      "maxConcurrency": 1,
-      "budgets": {
-        "maxProviderRequests": 8,
-        "maxTurns": 8,
-        "maxToolCalls": 4,
-        "maxTotalTokens": 16000,
-        "maxProcessOutputBytes": 1048576,
-        "maxArtifactBytes": 1048576,
-        "maxTasks": 32,
-        "maxWallTimeSeconds": 120
-      }
-    },
-    "actions": {
-      "fixture": {
-        "kind": "extension.process",
-        "command": "python3",
-        "args": [
-          "../fixture.py",
-          "14"
-        ],
-        "idempotency": "idempotent",
-        "protocolVersion": "agentctl.dev/process-extension/v1",
-        "inputSchema": {
-          "type": "object"
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capabilities": [
-          "devops.fixture"
-        ],
-        "timeoutSeconds": 30,
-        "stdoutLimitBytes": 65536,
-        "stderrLimitBytes": 8192,
-        "combinedOutputLimitBytes": 73728
-      },
-      "write": {
-        "kind": "builtin.write"
-      },
-      "assign": {
-        "kind": "builtin.assign"
-      },
-      "assert": {
-        "kind": "builtin.assert"
-      }
-    },
-    "tasks": [
-      {
-        "id": "deploy",
-        "uses": "action:write",
-        "with": {
-          "path": "artifacts/service.json",
-          "content": "{\"version\":\"2.0.0\",\"scope\":\"disposable local HTTP fixture\"}\n"
-        }
-      },
-      {
-        "id": "analyze",
-        "uses": "action:assign",
-        "needs": [
-          "deploy"
-        ],
-        "with": {
-          "reportText": "{\"deployed\":\"2.0.0\",\"scope\":\"local HTTP fixture\"}\n"
-        }
-      },
-      {
-        "id": "report",
-        "uses": "action:write",
-        "needs": [
-          "analyze"
-        ],
-        "with": {
-          "path": "artifacts/report.json",
-          "content": "${{ tasks.analyze.output.output.reportText }}"
-        }
-      }
-    ],
-    "outputs": {
-      "report": "${{ tasks.analyze.output.output }}"
-    }
-  }
-}
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-local-deployment
+  description: Pause before changing a disposable local HTTP service document, approve the exact 
+    effect, resume, and probe the service.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: mutations
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 8
+      maxTurns: 8
+      maxToolCalls: 4
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    fixture:
+      kind: extension.process
+      command: python3
+      args:
+        - ../fixture.py
+        - '14'
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+      outputSchema:
+        type: object
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: deploy
+      uses: action:write
+      with:
+        path: artifacts/service.json
+        content: |
+          {"version":"2.0.0","scope":"disposable local HTTP fixture"}
+    - id: analyze
+      uses: action:assign
+      needs:
+        - deploy
+      with:
+        reportText: |
+          {"deployed":"2.0.0","scope":"local HTTP fixture"}
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.output.reportText }}'
+  outputs:
+    report: '${{ tasks.analyze.output.output }}'

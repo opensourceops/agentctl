@@ -1,8 +1,13 @@
-"""Regenerate the checked-in fixture workflows and catalog (no external dependencies)."""
+"""Regenerate fixture data, readable YAML workflows and the machine catalog.
+
+Tutorial prose is hand-maintained; install requirements.txt before generation.
+"""
 import copy
 import hashlib
 import json
 from pathlib import Path
+
+from yaml_io import dumps as yaml_dumps
 
 ROOT = Path(__file__).resolve().parent
 TITLES = [
@@ -33,6 +38,8 @@ def save(folder, name, value):
     target.parent.mkdir(parents=True, exist_ok=True)
     if name.endswith('.md') and isinstance(value, str):
         value = '\n'.join(line.rstrip() for line in value.splitlines()) + '\n'
+    if name.endswith(('.yaml', '.yml')) and not isinstance(value, str):
+        value = yaml_dumps(value)
     target.write_bytes((value if isinstance(value,str) else json.dumps(value, indent=2)+'\n').encode('utf-8'))
 
 def obj(properties):
@@ -311,42 +318,5 @@ for number,(slug,title,description) in enumerate(TITLES,1):
         'evidence':{'status':'see source-labeled validation.json; final commit gates assessed separately','validationFile':'validation.json','report':'runner --report PATH records exact source/binary hashes, exit codes, semantic assertions and usage'},
         'limitations':(['Real container build requires --container-build and a usable Docker/Podman engine.'] if number==4 else [])}
     catalog.append(entry)
-    model_commands=(f'\nSeparately opt-in paid mode (the suite runner accepts shared hard request/token limits):\n\n```sh\npython3 examples/devops/run.py --agentctl target/debug/agentctl --only {case} --mode openai --model gpt-5-mini --live-budget /tmp/agentctl-launch-live-budget.sqlite3 --report /tmp/agentctl-devops-{case}-live.json\n```\n' if model else '')
-    save(folder,'README.md',f'''# {number}. {title}
-
-{description}
-
-## Run
-
-From the framework checkout:
-
-```sh
-cargo build -p agentctl-cli --locked
-python3 examples/devops/run.py --agentctl target/debug/agentctl --only {case} --keep --report /tmp/agentctl-devops-{case}.json
-```
-
-The runner copies this directory and the checked-in common helper into a new temporary directory and invokes the real CLI from a different clean directory with an explicit workspace. The checked-in workflow uses the JSON-compatible subset of YAML (`agentctl.dev/v1`). `--keep` prints the retained location; the JSON report includes it. It records every CLI command, result envelope, inspection and replay in `evidence/`.
-
-## Prerequisites, authority and limits
-
-Python 3.10+ and a built agentctl binary are required. {('Git is also required. ' if number in [3,4,7,9] else '')}{credential}
-
-The workflow grants workspace access, writes only under `artifacts`, and explicitly allows `python3` for the reviewed helper where required. Host process execution is **not a security sandbox**: the trusted helper can spawn its documented local Git/Python subprocesses. No production cluster, cloud account, package registry or external deployment is accessed. Fixtures contain no secrets. Network access is absent except explicit api.openai.com in a live variant; the HTTP demonstration is a runner-owned loopback service.
-
-The DSL carries request, turn, token, task, wall-time, process-output and artifact bounds. The runner adds subprocess deadlines. Ordinary variable files contain configuration only, not secrets or policy grants. {('Existing CLI approvals record fixture actor and reason; this version has no actor-role authorization layer. Treat the local database owner as trusted. ' if number in [6,14] else '')}
-
-## Expected artifacts and semantic assertions
-
-{semantic}
-
-{chr(10).join('- `'+name+'`' for name in artifacts)}
-
-Deterministic execution status is recorded by the suite report, not inferred from static checking. Live model output is checked semantically, never by exact prose equality.
-
-## Failure, recovery and cleanup
-
-{recovery}
-
-The runner exercises a denied process or write in a separate workspace and verifies there is no forbidden output. Replay is run with provider credential removed and must preserve effect count and artifact bytes. Remove only the printed temporary workspace when finished; without `--keep`, the runner cleans it automatically. Disposable services and containers are stopped even if an assertion fails.
-{model_commands}''')
+    # Tutorial prose is hand-maintained; regeneration must preserve editorial work.
 save(ROOT,'catalog.json',{'schemaVersion':'agentctl.dev/devops-examples/v1','examples':catalog})

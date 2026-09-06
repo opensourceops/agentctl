@@ -1,235 +1,166 @@
-{
-  "apiVersion": "agentctl.dev/v1",
-  "kind": "Workflow",
-  "metadata": {
-    "name": "devops-bounded-remediation-openai",
-    "description": "Run a bounded model/tool remediation loop, validate the resulting local configuration, and retain token/cost/audit evidence."
-  },
-  "spec": {
-    "policy": {
-      "workspaceRoot": ".",
-      "writableRoots": [
-        "artifacts"
-      ],
-      "processAllowlist": [
-        "python3"
-      ],
-      "approval": "never",
-      "networkAllowlist": [
-        "api.openai.com"
-      ]
-    },
-    "runtime": {
-      "maxConcurrency": 1,
-      "budgets": {
-        "maxProviderRequests": 6,
-        "maxTurns": 6,
-        "maxToolCalls": 3,
-        "maxTotalTokens": 16000,
-        "maxProcessOutputBytes": 1048576,
-        "maxArtifactBytes": 1048576,
-        "maxTasks": 32,
-        "maxWallTimeSeconds": 120,
-        "maxLoopIterations": 3,
-        "maxCostMicrousd": 100000
-      },
-      "pricing": {
-        "version": "openai-public-2026-09-05-estimate",
-        "models": {
-          "openai/gpt-5-mini": {
-            "inputMicrousdPerMillionTokens": 250000,
-            "outputMicrousdPerMillionTokens": 2000000
-          }
-        }
-      }
-    },
-    "actions": {
-      "fixture": {
-        "kind": "extension.process",
-        "command": "python3",
-        "args": [
-          "../fixture.py",
-          "20"
-        ],
-        "idempotency": "idempotent",
-        "protocolVersion": "agentctl.dev/process-extension/v1",
-        "inputSchema": {
-          "type": "object"
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capabilities": [
-          "devops.fixture"
-        ],
-        "timeoutSeconds": 30,
-        "stdoutLimitBytes": 65536,
-        "stderrLimitBytes": 8192,
-        "combinedOutputLimitBytes": 73728
-      },
-      "write": {
-        "kind": "builtin.write"
-      },
-      "assign": {
-        "kind": "builtin.assign"
-      },
-      "assert": {
-        "kind": "builtin.assert"
-      },
-      "read": {
-        "kind": "builtin.read"
-      }
-    },
-    "tasks": [
-      {
-        "id": "read-config",
-        "uses": "action:read",
-        "with": {
-          "path": "fixtures/configuration.json"
-        }
-      },
-      {
-        "id": "remediate",
-        "uses": "agent:remediator",
-        "needs": [
-          "read-config"
-        ],
-        "with": {
-          "prompt": {
-            "configuration": "${{ tasks.read-config.output.content }}",
-            "previous": "${{ vars.loopPrevious }}",
-            "iteration": "${{ vars.loopIndex }}",
-            "limit": 30
-          }
-        },
-        "loop": {
-          "maxIterations": 3,
-          "while": "${{ vars.loopPrevious.done == false }}",
-          "initial": {
-            "done": false
-          }
-        },
-        "outputSchema": {
-          "type": "object",
-          "required": [
-            "done",
-            "timeoutSeconds"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "done": {
-              "type": "boolean"
-            },
-            "timeoutSeconds": {
-              "const": 30
-            }
-          }
-        }
-      },
-      {
-        "id": "analyze",
-        "uses": "action:fixture",
-        "needs": [
-          "remediate"
-        ],
-        "with": {}
-      },
-      {
-        "id": "report",
-        "uses": "action:write",
-        "needs": [
-          "analyze"
-        ],
-        "with": {
-          "path": "artifacts/report.json",
-          "content": "${{ tasks.analyze.output.reportText }}"
-        }
-      }
-    ],
-    "providers": {
-      "openai": {
-        "kind": "openai",
-        "credential": {
-          "env": "OPENAI_API_KEY"
-        }
-      }
-    },
-    "tools": {
-      "repair_config": {
-        "kind": "builtin.workspace.write",
-        "description": "Stage the exact approved decimal timeout value",
-        "inputSchema": {
-          "type": "object",
-          "required": [
-            "path",
-            "content"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "path": {
-              "type": "string",
-              "enum": [
-                "artifacts/timeout-seconds.txt"
-              ]
-            },
-            "content": {
-              "type": "string",
-              "enum": [
-                "30"
-              ]
-            }
-          }
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capability": "filesystem.write",
-        "effectClass": "workspace_mutate",
-        "risk": "medium",
-        "idempotency": "idempotent",
-        "retrySafe": true,
-        "timeoutSeconds": 5,
-        "approval": "policy"
-      }
-    },
-    "agents": {
-      "remediator": {
-        "provider": "openai",
-        "model": "gpt-5-mini",
-        "instructionsFile": "instructions/remediator.md",
-        "tools": [
-          "repair_config"
-        ],
-        "maxTurns": 2,
-        "maxToolCalls": 1,
-        "maxOutputTokens": 1024,
-        "timeoutSeconds": 45,
-        "structuredOutput": {
-          "type": "object",
-          "required": [
-            "done",
-            "timeoutSeconds"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "done": {
-              "type": "boolean"
-            },
-            "timeoutSeconds": {
-              "type": "integer"
-            }
-          }
-        },
-        "providerOptions": {
-          "store": false
-        },
-        "reasoning": {
-          "effort": "low"
-        }
-      }
-    },
-    "outputs": {
-      "report": "${{ tasks.analyze.output }}"
-    }
-  }
-}
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-bounded-remediation-openai
+  description: Run a bounded model/tool remediation loop, validate the resulting local 
+    configuration, and retain token/cost/audit evidence.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+    networkAllowlist:
+      - api.openai.com
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 6
+      maxTurns: 6
+      maxToolCalls: 3
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+      maxLoopIterations: 3
+      maxCostMicrousd: 100000
+    pricing:
+      version: openai-public-2026-09-05-estimate
+      models:
+        openai/gpt-5-mini:
+          inputMicrousdPerMillionTokens: 250000
+          outputMicrousdPerMillionTokens: 2000000
+  actions:
+    fixture:
+      kind: extension.process
+      command: python3
+      args:
+        - ../fixture.py
+        - '20'
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+      outputSchema:
+        type: object
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+    read:
+      kind: builtin.read
+  tasks:
+    - id: read-config
+      uses: action:read
+      with:
+        path: fixtures/configuration.json
+    - id: remediate
+      uses: agent:remediator
+      needs:
+        - read-config
+      with:
+        prompt:
+          configuration: '${{ tasks.read-config.output.content }}'
+          previous: '${{ vars.loopPrevious }}'
+          iteration: '${{ vars.loopIndex }}'
+          limit: 30
+      loop:
+        maxIterations: 3
+        while: '${{ vars.loopPrevious.done == false }}'
+        initial:
+          done: false
+      outputSchema:
+        type: object
+        required:
+          - done
+          - timeoutSeconds
+        additionalProperties: false
+        properties:
+          done:
+            type: boolean
+          timeoutSeconds:
+            const: 30
+    - id: analyze
+      uses: action:fixture
+      needs:
+        - remediate
+      with: {}
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  providers:
+    openai:
+      kind: openai
+      credential:
+        env: OPENAI_API_KEY
+  tools:
+    repair_config:
+      kind: builtin.workspace.write
+      description: Stage the exact approved decimal timeout value
+      inputSchema:
+        type: object
+        required:
+          - path
+          - content
+        additionalProperties: false
+        properties:
+          path:
+            type: string
+            enum:
+              - artifacts/timeout-seconds.txt
+          content:
+            type: string
+            enum:
+              - '30'
+      outputSchema:
+        type: object
+      capability: filesystem.write
+      effectClass: workspace_mutate
+      risk: medium
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: policy
+  agents:
+    remediator:
+      provider: openai
+      model: gpt-5-mini
+      instructionsFile: instructions/remediator.md
+      tools:
+        - repair_config
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 1024
+      timeoutSeconds: 45
+      structuredOutput:
+        type: object
+        required:
+          - done
+          - timeoutSeconds
+        additionalProperties: false
+        properties:
+          done:
+            type: boolean
+          timeoutSeconds:
+            type: integer
+      providerOptions:
+        store: false
+      reasoning:
+        effort: low
+  outputs:
+    report: '${{ tasks.analyze.output }}'

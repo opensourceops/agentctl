@@ -19,6 +19,7 @@ import time
 import urllib.request
 
 from live_budget import LiveBudget
+from yaml_io import load as load_yaml, dump as dump_yaml
 
 ROOT = Path(__file__).resolve().parent
 
@@ -30,7 +31,10 @@ def require(condition, message):
 
 def save(filename, value):
     filename.parent.mkdir(parents=True, exist_ok=True)
-    filename.write_text(json.dumps(value, indent=2) + "\n")
+    if filename.suffix in {".yaml", ".yml"}:
+        dump_yaml(filename, value)
+    else:
+        filename.write_text(json.dumps(value, indent=2) + "\n")
 
 
 def digest(filename):
@@ -91,7 +95,7 @@ class Case:
         if args.mode == "deterministic":
             self.environment.pop("OPENAI_API_KEY", None)
         self.workflow = self.workspace / (entry["openaiWorkflow"] if args.mode == "openai" else "workflow.yaml")
-        self.workflow_value = json.loads(self.workflow.read_text())
+        self.workflow_value = load_yaml(self.workflow)
         if args.mode == "openai":
             for definition in self.workflow_value["spec"]["agents"].values():
                 require(definition["model"] == args.model, "model override needs a matching reviewed pricing entry; regenerate or explicitly edit the live fixture")
@@ -250,7 +254,7 @@ class Case:
         require(len(before["effects"]) == len(after["effects"]), "replay changed source effects")
 
     def denial(self):
-        value = json.loads((self.workspace / "workflow.yaml").read_text())
+        value = load_yaml(self.workspace / "workflow.yaml")
         value["spec"]["policy"]["toolsDeny"] = ["extension.process", "filesystem.write"] + list(value["spec"].get("tools", {}))
         value["spec"]["policy"]["approval"] = "never"
         denied_root = self.base / "denied"
@@ -315,7 +319,7 @@ class Case:
     def alternate_cases(self):
         case = self.entry["id"]
         if case in {"01", "12"}:
-            malformed = json.loads((self.workspace / "workflow.yaml").read_text())
+            malformed = load_yaml(self.workspace / "workflow.yaml")
             response = json.loads(malformed["spec"]["agents"]["analyst"]["providerOptions"]["finalText"])
             label = "classification" if case == "01" else "citations"
             response["rootCause" if case == "01" else "evidence"] = "The requests package is missing." if case == "01" else []
@@ -333,7 +337,7 @@ class Case:
             require(not any(effect["request"]["taskId"] == "verify" for effect in inspection["effects"]),
                     f"malformed {label} reached the downstream verification action")
         if case == "19":
-            malformed = json.loads((self.workspace / "workflow.yaml").read_text())
+            malformed = load_yaml(self.workspace / "workflow.yaml")
             reviewer = malformed["spec"]["agents"]["reviewer"]
             reviewer["providerOptions"]["finalText"] = json.dumps({"approved": True, "payload": "unreviewed-change"})
             # Negative fixture only: permit malformed fake model data through
@@ -381,7 +385,7 @@ class Case:
                     "typed rollback route dispatched the wrong branch")
 
         if case == "20":
-            nonconverging = json.loads((self.workspace / "workflow.yaml").read_text())
+            nonconverging = load_yaml(self.workspace / "workflow.yaml")
             nonconverging["spec"]["agents"]["remediator"]["providerOptions"]["finalText"] = json.dumps({"done": False, "timeoutSeconds": 30})
             filename = self.workspace / "nonconverging.workflow.yaml"
             database = self.workspace / "nonconverging.db"

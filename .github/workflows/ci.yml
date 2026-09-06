@@ -55,6 +55,18 @@ jobs:
       - name: Install pinned cargo-deny
         run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
 
+      - name: Install pinned example authoring dependencies
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/agentctl-examples"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            example_python="$RUNNER_TEMP/agentctl-examples/Scripts/python.exe"
+          else
+            example_python="$RUNNER_TEMP/agentctl-examples/bin/python"
+          fi
+          "$example_python" -m pip install -r examples/devops/requirements.txt
+          echo "AGENTCTL_EXAMPLES_PYTHON=$example_python" >> "$GITHUB_ENV"
+
       - name: Run deterministic verification gate
         run: cargo xtask verify
 

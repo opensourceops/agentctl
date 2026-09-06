@@ -1,111 +1,79 @@
-{
-  "apiVersion": "agentctl.dev/v1",
-  "kind": "Workflow",
-  "metadata": {
-    "name": "devops-configuration-drift",
-    "description": "Layer external variable files and task overrides, keep invocation inputs separate, and report configuration drift."
-  },
-  "spec": {
-    "policy": {
-      "workspaceRoot": ".",
-      "writableRoots": [
-        "artifacts"
-      ],
-      "processAllowlist": [
-        "python3"
-      ],
-      "approval": "never"
-    },
-    "runtime": {
-      "maxConcurrency": 1,
-      "budgets": {
-        "maxProviderRequests": 8,
-        "maxTurns": 8,
-        "maxToolCalls": 4,
-        "maxTotalTokens": 16000,
-        "maxProcessOutputBytes": 1048576,
-        "maxArtifactBytes": 1048576,
-        "maxTasks": 32,
-        "maxWallTimeSeconds": 120
-      }
-    },
-    "actions": {
-      "fixture": {
-        "kind": "extension.process",
-        "command": "python3",
-        "args": [
-          "../fixture.py",
-          "11"
-        ],
-        "idempotency": "idempotent",
-        "protocolVersion": "agentctl.dev/process-extension/v1",
-        "inputSchema": {
-          "type": "object"
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capabilities": [
-          "devops.fixture"
-        ],
-        "timeoutSeconds": 30,
-        "stdoutLimitBytes": 65536,
-        "stderrLimitBytes": 8192,
-        "combinedOutputLimitBytes": 73728
-      },
-      "write": {
-        "kind": "builtin.write"
-      },
-      "assign": {
-        "kind": "builtin.assign"
-      },
-      "assert": {
-        "kind": "builtin.assert"
-      }
-    },
-    "tasks": [
-      {
-        "id": "analyze",
-        "uses": "action:fixture",
-        "with": {
-          "desired": {
-            "replicas": "${{ vars.replicas }}",
-            "region": "${{ vars.region }}",
-            "settings": "${{ vars.settings }}"
-          },
-          "environment": "${{ inputs.environment }}"
-        },
-        "varsFiles": [
-          "vars/task.json"
-        ],
-        "vars": {
-          "replicas": 4
-        }
-      },
-      {
-        "id": "report",
-        "uses": "action:write",
-        "needs": [
-          "analyze"
-        ],
-        "with": {
-          "path": "artifacts/report.json",
-          "content": "${{ tasks.analyze.output.reportText }}"
-        }
-      }
-    ],
-    "varsFiles": [
-      "vars/base.yaml",
-      "vars/environment.json"
-    ],
-    "vars": {
-      "region": "fixture"
-    },
-    "inputs": {
-      "environment": "disposable"
-    },
-    "outputs": {
-      "report": "${{ tasks.analyze.output }}"
-    }
-  }
-}
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-configuration-drift
+  description: Layer external variable files and task overrides, keep invocation inputs separate, 
+    and report configuration drift.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 8
+      maxTurns: 8
+      maxToolCalls: 4
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+  actions:
+    fixture:
+      kind: extension.process
+      command: python3
+      args:
+        - ../fixture.py
+        - '11'
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+      outputSchema:
+        type: object
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: analyze
+      uses: action:fixture
+      with:
+        desired:
+          replicas: '${{ vars.replicas }}'
+          region: '${{ vars.region }}'
+          settings: '${{ vars.settings }}'
+        environment: '${{ inputs.environment }}'
+      varsFiles:
+        - vars/task.json
+      vars:
+        replicas: 4
+    - id: report
+      uses: action:write
+      needs:
+        - analyze
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.analyze.output.reportText }}'
+  varsFiles:
+    - vars/base.yaml
+    - vars/environment.json
+  vars:
+    region: fixture
+  inputs:
+    environment: disposable
+  outputs:
+    report: '${{ tasks.analyze.output }}'

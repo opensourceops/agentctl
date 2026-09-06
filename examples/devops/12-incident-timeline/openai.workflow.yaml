@@ -1,174 +1,123 @@
-{
-  "apiVersion": "agentctl.dev/v1",
-  "kind": "Workflow",
-  "metadata": {
-    "name": "devops-incident-timeline-openai",
-    "description": "Sort timestamped incident logs, calculate incident duration, and validate a model recommendation against source references."
-  },
-  "spec": {
-    "policy": {
-      "workspaceRoot": ".",
-      "writableRoots": [
-        "artifacts"
-      ],
-      "processAllowlist": [
-        "python3"
-      ],
-      "approval": "never",
-      "networkAllowlist": [
-        "api.openai.com"
-      ]
-    },
-    "runtime": {
-      "maxConcurrency": 1,
-      "budgets": {
-        "maxProviderRequests": 1,
-        "maxTurns": 8,
-        "maxToolCalls": 4,
-        "maxTotalTokens": 16000,
-        "maxProcessOutputBytes": 1048576,
-        "maxArtifactBytes": 1048576,
-        "maxTasks": 32,
-        "maxWallTimeSeconds": 120,
-        "maxCostMicrousd": 100000
-      },
-      "pricing": {
-        "version": "openai-public-2026-09-05-estimate",
-        "models": {
-          "openai/gpt-5-mini": {
-            "inputMicrousdPerMillionTokens": 250000,
-            "outputMicrousdPerMillionTokens": 2000000
-          }
-        }
-      }
-    },
-    "actions": {
-      "fixture": {
-        "kind": "extension.process",
-        "command": "python3",
-        "args": [
-          "../fixture.py",
-          "12"
-        ],
-        "idempotency": "idempotent",
-        "protocolVersion": "agentctl.dev/process-extension/v1",
-        "inputSchema": {
-          "type": "object"
-        },
-        "outputSchema": {
-          "type": "object"
-        },
-        "capabilities": [
-          "devops.fixture"
-        ],
-        "timeoutSeconds": 30,
-        "stdoutLimitBytes": 65536,
-        "stderrLimitBytes": 8192,
-        "combinedOutputLimitBytes": 73728
-      },
-      "write": {
-        "kind": "builtin.write"
-      },
-      "assign": {
-        "kind": "builtin.assign"
-      },
-      "assert": {
-        "kind": "builtin.assert"
-      }
-    },
-    "tasks": [
-      {
-        "id": "analyze",
-        "uses": "action:fixture",
-        "with": {}
-      },
-      {
-        "id": "advise",
-        "uses": "agent:analyst",
-        "needs": [
-          "analyze"
-        ],
-        "with": {
-          "prompt": "${{ tasks.analyze.output }}"
-        }
-      },
-      {
-        "id": "verify",
-        "uses": "action:fixture",
-        "needs": [
-          "analyze",
-          "advise"
-        ],
-        "with": {
-          "phase": "verify-model",
-          "report": "${{ tasks.analyze.output }}",
-          "analysis": "${{ tasks.advise.output }}"
-        }
-      },
-      {
-        "id": "report",
-        "uses": "action:write",
-        "needs": [
-          "verify"
-        ],
-        "with": {
-          "path": "artifacts/report.json",
-          "content": "${{ tasks.verify.output.reportText }}"
-        }
-      }
-    ],
-    "providers": {
-      "openai": {
-        "kind": "openai",
-        "credential": {
-          "env": "OPENAI_API_KEY"
-        }
-      }
-    },
-    "agents": {
-      "analyst": {
-        "provider": "openai",
-        "model": "gpt-5-mini",
-        "instructionsFile": "instructions/analyst.md",
-        "tools": [],
-        "maxTurns": 1,
-        "maxToolCalls": 0,
-        "maxOutputTokens": 1024,
-        "timeoutSeconds": 45,
-        "structuredOutput": {
-          "type": "object",
-          "required": [
-            "durationSeconds",
-            "evidence",
-            "recommendation"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "durationSeconds": {
-              "type": "integer"
-            },
-            "evidence": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            },
-            "recommendation": {
-              "type": "string"
-            }
-          }
-        },
-        "providerOptions": {
-          "store": false
-        },
-        "reasoning": {
-          "effort": "low"
-        }
-      }
-    },
-    "outputs": {
-      "report": "${{ tasks.verify.output }}"
-    }
-  }
-}
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: devops-incident-timeline-openai
+  description: Sort timestamped incident logs, calculate incident duration, and validate a model 
+    recommendation against source references.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - artifacts
+    processAllowlist:
+      - python3
+    approval: never
+    networkAllowlist:
+      - api.openai.com
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 1
+      maxTurns: 8
+      maxToolCalls: 4
+      maxTotalTokens: 16000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+      maxTasks: 32
+      maxWallTimeSeconds: 120
+      maxCostMicrousd: 100000
+    pricing:
+      version: openai-public-2026-09-05-estimate
+      models:
+        openai/gpt-5-mini:
+          inputMicrousdPerMillionTokens: 250000
+          outputMicrousdPerMillionTokens: 2000000
+  actions:
+    fixture:
+      kind: extension.process
+      command: python3
+      args:
+        - ../fixture.py
+        - '12'
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+      outputSchema:
+        type: object
+      capabilities:
+        - devops.fixture
+      timeoutSeconds: 30
+      stdoutLimitBytes: 65536
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 73728
+    write:
+      kind: builtin.write
+    assign:
+      kind: builtin.assign
+    assert:
+      kind: builtin.assert
+  tasks:
+    - id: analyze
+      uses: action:fixture
+      with: {}
+    - id: advise
+      uses: agent:analyst
+      needs:
+        - analyze
+      with:
+        prompt: '${{ tasks.analyze.output }}'
+    - id: verify
+      uses: action:fixture
+      needs:
+        - analyze
+        - advise
+      with:
+        phase: verify-model
+        report: '${{ tasks.analyze.output }}'
+        analysis: '${{ tasks.advise.output }}'
+    - id: report
+      uses: action:write
+      needs:
+        - verify
+      with:
+        path: artifacts/report.json
+        content: '${{ tasks.verify.output.reportText }}'
+  providers:
+    openai:
+      kind: openai
+      credential:
+        env: OPENAI_API_KEY
+  agents:
+    analyst:
+      provider: openai
+      model: gpt-5-mini
+      instructionsFile: instructions/analyst.md
+      tools: []
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 1024
+      timeoutSeconds: 45
+      structuredOutput:
+        type: object
+        required:
+          - durationSeconds
+          - evidence
+          - recommendation
+        additionalProperties: false
+        properties:
+          durationSeconds:
+            type: integer
+          evidence:
+            type: array
+            items:
+              type: string
+            minItems: 1
+          recommendation:
+            type: string
+      providerOptions:
+        store: false
+      reasoning:
+        effort: low
+  outputs:
+    report: '${{ tasks.verify.output }}'
