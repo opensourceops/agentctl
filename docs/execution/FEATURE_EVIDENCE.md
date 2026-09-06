@@ -1,5 +1,7 @@
 # Launch-readiness feature-to-evidence matrix
 
+The subsequent PR review is complete at framework code `4a22f7f733c5c722263b956b59f36107ec398fc7`, paired with docs code `8b3cdda50dea34a7282365f0d09dc7eef219848c`. See the [current review report](PR_REVIEW_REPORT.md) for all ten findings, twenty direct journeys, final hosted gates, artifact digests and separate runtime/documentation verdicts. The tables below preserve the earlier launch evidence and its exact source labels.
+
 Final executable source: `ce94443a6b0a840eb9cd0e5f5b2e128dfe8f15c8`. **Launch-ready pre-1.0 candidate for review.** Full Linux/macOS/Windows CI and RC, package, production/image SBOM, container, supply-chain and paired documentation gates passed. Final source/artifact bindings and the later evidence-only commit scope are in [the execution ledger](AUTONOMOUS_LAUNCH_READINESS.md) and [machine-readable final evidence](LAUNCH_FINAL_EVIDENCE.json). The [limitation review](LAUNCH_LIMITATION_REVIEW.md) preserves deliberate boundaries. Earlier checkpoints below remain source-specific history.
 
 The first table records implemented additions and named, observed evidence. The later baseline inventory is intentionally historical: its **T** (test inspected), **C** (CLI scenario), **S** (static), **H** (historical execution), and **G** (then-missing coverage) labels describe source `ec7e220820ed169c005aff5344d81fe4d292cdb6`. Resolved baseline gaps are superseded by the continuation table; they are not current missing-feature claims.
