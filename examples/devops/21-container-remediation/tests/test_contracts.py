@@ -3,7 +3,7 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 import tempfile
 import unittest
@@ -88,8 +88,11 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(runner.immutable_image(value), value)
 
     def test_agent_mounts_do_not_expose_publisher_or_engine(self):
-        with patch.dict(os.environ, {name: 'fixture' for name in runner.BINDINGS} | {'OPENAI_API_KEY': 'fixture-only', 'GH_TOKEN': 'must-not-forward'}, clear=True):
-            argv = runner.container_base('docker', Path('/w'), 'sha256:'+'a'*64, online=True, budget=Path('/budget'))
+        # This unit constructs Linux OCI arguments even on a Windows test host.
+        with patch.object(os, 'getuid', return_value=1000, create=True), patch.object(os, 'getgid', return_value=1000, create=True), \
+             patch.dict(os.environ, {name: 'fixture' for name in runner.BINDINGS} | {'OPENAI_API_KEY': 'fixture-only', 'GH_TOKEN': 'must-not-forward'}, clear=True):
+            argv = runner.container_base('docker', PurePosixPath('/w'), 'sha256:'+'a'*64, online=True, budget=PurePosixPath('/budget'))
+            offline = runner.container_base('docker', PurePosixPath('/w'), 'sha256:'+'a'*64)
         text = ' '.join(argv)
         self.assertNotIn('GH_TOKEN', text)
         self.assertNotIn('docker.sock', text)
@@ -99,7 +102,6 @@ class ContractTests(unittest.TestCase):
         self.assertIn('--cap-drop=ALL', argv)
         self.assertIn('--read-only', argv)
         self.assertIn('OPENAI_API_KEY', argv)
-        offline = runner.container_base('docker', Path('/w'), 'sha256:'+'a'*64)
         self.assertIn('--network=none', offline)
         self.assertNotIn('OPENAI_API_KEY', offline)
 
