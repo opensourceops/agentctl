@@ -379,6 +379,20 @@ class ReleaseBudgetTests(unittest.TestCase):
                     budget.close(self.task)
                 self.assertEqual(self.original_row(leased["envelopeId"])["charged"], budget.TASK_MAXIMUM)
 
+    def test_unavailable_provider_usage_cannot_be_reconciled_as_free(self):
+        leased = self.allocate()
+        after = self.inspection(state="failed", status="uncertain", reserved=True, requests=0)
+        after["budget"]["reserved"].update(inputTokens=100, outputTokens=2048, costMicrousd=120000)
+        code, count = self.dispatch(leased, after=after)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(count, 1)
+        with self.assertRaisesRegex(ValueError, "incomplete or exceeded"):
+            budget.receipt(leased, self.execution, self.environment)
+        self.assertEqual(self.rows(self.task)[-1]["status"], "reserved")
+        with self.assertRaisesRegex(ValueError, "entire original task envelope retained"):
+            budget.close(self.task)
+        self.assertEqual(self.original_row(leased["envelopeId"])["charged"], budget.TASK_MAXIMUM)
+
     def test_receipt_rejects_clipped_usage_duplicates_and_cross_job_result(self):
         leased = self.allocate()
         self.dispatch(leased)

@@ -97,7 +97,7 @@ spec:
         - echo
       maxTurns: 3
       maxToolCalls: 1
-      maxOutputTokens: 512
+      maxOutputTokens: 2048
       timeoutSeconds: 90
       structuredOutput:
         type: object

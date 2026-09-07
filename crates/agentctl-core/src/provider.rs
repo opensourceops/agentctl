@@ -136,6 +136,8 @@ pub enum ProviderError {
     },
     #[error("provider response was malformed: {0}")]
     Malformed(String),
+    #[error("provider token usage is unavailable (response id: {response_id:?})")]
+    UsageUnavailable { response_id: Option<String> },
 }
 
 #[async_trait]

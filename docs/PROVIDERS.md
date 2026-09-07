@@ -106,6 +106,16 @@ retryable HTTP responses. Timeout, cancellation, or a transport loss after
 dispatch is considered ambiguous and is not automatically reissued. See
 [Resource and cost budgets](guides/RESOURCE_BUDGETS.md).
 
+OpenAI responses must include nonnegative integer `input_tokens` and
+`output_tokens` usage counters. Missing or malformed required counters leave the
+model effect uncertain and retain its original budget reservation. Same-run
+resume requires reconciliation; unavailable usage is not treated as zero and the
+request is not automatically repeated. Explicit retry or repair can authorize
+fresh model work under a new run budget while preserving the old reservation.
+Explicit numeric zero is valid. Optional cache and reasoning breakdowns may be
+absent. This validation also applies to Azure OpenAI through the shared Responses adapter; it does not
+establish live Azure coverage.
+
 Streaming persists each accepted fragment before reading more transport data.
 Records are bounded and redacted, while the terminal response still follows
 the normal validation path. See [Durable provider

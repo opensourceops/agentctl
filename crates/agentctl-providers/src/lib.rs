@@ -654,6 +654,28 @@ fn parse_openai(
         .get("id")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
+    let unknown_usage = || ProviderError::UsageUnavailable {
+        response_id: response_id
+            .as_deref()
+            .filter(|id| {
+                id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+            })
+            .map(ToOwned::to_owned),
+    };
+    // A successful transport response can omit usage, notably when incomplete.
+    // Missing counts must not become a known zero charge after dispatch.
+    let usage = value.get("usage").ok_or_else(unknown_usage)?;
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .ok_or_else(unknown_usage)?;
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .ok_or_else(unknown_usage)?;
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut assistant_content = Vec::new();
@@ -738,7 +760,6 @@ fn parse_openai(
     } else {
         FinishReason::Complete
     };
-    let usage = value.get("usage").cloned().unwrap_or(Value::Null);
     let continuation = if openai_store_enabled(request) {
         response_id
             .clone()
@@ -755,15 +776,15 @@ fn parse_openai(
         tool_calls,
         assistant_content,
         usage: Usage {
-            input_tokens: number(&usage, "input_tokens"),
-            output_tokens: number(&usage, "output_tokens"),
-            reasoning_tokens: nested_number(&usage, &["output_tokens_details", "reasoning_tokens"]),
-            cache_read_tokens: nested_number(&usage, &["input_tokens_details", "cached_tokens"]),
+            input_tokens,
+            output_tokens,
+            reasoning_tokens: nested_number(usage, &["output_tokens_details", "reasoning_tokens"]),
+            cache_read_tokens: nested_number(usage, &["input_tokens_details", "cached_tokens"]),
             cache_write_tokens: nested_number(
-                &usage,
+                usage,
                 &["input_tokens_details", "cache_write_tokens"],
             )
-            .max(number(&usage, "cache_write_tokens")),
+            .max(number(usage, "cache_write_tokens")),
             cost_microusd: None,
         },
         finish_reason,
@@ -1921,12 +1942,92 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
     }
 
     #[test]
+    fn openai_rejects_unavailable_token_usage_before_accepting_output() {
+        let mut invalid = vec![Value::Null, serde_json::json!([]), serde_json::json!({})];
+        for field in ["input_tokens", "output_tokens"] {
+            let mut missing = serde_json::json!({"input_tokens": 1, "output_tokens": 1});
+            missing.as_object_mut().unwrap().remove(field);
+            invalid.push(missing);
+            for value in [
+                Value::Null,
+                serde_json::json!(-1),
+                serde_json::json!("0"),
+                serde_json::json!(1.5),
+                serde_json::json!(false),
+                serde_json::json!(18_446_744_073_709_551_616_f64),
+            ] {
+                let mut usage = serde_json::json!({"input_tokens": 1, "output_tokens": 1});
+                usage[field] = value;
+                invalid.push(usage);
+            }
+        }
+        for status in ["completed", "incomplete"] {
+            let response = serde_json::json!({
+                "id": "resp_unknown_usage", "status": status, "output": []
+            });
+            for usage in std::iter::once(None).chain(invalid.iter().cloned().map(Some)) {
+                let mut response = response.clone();
+                if let Some(usage) = usage {
+                    response["usage"] = usage;
+                }
+                assert!(matches!(
+                    parse_openai(response, &request()),
+                    Err(ProviderError::UsageUnavailable { response_id })
+                        if response_id.as_deref() == Some("resp_unknown_usage")
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn openai_accepts_explicit_zero_usage_and_known_incomplete_usage() {
+        for (status, expected_finish) in [
+            ("completed", FinishReason::Complete),
+            ("incomplete", FinishReason::MaxTokens),
+        ] {
+            for (input, output) in [(0, 0), (12, 8)] {
+                let response = parse_openai(
+                    serde_json::json!({
+                        "id": "resp_known_usage", "status": status, "output": [],
+                        "usage": {"input_tokens": input, "output_tokens": output}
+                    }),
+                    &request(),
+                )
+                .expect("explicit usage");
+                assert_eq!(response.usage.input_tokens, input);
+                assert_eq!(response.usage.output_tokens, output);
+                assert_eq!(response.usage.reasoning_tokens, 0);
+                assert_eq!(response.usage.cache_read_tokens, 0);
+                assert_eq!(response.usage.cache_write_tokens, 0);
+                assert_eq!(response.finish_reason, expected_finish);
+            }
+        }
+    }
+
+    #[test]
+    fn openai_unknown_usage_diagnostic_does_not_include_untrusted_response_content() {
+        for id in ["untrusted\nbody".to_owned(), "x".repeat(129)] {
+            let error = parse_openai(
+                serde_json::json!({"id": id, "status": "untrusted body", "output": []}),
+                &request(),
+            )
+            .expect_err("unknown usage");
+            assert!(matches!(
+                error,
+                ProviderError::UsageUnavailable { response_id: None }
+            ));
+            assert!(!error.to_string().contains("untrusted"));
+        }
+    }
+
+    #[test]
     fn openai_preserves_multiple_function_call_ids() {
         let request = request();
         let response = parse_openai(
             serde_json::json!({
                 "id": "resp_tools",
                 "status": "completed",
+                "usage": {"input_tokens": 1, "output_tokens": 2},
                 "output": [
                     {"type": "function_call", "call_id": "call-a", "name": "echo", "arguments": "{\"text\":\"a\"}"},
                     {"type": "function_call", "call_id": "call-b", "name": "echo", "arguments": "{\"text\":\"b\"}"}
@@ -1957,6 +2058,7 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
             serde_json::json!({
                 "id": "resp_stateless",
                 "status": "completed",
+                "usage": {"input_tokens": 1, "output_tokens": 2},
                 "output": [
                     {
                         "type": "reasoning",
@@ -2035,6 +2137,7 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
             serde_json::json!({
                 "id": "resp_stateless",
                 "status": "completed",
+                "usage": {"input_tokens": 1, "output_tokens": 2},
                 "output": [{"type": "reasoning", "id": "rs_1", "summary": []}]
             }),
             &request,
@@ -2460,6 +2563,7 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "resp_header-secret",
                 "status": "completed",
+                "usage": {"input_tokens": 1, "output_tokens": 2},
                 "output": [
                     {"type": "reasoning", "header-secret": "test-key"},
                     {"type": "message", "content": [{"type": "output_text", "text": "echo header-secret and test-key"}]}
@@ -2506,6 +2610,7 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "resp_resolved-file-secret",
                 "status": "completed",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
                 "output": [
                     {"type": "message", "content": [{"type": "output_text", "text": "resolved-file-secret"}]}
                 ]

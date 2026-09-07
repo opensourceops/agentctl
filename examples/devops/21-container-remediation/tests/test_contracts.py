@@ -218,6 +218,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(workflow['agents']['probe']['model'], 'gpt-6-astra')
         self.assertEqual(workflow['agents']['probe']['reasoning'], {'effort': 'high'})
         self.assertEqual(workflow['agents']['probe']['maxToolCalls'], 1)
+        self.assertEqual(workflow['agents']['probe']['maxOutputTokens'], 2048)
         self.assertEqual(workflow['tools']['echo']['effectClass'], 'pure')
         self.assertEqual(workflow['tools']['echo']['capability'], 'internal')
         self.assertEqual(workflow['tools']['echo']['kind'], 'builtin.echo')

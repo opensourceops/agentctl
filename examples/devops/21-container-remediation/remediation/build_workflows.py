@@ -86,7 +86,7 @@ def build():
                   "timeoutSeconds": 5, "approval": "policy"}},
         "agents": {"probe": {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
                    "instructionsFile": "instructions/preflight.md", "tools": ["echo"], "maxTurns": 3, "maxToolCalls": 1,
-                   "maxOutputTokens": 512, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
+                   "maxOutputTokens": 2048, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
         "actions": {"verify": {"kind": "builtin.assert"}},
         "tasks": [{"id": "probe", "uses": "agent:probe", "with": {"prompt": expected_echo_input()}},
                   {"id": "verify", "uses": "action:verify", "needs": ["probe"],
