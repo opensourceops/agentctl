@@ -6681,7 +6681,11 @@ impl Runtime {
                 &serde_json::to_value(&continuation)?,
                 self.clock.now(),
             )?;
-            if response.finish_reason == FinishReason::ToolCalls || !response.tool_calls.is_empty()
+            if matches!(
+                response.finish_reason,
+                FinishReason::Complete | FinishReason::ToolCalls
+            ) && (response.finish_reason == FinishReason::ToolCalls
+                || !response.tool_calls.is_empty())
             {
                 messages.push(Message::Assistant(response.assistant_content.clone()));
                 let mut results = Vec::new();
@@ -6916,6 +6920,20 @@ impl Runtime {
                     return Err(RuntimeError::Task {
                         task: task.task_id.clone(),
                         message: "provider reached maximum output tokens".to_owned(),
+                    });
+                }
+                FinishReason::ContentFilter => {
+                    return Err(RuntimeError::Task {
+                        task: task.task_id.clone(),
+                        message: "provider response was incomplete due to content filtering"
+                            .to_owned(),
+                    });
+                }
+                FinishReason::Incomplete => {
+                    return Err(RuntimeError::Task {
+                        task: task.task_id.clone(),
+                        message: "provider response was incomplete for an unspecified reason"
+                            .to_owned(),
                     });
                 }
                 FinishReason::Refusal => {
@@ -10710,6 +10728,181 @@ spec:
             );
             assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
             assert!(!directory.path().join("forbidden.txt").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_provider_responses_never_dispatch_tools_and_replay_without_effects() {
+        struct FinishReasonProvider {
+            inner: ToolCallingProvider,
+            first_finish: FinishReason,
+        }
+
+        #[async_trait]
+        impl ModelProvider for FinishReasonProvider {
+            fn name(&self) -> &'static str {
+                "fake"
+            }
+
+            async fn complete(
+                &self,
+                request: &ProviderRequest,
+                cancellation: &CancellationToken,
+            ) -> Result<ProviderResponse, ProviderError> {
+                let mut response = self.inner.complete(request, cancellation).await?;
+                if !response.tool_calls.is_empty() {
+                    response.finish_reason = self.first_finish;
+                    response.usage = Usage {
+                        input_tokens: 12,
+                        output_tokens: 8,
+                        ..Usage::default()
+                    };
+                }
+                Ok(response)
+            }
+        }
+
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: terminal-tool-response }
+spec:
+  runtime:
+    budgets: { maxProviderRequests: 3, maxTotalTokens: 10000, maxCostMicrousd: 1000000 }
+    pricing:
+      version: fixture-prices
+      models:
+        fake/fake: { inputMicrousdPerMillionTokens: 10000000, outputMicrousdPerMillionTokens: 50000000 }
+  policy: { toolsAllow: [echo], approval: never }
+  providers: { fake: { kind: fake } }
+  tools:
+    echo:
+      kind: builtin.echo
+      description: echo
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: use the tool once
+      tools: [echo]
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 64
+  tasks: [{ id: work, uses: "agent:worker", with: { prompt: hello } }]
+"#,
+        );
+        for (finish, terminal_message) in [
+            (FinishReason::MaxTokens, Some("maximum output tokens")),
+            (FinishReason::ContentFilter, Some("content filtering")),
+            (FinishReason::Incomplete, Some("unspecified reason")),
+            (FinishReason::Refusal, Some("refused the request")),
+            (FinishReason::Complete, None),
+            (FinishReason::ToolCalls, None),
+        ] {
+            let directory = tempdir().expect("tempdir");
+            let store = SqliteStore::open_memory().expect("store");
+            let provider = Arc::new(FinishReasonProvider {
+                inner: ToolCallingProvider::default(),
+                first_finish: finish,
+            });
+            let tool = Arc::new(SingleUseRepairTool::new());
+            let execution_runtime = runtime(store.clone(), directory.path()).with_registry(
+                RuntimeRegistry::default()
+                    .with_provider("fake", provider.clone())
+                    .with_tool("echo", tool.clone()),
+            );
+            let result = execution_runtime
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await;
+            let (run_id, expected_state, expected_calls) = if let Some(message) = terminal_message {
+                match result {
+                    Err(RuntimeError::RunFailed {
+                        run_id,
+                        message: actual,
+                        ..
+                    }) => {
+                        assert!(actual.contains(message), "{finish:?}: {actual}");
+                        (run_id, RunState::Failed, 1)
+                    }
+                    other => {
+                        panic!("expected {finish:?} to stop before tool dispatch, got {other:?}")
+                    }
+                }
+            } else {
+                let outcome = result.expect("completed tool response still executes");
+                assert_eq!(outcome.state, RunState::Succeeded);
+                (outcome.run_id, RunState::Succeeded, 2)
+            };
+            let expected_tools = expected_calls - 1;
+            assert_eq!(provider.inner.0.load(Ordering::SeqCst), expected_calls);
+            assert_eq!(tool.calls.load(Ordering::SeqCst), expected_tools);
+            assert_eq!(
+                store.tool_calls(&run_id).unwrap().len() as u64,
+                expected_tools
+            );
+            let effects = store.list_effects(&run_id).expect("source effects");
+            assert_eq!(effects.len() as u64, expected_calls + expected_tools);
+            let recorded_response: ProviderResponse = serde_json::from_value(
+                effects
+                    .iter()
+                    .filter_map(|effect| effect.result.as_ref())
+                    .find(|value| value["responseId"] == "tool-turn")
+                    .expect("durable provider response")
+                    .clone(),
+            )
+            .expect("read recorded finish reason");
+            assert_eq!(recorded_response.finish_reason, finish);
+            assert_eq!(recorded_response.tool_calls.len(), 1);
+            assert!(
+                effects
+                    .iter()
+                    .all(|effect| effect.status == EffectStatus::Succeeded)
+            );
+            let budget = store.budget_snapshot(&run_id).expect("settled usage");
+            assert_eq!(budget.reserved, BudgetCounters::default());
+            assert_eq!(budget.usage.provider_requests, expected_calls);
+            assert_eq!(budget.usage.input_tokens, 12);
+            assert_eq!(budget.usage.output_tokens, 8);
+            assert_eq!(budget.usage.cost_microusd, 520);
+            let replay_runtime = runtime(store.clone(), directory.path()).with_registry(
+                RuntimeRegistry::default()
+                    .with_provider("fake", Arc::new(PanicProvider))
+                    .with_tool(
+                        "echo",
+                        Arc::new(PanicTool {
+                            contract: tool.contract().clone(),
+                        }),
+                    ),
+            );
+            let replay = replay_runtime
+                .replay(&run_id)
+                .await
+                .expect("recorded replay");
+            assert_eq!(replay.state, expected_state);
+            assert!(store.list_effects(&replay.run_id).unwrap().is_empty());
+            assert!(store.tool_calls(&replay.run_id).unwrap().is_empty());
+            assert_eq!(
+                store.budget_snapshot(&replay.run_id).unwrap().usage,
+                BudgetCounters::default()
+            );
+            assert_eq!(provider.inner.0.load(Ordering::SeqCst), expected_calls);
+            assert_eq!(tool.calls.load(Ordering::SeqCst), expected_tools);
         }
     }
 

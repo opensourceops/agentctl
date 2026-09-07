@@ -676,6 +676,18 @@ fn parse_openai(
         .get("output_tokens")
         .and_then(Value::as_u64)
         .ok_or_else(unknown_usage)?;
+    let incomplete_reason = (value.get("status").and_then(Value::as_str) == Some("incomplete"))
+        .then(|| {
+            match value
+                .get("incomplete_details")
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str)
+            {
+                Some("max_output_tokens") => FinishReason::MaxTokens,
+                Some("content_filter") => FinishReason::ContentFilter,
+                _ => FinishReason::Incomplete,
+            }
+        });
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut assistant_content = Vec::new();
@@ -686,6 +698,13 @@ fn parse_openai(
         .into_iter()
         .flatten()
     {
+        // Incomplete tool/reasoning items may be truncated. They cannot be
+        // dispatched or continued, but must not discard known token usage.
+        if incomplete_reason.is_some()
+            && item.get("type").and_then(Value::as_str) != Some("message")
+        {
+            continue;
+        }
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
                 for content in item
@@ -751,16 +770,18 @@ fn parse_openai(
             _ => {}
         }
     }
-    let finish_reason = if refusal {
+    let finish_reason = if let Some(reason) = incomplete_reason {
+        reason
+    } else if refusal {
         FinishReason::Refusal
     } else if !tool_calls.is_empty() {
         FinishReason::ToolCalls
-    } else if value.get("status").and_then(Value::as_str) == Some("incomplete") {
-        FinishReason::MaxTokens
     } else {
         FinishReason::Complete
     };
-    let continuation = if openai_store_enabled(request) {
+    let continuation = if incomplete_reason.is_some() {
+        None
+    } else if openai_store_enabled(request) {
         response_id
             .clone()
             .map(ContinuationState::OpenaiPreviousResponse)
@@ -1983,7 +2004,7 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
     fn openai_accepts_explicit_zero_usage_and_known_incomplete_usage() {
         for (status, expected_finish) in [
             ("completed", FinishReason::Complete),
-            ("incomplete", FinishReason::MaxTokens),
+            ("incomplete", FinishReason::Incomplete),
         ] {
             for (input, output) in [(0, 0), (12, 8)] {
                 let response = parse_openai(
@@ -2002,6 +2023,121 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
                 assert_eq!(response.finish_reason, expected_finish);
             }
         }
+    }
+
+    #[test]
+    fn openai_incomplete_reason_takes_precedence_over_valid_tool_calls() {
+        for (details, expected_finish) in [
+            (None, FinishReason::Incomplete),
+            (Some(Value::Null), FinishReason::Incomplete),
+            (Some(serde_json::json!({})), FinishReason::Incomplete),
+            (
+                Some(serde_json::json!({"reason": "max_output_tokens"})),
+                FinishReason::MaxTokens,
+            ),
+            (
+                Some(serde_json::json!({"reason": "content_filter"})),
+                FinishReason::ContentFilter,
+            ),
+            (
+                Some(serde_json::json!({"reason": "untrusted\nprovider detail"})),
+                FinishReason::Incomplete,
+            ),
+            (
+                Some(serde_json::json!({"reason": 42})),
+                FinishReason::Incomplete,
+            ),
+        ] {
+            for (input, output) in [(0, 0), (12, 8)] {
+                let mut value = serde_json::json!({
+                    "id": "resp_incomplete", "status": "incomplete",
+                    "usage": {"input_tokens": input, "output_tokens": output},
+                    "output": [
+                        {"type": "function_call", "call_id": "call-1", "name": "echo", "arguments": "{\"text\":\"hello\"}"}
+                    ]
+                });
+                if let Some(details) = details.clone() {
+                    value["incomplete_details"] = details;
+                }
+                let response = parse_openai(value, &request()).expect("known incomplete response");
+                assert_eq!(response.finish_reason, expected_finish);
+                assert!(response.tool_calls.is_empty());
+                assert!(response.assistant_content.is_empty());
+                assert!(response.continuation.is_none());
+                assert_eq!(response.usage.input_tokens, input);
+                assert_eq!(response.usage.output_tokens, output);
+                assert!(
+                    !serde_json::to_string(&response)
+                        .unwrap()
+                        .contains("untrusted")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn openai_incomplete_partial_items_preserve_usage_without_weakening_completed_validation() {
+        let mut request = request();
+        request
+            .provider_options
+            .insert("store".to_owned(), Value::Bool(false));
+        for item in [
+            serde_json::json!({"type": "function_call", "call_id": "call-1", "name": "echo", "arguments": "{\"text\":"}),
+            serde_json::json!({"type": "function_call", "call_id": "call-1", "name": "echo"}),
+            serde_json::json!({"type": "function_call", "arguments": "{}"}),
+            serde_json::json!({"type": "reasoning", "id": "rs_partial", "summary": []}),
+        ] {
+            let mut value = serde_json::json!({
+                "id": "resp_partial", "status": "incomplete",
+                "usage": {"input_tokens": 12, "output_tokens": 8},
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "partial text"}]},
+                    item
+                ]
+            });
+            let response = parse_openai(value.clone(), &request).expect("known incomplete usage");
+            assert_eq!(response.finish_reason, FinishReason::Incomplete);
+            assert_eq!(response.response_id.as_deref(), Some("resp_partial"));
+            assert_eq!(response.text, "partial text");
+            assert_eq!(response.usage.input_tokens, 12);
+            assert_eq!(response.usage.output_tokens, 8);
+            assert!(response.tool_calls.is_empty());
+            assert_eq!(
+                response.assistant_content,
+                vec![ContentBlock::Text {
+                    text: "partial text".to_owned()
+                }]
+            );
+            assert!(response.continuation.is_none());
+
+            value["status"] = serde_json::json!("completed");
+            assert!(
+                matches!(
+                    parse_openai(value, &request),
+                    Err(ProviderError::Malformed(_))
+                ),
+                "completed content must still be validated"
+            );
+        }
+    }
+
+    #[test]
+    fn openai_refusal_takes_precedence_over_valid_tool_calls() {
+        let response = parse_openai(
+            serde_json::json!({
+                "status": "completed", "usage": {"input_tokens": 12, "output_tokens": 8},
+                "output": [
+                    {"type": "function_call", "call_id": "call-1", "name": "echo", "arguments": "{\"text\":\"hello\"}"},
+                    {"type": "message", "content": [{"type": "refusal", "refusal": "untrusted refusal detail"}]}
+                ]
+            }),
+            &request(),
+        )
+        .expect("known refusal response");
+        assert_eq!(response.finish_reason, FinishReason::Refusal);
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.usage.input_tokens, 12);
+        assert_eq!(response.usage.output_tokens, 8);
     }
 
     #[test]

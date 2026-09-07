@@ -113,6 +113,8 @@ pub enum FinishReason {
     Complete,
     ToolCalls,
     MaxTokens,
+    ContentFilter,
+    Incomplete,
     Refusal,
     Cancelled,
 }
@@ -172,4 +174,29 @@ pub trait EmbeddingProvider: Send + Sync {
         dimensions: u16,
         cancellation: &CancellationToken,
     ) -> Result<Vec<f32>, ProviderError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FinishReason;
+
+    #[test]
+    fn finish_reason_preserves_existing_and_new_recorded_values() {
+        for (reason, name) in [
+            (FinishReason::Complete, "complete"),
+            (FinishReason::ToolCalls, "tool_calls"),
+            (FinishReason::MaxTokens, "max_tokens"),
+            (FinishReason::ContentFilter, "content_filter"),
+            (FinishReason::Incomplete, "incomplete"),
+            (FinishReason::Refusal, "refusal"),
+            (FinishReason::Cancelled, "cancelled"),
+        ] {
+            let value = serde_json::json!(name);
+            assert_eq!(serde_json::to_value(reason).expect("serialize"), value);
+            assert_eq!(
+                serde_json::from_value::<FinishReason>(value).expect("recorded value"),
+                reason
+            );
+        }
+    }
 }
