@@ -6,7 +6,7 @@ Recover a terminal test failure while reusing a successful upstream build bounda
 
 ## Get the complete example
 
-Install the [matching candidate binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
+Install the [matching agentctl binary](../../../docs/guides/INSTALLATION.md). Download this tutorial's complete package from the documentation site and extract it into an empty directory. When working from the source checkout, create the same package with:
 
 ```sh
 python3 examples/devops/package.py --example 16 --output ./example-16

@@ -1,0 +1,100 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: container-remediation-publication-eligibility
+  description: Validate exact trusted build/test/rescan evidence without a provider or GitHub credential.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - state
+    processAllowlist:
+      - python3
+    approval: never
+  runtime:
+    budgets:
+      maxWallTimeSeconds: 60
+      maxProcessOutputBytes: 1048576
+  actions:
+    eligibility:
+      kind: extension.process
+      command: /usr/bin/python3
+      args:
+        - source/remediation/adapter.py
+        - eligibility
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: []
+        properties: {}
+      outputSchema:
+        oneOf:
+          - type: object
+            additionalProperties: false
+            required:
+              - decision
+              - sourceSha
+              - sourceTree
+              - validatedTree
+              - patchDigest
+              - fingerprint
+              - beforeImageId
+              - afterImageId
+              - databaseSha256
+              - beforeReportSha256
+              - afterReportSha256
+              - gateSha256
+              - eligible
+              - files
+              - removedAdvisories
+              - residualFindings
+            properties:
+              decision: &id001
+                type: string
+              sourceSha: *id001
+              sourceTree: *id001
+              validatedTree: *id001
+              patchDigest: *id001
+              fingerprint: *id001
+              beforeImageId: *id001
+              afterImageId: *id001
+              databaseSha256: *id001
+              beforeReportSha256: *id001
+              afterReportSha256: *id001
+              gateSha256: *id001
+              eligible:
+                const: true
+              files:
+                type: object
+              removedAdvisories:
+                type: array
+                items: *id001
+              residualFindings:
+                type: array
+          - type: object
+            additionalProperties: false
+            required:
+              - eligible
+              - decision
+              - reason
+              - sourceSha
+            properties:
+              eligible:
+                const: false
+              decision: *id001
+              reason: *id001
+              sourceSha: *id001
+      capabilities:
+        - remediation.validate
+      timeoutSeconds: 30
+      stdoutLimitBytes: 262144
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 270336
+  tasks:
+    - id: eligibility
+      uses: action:eligibility
+      with: {}
+  outputs:
+    publication: ${{ tasks.eligibility.output }}

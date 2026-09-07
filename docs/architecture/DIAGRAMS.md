@@ -208,13 +208,13 @@ Non-interactive execution never waits on stdin or auto-approves. The platform au
 
 ## Container deployment
 
-The production image is a non-root CLI with four explicit host-managed mounts.
+Both image flavors run a non-root CLI with explicit host-managed read and write boundaries. The tooling flavor additionally contains a shell, Python and Git.
 
 ```mermaid
 flowchart LR
   accTitle: Container deployment contract
-  accDescr: A non-root agentctl container reads config and workspace mounts, writes state and artifacts, receives secret references, and returns JSON and an exit code.
-  Config[Read-only /config] --> Container[Distroless agentctl UID 65532]
+  accDescr: A non-root agentctl container reads configuration inside the workspace, writes state and authorized artifacts, receives secret references, and returns JSON and an exit code.
+  Config[Read-only /workspace/config] --> Container[agentctl UID 65532 by default]
   Workspace[Usually read-only /workspace] --> Container
   Container --> State[Writable /state SQLite]
   Container --> Artifacts[Writable /artifacts]
@@ -222,7 +222,7 @@ flowchart LR
   Container --> Output[One JSON result and process exit code]
 ```
 
-The root filesystem can remain read-only. State must persist for inspection, approval, resume, and replay.
+The root filesystem can remain read-only. Configuration includes external instruction and variable files inside the workspace read boundary. State must persist for inspection, approval, resume, and replay.
 
 ## CI/CD execution
 
@@ -242,7 +242,7 @@ flowchart TD
   Operator --> Resume[Resume with retained state]
 ```
 
-GitHub Actions, GitLab CI, Jenkins, Harness CI, and Kubernetes use the same mount and process contract.
+CI platforms adapt the same read/write and process boundaries to their runner infrastructure. A shell-based Run step requires the tooling flavor; direct entrypoint execution can use minimal. Configuration guidance alone does not establish hosted execution on GitLab, Jenkins, Harness or Kubernetes.
 
 ## Provider and tool interaction
 

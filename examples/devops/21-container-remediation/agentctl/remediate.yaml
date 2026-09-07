@@ -1,0 +1,449 @@
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata:
+  name: container-dependency-remediation
+  description: Two bounded model roles stage a dependency fix for trusted CI rebuild and rescan.
+spec:
+  policy:
+    workspaceRoot: .
+    writableRoots:
+      - patch
+      - state
+    processAllowlist:
+      - python3
+    networkAllowlist:
+      - api.openai.com
+    approval: never
+  providers:
+    openai:
+      kind: openai
+      credential:
+        env: OPENAI_API_KEY
+  runtime:
+    maxConcurrency: 1
+    budgets:
+      maxProviderRequests: 4
+      maxTurns: 4
+      maxToolCalls: 2
+      maxTotalTokens: 20000
+      maxWallTimeSeconds: 600
+      maxCostMicrousd: 1000000
+      maxProcessOutputBytes: 1048576
+      maxArtifactBytes: 1048576
+    pricing:
+      version: openai-public-2026-09-06-estimate
+      models:
+        openai/gpt-6-astra:
+          inputMicrousdPerMillionTokens: 10000000
+          outputMicrousdPerMillionTokens: 50000000
+  actions:
+    capture:
+      kind: extension.process
+      command: /usr/bin/python3
+      args:
+        - source/remediation/adapter.py
+        - capture
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: []
+        properties: {}
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - decision
+          - reason
+          - repository
+          - sourceSha
+          - sourceTree
+          - reportSha256
+          - imageId
+          - databaseSha256
+          - databaseMetadataSha256
+          - scannerImage
+          - package
+          - installedVersion
+          - targetVersion
+          - residualPolicy
+          - contractSha256
+          - files
+          - targets
+          - sourceFiles
+          - residualCount
+        properties: &id002
+          decision: &id001
+            type: string
+          reason: *id001
+          repository: *id001
+          sourceSha: *id001
+          sourceTree: *id001
+          reportSha256: *id001
+          imageId: *id001
+          databaseSha256: *id001
+          databaseMetadataSha256: *id001
+          scannerImage: *id001
+          package: *id001
+          installedVersion: *id001
+          targetVersion: *id001
+          residualPolicy: *id001
+          contractSha256: *id001
+          files: &id003
+            type: array
+            items: *id001
+          targets:
+            type: array
+          sourceFiles: &id007
+            type: object
+          residualCount:
+            type: integer
+      capabilities:
+        - remediation.validate
+      timeoutSeconds: 30
+      stdoutLimitBytes: 262144
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 270336
+    validate-plan:
+      kind: extension.process
+      command: /usr/bin/python3
+      args:
+        - source/remediation/adapter.py
+        - validate-plan
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - context
+          - plan
+        properties:
+          context:
+            type: object
+            additionalProperties: false
+            required:
+              - decision
+              - reason
+              - repository
+              - sourceSha
+              - sourceTree
+              - reportSha256
+              - imageId
+              - databaseSha256
+              - databaseMetadataSha256
+              - scannerImage
+              - package
+              - installedVersion
+              - targetVersion
+              - residualPolicy
+              - contractSha256
+              - files
+              - targets
+              - sourceFiles
+              - residualCount
+            properties: *id002
+          plan: &id010
+            type: object
+            additionalProperties: false
+            required:
+              - decision
+              - sourceSha
+              - reportSha256
+              - package
+              - installedVersion
+              - targetVersion
+              - files
+              - advisories
+              - compatibility
+              - manualItems
+            properties:
+              decision: &id004
+                type: string
+                enum:
+                  - remediate
+                  - manual
+              sourceSha: *id001
+              reportSha256: *id001
+              package: &id005
+                type: string
+                enum:
+                  - urllib3
+              installedVersion: *id001
+              targetVersion: *id001
+              files: *id003
+              advisories: &id006
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - id
+                    - evidence
+                    - fixedVersions
+                  properties:
+                    id: *id001
+                    evidence: *id001
+                    fixedVersions: *id003
+              compatibility: *id001
+              manualItems: *id003
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - decision
+          - sourceSha
+          - reportSha256
+          - package
+          - installedVersion
+          - targetVersion
+          - files
+          - advisories
+          - compatibility
+          - manualItems
+          - validated
+          - planSha256
+          - expectedFiles
+        properties: &id008
+          decision: *id004
+          sourceSha: *id001
+          reportSha256: *id001
+          package: *id005
+          installedVersion: *id001
+          targetVersion: *id001
+          files: *id003
+          advisories: *id006
+          compatibility: *id001
+          manualItems: *id003
+          validated: &id009
+            type: boolean
+          planSha256: *id001
+          expectedFiles: *id007
+      capabilities:
+        - remediation.validate
+      timeoutSeconds: 30
+      stdoutLimitBytes: 262144
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 270336
+    validate-patch:
+      kind: extension.process
+      command: /usr/bin/python3
+      args:
+        - source/remediation/adapter.py
+        - validate-patch
+      idempotency: idempotent
+      protocolVersion: agentctl.dev/process-extension/v1
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - context
+          - plan
+          - implementation
+        properties:
+          context:
+            type: object
+            additionalProperties: false
+            required:
+              - decision
+              - reason
+              - repository
+              - sourceSha
+              - sourceTree
+              - reportSha256
+              - imageId
+              - databaseSha256
+              - databaseMetadataSha256
+              - scannerImage
+              - package
+              - installedVersion
+              - targetVersion
+              - residualPolicy
+              - contractSha256
+              - files
+              - targets
+              - sourceFiles
+              - residualCount
+            properties: *id002
+          plan:
+            type: object
+            additionalProperties: false
+            required:
+              - decision
+              - sourceSha
+              - reportSha256
+              - package
+              - installedVersion
+              - targetVersion
+              - files
+              - advisories
+              - compatibility
+              - manualItems
+              - validated
+              - planSha256
+              - expectedFiles
+            properties: *id008
+          implementation: &id011
+            type: object
+            additionalProperties: false
+            required:
+              - applied
+              - package
+              - targetVersion
+              - files
+            properties:
+              applied: *id009
+              package:
+                type: string
+                enum:
+                  - urllib3
+              targetVersion: *id001
+              files: *id003
+      outputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - ready
+          - sourceSha
+          - sourceTree
+          - planSha256
+          - patchDigest
+          - files
+          - fingerprint
+        properties:
+          ready: *id009
+          sourceSha: *id001
+          sourceTree: *id001
+          planSha256: *id001
+          patchDigest: *id001
+          files: *id007
+          fingerprint: *id001
+      capabilities:
+        - remediation.validate
+      timeoutSeconds: 30
+      stdoutLimitBytes: 262144
+      stderrLimitBytes: 8192
+      combinedOutputLimitBytes: 270336
+  tools:
+    write_manifest:
+      kind: builtin.workspace.write
+      description: Write only the reviewed dependency bytes to the bounded staging file
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - path
+          - content
+        properties:
+          path:
+            type: string
+            enum:
+              - patch/requirements.in
+          content:
+            type: string
+            enum:
+              - "# Deliberately vulnerable sample dependency; never install into the tooling environment.\nurllib3==2.7.0\n"
+      outputSchema:
+        type: object
+      capability: filesystem.write
+      effectClass: workspace_mutate
+      risk: medium
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: policy
+    write_lock:
+      kind: builtin.workspace.write
+      description: Write only the reviewed dependency bytes to the bounded staging file
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required:
+          - path
+          - content
+        properties:
+          path:
+            type: string
+            enum:
+              - patch/requirements.lock
+          content:
+            type: string
+            enum:
+              - "# Hash-locked pure Python wheel; application dependencies only.\nurllib3==2.7.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\n"
+      outputSchema:
+        type: object
+      capability: filesystem.write
+      effectClass: workspace_mutate
+      risk: medium
+      idempotency: idempotent
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: policy
+  agents:
+    analyzer:
+      provider: openai
+      model: gpt-6-astra
+      reasoning:
+        effort: high
+      instructionsFile: instructions/analyze.md
+      tools: []
+      maxTurns: 1
+      maxToolCalls: 0
+      maxOutputTokens: 2048
+      timeoutSeconds: 180
+      structuredOutput: *id010
+      providerOptions:
+        store: false
+    implementer:
+      provider: openai
+      model: gpt-6-astra
+      reasoning:
+        effort: high
+      instructionsFile: instructions/implement.md
+      tools:
+        - write_manifest
+        - write_lock
+      maxTurns: 3
+      maxToolCalls: 2
+      maxOutputTokens: 2048
+      timeoutSeconds: 180
+      structuredOutput: *id011
+      providerOptions:
+        store: false
+  tasks:
+    - id: capture
+      uses: action:capture
+      with: {}
+    - id: analyze
+      uses: agent:analyzer
+      needs:
+        - capture
+      with:
+        prompt: ${{ tasks.capture.output }}
+    - id: validate-plan
+      uses: action:validate-plan
+      needs:
+        - capture
+        - analyze
+      with:
+        context: ${{ tasks.capture.output }}
+        plan: ${{ tasks.analyze.output }}
+    - id: implement
+      uses: agent:implementer
+      needs:
+        - validate-plan
+      with:
+        prompt: ${{ tasks.validate-plan.output }}
+    - id: validate-patch
+      uses: action:validate-patch
+      needs:
+        - capture
+        - validate-plan
+        - implement
+      with:
+        context: ${{ tasks.capture.output }}
+        plan: ${{ tasks.validate-plan.output }}
+        implementation: ${{ tasks.implement.output }}
+  outputs:
+    patch: ${{ tasks.validate-patch.output }}

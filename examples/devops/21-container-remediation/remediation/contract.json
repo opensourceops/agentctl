@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "repository": "Ompragash/agentctl-remediation-demo",
+  "baseBranch": "main",
+  "branchPrefix": "agentctl/remediation/",
+  "package": "urllib3",
+  "ecosystem": "pip",
+  "installedVersion": "2.6.2",
+  "targetVersion": "2.7.0",
+  "allowedFiles": [
+    "requirements.in",
+    "requirements.lock"
+  ],
+  "wheels": {
+    "2.6.2": {
+      "sha256": "ec21cddfe7724fc7cb4ba4bea7aa8e2ef36f607a4bab81aa6ce42a13dc3f03dd",
+      "url": "https://files.pythonhosted.org/packages/6d/b9/4095b668ea3678bf6a0af005527f39de12fb026516fb3df17495a733b7f8/urllib3-2.6.2-py3-none-any.whl"
+    },
+    "2.7.0": {
+      "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+      "url": "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl"
+    }
+  },
+  "blockingSeverities": [
+    "HIGH",
+    "CRITICAL"
+  ],
+  "residualPolicy": "All target package findings must disappear; no new HIGH/CRITICAL findings of any class. Existing unrelated findings remain explicitly manual, not claimed fixed.",
+  "sources": [
+    "https://github.com/urllib3/urllib3/security/advisories/GHSA-38jv-5279-wg99",
+    "https://github.com/urllib3/urllib3/security/advisories/GHSA-mf9v-mfxr-j63j",
+    "https://github.com/urllib3/urllib3/security/advisories/GHSA-qccp-gfcp-xxvc",
+    "https://pypi.org/pypi/urllib3/2.7.0/json"
+  ],
+  "metadataVerifiedAt": "2026-09-06",
+  "pythonBaseImage": "docker.io/library/python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254",
+  "scannerImage": "docker.io/aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
+}

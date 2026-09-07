@@ -1,12 +1,50 @@
-# Install the agentctl candidate
+# Install agentctl
 
-The Rust CLI and crates are **pre-1.0**. `agentctl.dev/v1` identifies the workflow document format; it does not mean the product is a stable 1.0 release. These tutorials use candidate features from the paired source revision. A previously published crate or container may not contain them.
+Choose a published CLI package, a container image, or an exact-source build. Use the
+same source and artifacts when reproducing a workflow. `agentctl.dev/v1` identifies
+the workflow document API; executable, provider and durable-state compatibility
+are documented separately.
+
+## CLI release downloads
+
+Open the [latest release](https://github.com/opensourceops/agentctl/releases/latest),
+select the archive for your operating system and architecture, and verify its
+checksum against the release's checksum manifest before extracting it. The
+[release list](https://github.com/opensourceops/agentctl/releases) retains earlier
+artifacts and their source records. Put the extracted `agentctl` executable on
+your `PATH`, then run:
+
+```sh
+agentctl version --output json --color never
+```
+
+Release preparation attaches complete binary assets before publication. If the
+release or required asset is not available yet, use the source-build path below.
+These instructions do not assume crates.io publication or `cargo install agentctl`.
+
+## Container image
+
+After the maintainer publishes the image, use the Docker Hub repository
+`opensourceops/agentctl`. For quick exploration:
+
+```sh
+docker run --rm docker.io/opensourceops/agentctl:latest version --output json --color never
+```
+
+`latest` is mutable. For reproducible CI, set `AGENTCTL_IMAGE` to the exact
+`docker.io/opensourceops/agentctl@sha256:...` reference recorded in the release
+summary and use that value in your pipeline. The [container guide](../CONTAINER.md)
+explains minimal and tooling images, entrypoints, mounts and a complete workflow.
+A source build validates unreleased changes without assuming the Docker Hub tags
+already exist.
 
 ## Install matching source
 
-You need Git, Rust 1.88.0, and Cargo. Installation downloads build dependencies and needs no provider key. The documentation site renders the exact source revision and copyable command here:
+You need Git, Rust 1.88.0, and Cargo. Installation downloads build dependencies and
+needs no provider key. The documentation site renders the exact source revision
+and copyable command here:
 
-<!-- agentctl-candidate-install -->
+<!-- agentctl-source-install -->
 
 When reading this file in a source checkout, install that checkout directly:
 
@@ -15,15 +53,22 @@ cargo install --locked --path crates/agentctl-cli
 agentctl version
 ```
 
-Run this command from the repository root. Cargo installs the executable into its binary directory, normally `~/.cargo/bin`; include that directory in your `PATH`. Keep the checkout's `git rev-parse HEAD` value with your installation evidence. The version string alone does not identify an unmerged candidate commit.
+Run from the repository root. Cargo installs the executable into its binary
+directory, normally `~/.cargo/bin`; include that directory in your `PATH`. Retain
+`git rev-parse HEAD` with the installed binary checksum. For an isolated
+installation, pass `--root /tmp/agentctl-install` and use
+`/tmp/agentctl-install/bin/agentctl`. On Windows, choose a writable directory and
+use its `bin/agentctl.exe`.
 
-For an isolated installation, pass `--root /tmp/agentctl-candidate` and use `/tmp/agentctl-candidate/bin/agentctl`. On Windows, use a writable directory of your choice and its `bin/agentctl.exe`.
+## First workflow
 
-## Verify without a source checkout
+Continue with [your first credential-free workflow](GETTING_STARTED.md). That
+page includes the entire YAML document. Once the binary is installed, the first
+run needs no source checkout, Python dependency, container engine, or provider key.
 
-Continue with [your first credential-free workflow](GETTING_STARTED.md). That page includes the entire YAML document. Once the binary is installed, no repository checkout, Python dependency, container engine, or provider key is needed for that first run.
-
-The DevOps cookbook adds Python and case-specific tools. Download a complete matching example package from its tutorial; copying a workflow alone omits the helper, schemas, and input files it requires.
+The DevOps cookbook adds Python and case-specific tools. Download a complete
+matching example package from its tutorial; copying a workflow alone omits the
+helper, schemas, and input files it requires.
 
 ## Build a local package or image
 
@@ -31,21 +76,19 @@ From the reviewed source checkout:
 
 ```sh
 cargo xtask package
+docker build --tag agentctl:local --file Containerfile .
+docker run --rm agentctl:local version --output json --color never
 ```
 
-The local `dist/` output includes the release binary, completions, license, README, and SHA-256 manifest. Building this package does not publish a release.
+The local `dist/` package includes the binary, completions, license, README, and
+SHA-256 manifest. Building a package or local image does not publish it. The
+minimal image uses `agentctl` as its entrypoint. Review the [container
+contract](../CONTAINER.md) before mounting a workspace or durable database and
+record the source commit and resulting image identity.
 
-For container operation, build the same checkout with Docker or Podman:
+## Upgrades
 
-```sh
-docker build --tag agentctl:candidate --file Containerfile .
-docker run --rm agentctl:candidate version --output json --color never
-```
-
-The image runs as UID/GID 65532 with `agentctl` as its entrypoint. Review the [container contract](../CONTAINER.md) before mounting a workspace or durable database. Record both the source commit and resulting image digest.
-
-## Published versions and upgrades
-
-This guide does not establish that a published crate or registry image contains the candidate changes. Use a published release only with documentation and artifacts verified for that release. Keep the source revision, binary checksum, and workflow assets together.
-
-Before an upgrade, review [compatibility](../COMPATIBILITY.md) and [limitations](../LIMITATIONS.md), back up SQLite state using the [state guide](../reference/DATABASE.md), then run `check` and `plan` with the new binary. `agentctl update` explains installation paths; it does not replace your binary.
+Review [compatibility](../COMPATIBILITY.md) and [limitations](../LIMITATIONS.md),
+back up SQLite state using the [state guide](../reference/DATABASE.md), then run
+`check` and `plan` with the new executable. `agentctl update` explains installation
+paths; it does not replace your binary.

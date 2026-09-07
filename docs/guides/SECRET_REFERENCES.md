@@ -95,23 +95,25 @@ allowed helper runs with the `agentctl` process identity.
 
 ## Container-mounted secret
 
-Mount the secret read-only and grant only its parent directory:
+Mount the secret read-only and grant only its parent directory with `secretFileRoots: [/run/secrets]`. The provider uses `credential: { file: /run/secrets/openai }`. Configure `AGENTCTL_IMAGE` with the reviewed image digest and prepare the host-owned state directory as in the [container walkthrough](../CONTAINER.md). Keep the reviewed `workspace/config/workflow.yaml` and its ordinary source inputs in a dedicated `workspace` directory, separate from `state`. Run as a non-root host user; the mounted secret must be readable by that selected identity.
 
-```console
-docker run --rm --read-only --user 65532:65532 \
+```sh
+: "${OPENAI_SECRET_FILE:?Set the protected credential-file path}"
+: "${AGENTCTL_IMAGE:?Set the reviewed image digest}"
+test "$(id -u)" -ne 0
+docker run --rm --read-only --user "$(id -u):$(id -g)" \
+  --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --mount type=bind,src="$PWD/config",dst=/config,readonly \
   --mount type=bind,src="$PWD/workspace",dst=/workspace,readonly \
   --mount type=bind,src="$PWD/state",dst=/state \
-  --mount type=bind,src="$PWD/openai.key",dst=/run/secrets/openai,readonly \
-  ghcr.io/OWNER/agentctl:0.3.0 \
-  run /config/workflow.yaml --workspace /workspace \
-  --db /state/runtime.db --output json --color never
+  --mount type=bind,src="$OPENAI_SECRET_FILE",dst=/run/secrets/openai,readonly \
+  "$AGENTCTL_IMAGE" run /workspace/config/workflow.yaml \
+  --workspace /workspace --db /state/runtime.db --output json --color never
 ```
 
-Kubernetes projected Secrets and Docker or Compose secrets can use the same
-`/run/secrets` workflow contract. Do not copy a secret into the image or state
-mount.
+`OPENAI_SECRET_FILE` names a protected file outside the source workspace; it is not the credential value. Use a provider workflow with explicitly allowed destinations and platform egress controls. Credential possession does not grant network authority. Add only the declared writable report mounts that workflow needs.
+
+Kubernetes projected Secrets and Docker or Compose secrets can use the same `/run/secrets` reference. Keep configuration, external instruction files and variable files beneath `/workspace/config`; they are ordinary captured inputs, not secret stores. Do not copy a secret into the image, source workspace, state or artifact mount. For environment injection, forward only the protected variable name with `--env OPENAI_API_KEY`, never its literal value.
 
 ## Resolution, redaction, and persistence
 

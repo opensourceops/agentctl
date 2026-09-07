@@ -1,5 +1,5 @@
 apiVersion: agentctl.dev/pack-lock/v1
-agentctl: 0.3.0
+agentctl: 0.4.0
 packs:
 - name: example.base
   version: 1.1.0

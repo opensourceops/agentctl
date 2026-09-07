@@ -687,7 +687,9 @@ def main():
     require(len(catalog) == 20 and [entry["id"] for entry in catalog] == [f"{n:02}" for n in range(1, 21)],
             "catalog must contain exactly the expected 20 distinct examples")
     disk = {directory.name for directory in ROOT.glob("[0-9][0-9]-*") if directory.is_dir()}
-    require(disk == {entry["directory"] for entry in catalog}, "catalog and example inventory differ")
+    standalone = json.loads((ROOT / "standalone-catalog.json").read_text())["examples"]
+    require([entry["id"] for entry in standalone] == ["21"], "unexpected standalone example inventory")
+    require(disk == {entry["directory"] for entry in catalog + standalone}, "catalog and example inventory differ")
     selected = set(args.only or [])
     require(not selected - {entry["id"] for entry in catalog}, "unknown example ID")
     ledger = None
@@ -702,6 +704,7 @@ def main():
                   "sourceWorktreeDirty": bool(dirty.stdout.strip()),
                   "supportSha256": {name: digest(ROOT / name) for name in ["run.py", "fixture.py", "live_budget.py", "package.py", "setup_example.py", "yaml_io.py", "requirements.txt", "operations.py", "format_operations.py", "service_operations.py", "local_service.py"]},
                   "binarySha256": digest(args.agentctl), "catalogSha256": digest(ROOT / "catalog.json"),
+                  "standaloneCatalogSha256": digest(ROOT / "standalone-catalog.json"),
                   "mode": args.mode, "results": []}
         for entry in catalog:
             if selected and entry["id"] not in selected:

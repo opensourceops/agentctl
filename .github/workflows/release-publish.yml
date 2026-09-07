@@ -1,0 +1,106 @@
+name: release-image-publication
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Retry image promotion for an already published, prepared release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize all versions, not just one tag, so older runs cannot race stable aliases.
+concurrency:
+  group: agentctl-dockerhub-publication
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.repository == 'opensourceops/agentctl'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve published release to reviewed source and complete assets
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 - "$RELEASE_TAG" <<'PY'
+          import sys
+          sys.path.insert(0, 'scripts/release')
+          from artifacts import version_parts
+          if not sys.argv[1].startswith('v'): raise ValueError('release tag must start with v')
+          version_parts(sys.argv[1][1:])
+          PY
+          source_sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$source_sha" origin/main
+          git checkout --detach "$source_sha"
+          gh api "repos/opensourceops/agentctl/releases/tags/$RELEASE_TAG" > published-release.json
+          jq -e '.draft == false and .published_at != null' published-release.json > /dev/null
+          mkdir release-bundle
+          gh release download "$RELEASE_TAG" --repo opensourceops/agentctl --dir release-bundle
+          test -f release-bundle/release-bundle.sigstore.json || { echo 'Missing complete prepared assets. Run release preparation with attach_draft before publishing.' >&2; exit 1; }
+          gh attestation verify release-bundle/release-bundle.json --repo opensourceops/agentctl \
+            --signer-workflow opensourceops/agentctl/.github/workflows/release-prep.yml \
+            --source-digest "$source_sha" --signer-digest "$source_sha" --deny-self-hosted-runners \
+            --bundle release-bundle/release-bundle.sigstore.json
+          python3 scripts/release/bundle.py --source "$source_sha" --tag "$RELEASE_TAG" verify \
+            --directory release-bundle > verified-bundle.json
+          prep_run="$(jq -r .preparationRunId verified-bundle.json)"
+          gh api "repos/opensourceops/agentctl/actions/runs/$prep_run" > preparation-run.json
+          jq -e --arg sha "$source_sha" '.head_sha == $sha and .event == "workflow_dispatch" and .conclusion == "success" and .path == ".github/workflows/release-prep.yml"' preparation-run.json > /dev/null
+          echo "source=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Check operator publishing configuration
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_USERNAME" || { echo 'Set Actions variable DOCKERHUB_USERNAME in opensourceops/agentctl.' >&2; exit 1; }
+          test -n "$DOCKERHUB_TOKEN" || { echo 'Set Actions secret DOCKERHUB_TOKEN with push access to opensourceops/agentctl.' >&2; exit 1; }
+      - name: Install OCI transport
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+          skopeo --version
+      - name: Authenticate only at the production publication boundary
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Promote exact tested digests, reconcile reruns, then advance eligible aliases
+        env:
+          SOURCE_SHA: ${{ steps.release.outputs.source }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          python3 scripts/release/publish.py --source "$SOURCE_SHA" --tag "$RELEASE_TAG" \
+            --directory release-bundle --output publication.json
+          {
+            echo "Release: https://github.com/opensourceops/agentctl/releases/tag/$RELEASE_TAG"
+            echo "Source: $SOURCE_SHA"
+            echo '```json'
+            cat publication.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain publication evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            publication.json
+            preparation-run.json
+            published-release.json
+          if-no-files-found: warn
+          retention-days: 90
