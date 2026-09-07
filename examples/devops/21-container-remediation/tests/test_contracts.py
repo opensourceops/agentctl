@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,8 @@ import publisher
 import runner
 import reconcile_guard
 import preflight
+import build_workflows
+import contract_check
 from yaml_io import load
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,12 +119,38 @@ class ContractTests(unittest.TestCase):
         for tool, filename in [('write_manifest', 'requirements.in'), ('write_lock', 'requirements.lock')]:
             schema = workflow['tools'][tool]['inputSchema']['properties']
             self.assertEqual(schema['path']['enum'], ['patch/'+filename])
-            self.assertEqual(schema['content']['enum'], [adapter.expected_files('2.7.0')[filename].decode()])
+            self.assertEqual(set(schema['content']), {'type', 'pattern'})
+            self.assertEqual(schema['content']['type'], 'string')
+            pattern = schema['content']['pattern']
+            expected = adapter.expected_files('2.7.0')[filename]
+            self.assertEqual(workflow['tools'][tool], build_workflows.write_tool(filename, expected))
+            self.assertIsNotNone(re.search(pattern, expected.decode()))
+            self.assertNotIn('\n', pattern)
+            for label, changed in contract_check.invalid_write_inputs(filename):
+                with self.subTest(tool=tool, mutation=label):
+                    accepted = changed['path'] in schema['path']['enum'] and re.search(pattern, changed['content']) is not None
+                    self.assertFalse(accepted)
         task = next(t for t in workflow['tasks'] if t['id'] == 'implement')
         self.assertEqual(task['with']['prompt'], '${{ tasks.validate-plan.output }}')
         eligibility = load(ROOT/'agentctl/eligibility.yaml')['spec']
         self.assertFalse(eligibility.get('providers'))
         self.assertFalse(eligibility.get('agents'))
+
+    def test_write_pattern_treats_regex_metacharacters_as_literal_bytes(self):
+        content = b'\\^$.*+?()[]{}| -#\t\r\n'
+        pattern = build_workflows.write_tool('fixture', content)['inputSchema']['properties']['content']['pattern']
+        self.assertIsNotNone(re.search(pattern, content.decode()))
+        for changed in [content[:-1], b'x'+content, content+b'\n', content.replace(b'.', b'x')]:
+            self.assertIsNone(re.search(pattern, changed.decode()))
+
+    def test_both_live_workflows_account_for_cache_reads_and_writes(self):
+        for name in ['remediate', 'preflight']:
+            with self.subTest(workflow=name):
+                prices = load(ROOT/f'agentctl/{name}.yaml')['spec']['runtime']['pricing']
+                self.assertEqual(prices['version'], 'openai-public-2026-09-08-estimate')
+                self.assertEqual(prices['models']['openai/gpt-6-astra'], {
+                    'inputMicrousdPerMillionTokens': 10000000, 'outputMicrousdPerMillionTokens': 50000000,
+                    'cacheReadMicrousdPerMillionTokens': 1000000, 'cacheWriteMicrousdPerMillionTokens': 12500000})
 
     def test_ci_separates_credentials_and_forbids_untrusted_dispatch(self):
         workflow = load(ROOT/'.github/workflows/remediation.yml')

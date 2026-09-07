@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Maintainer generation of readable authored YAML; runtime reads those YAML files."""
 from pathlib import Path
+from ruamel.yaml.scalarstring import LiteralScalarString
 import schemas
 from adapter import expected_files
 from yaml_io import dump
@@ -16,9 +17,17 @@ def action(name):
 
 
 def write_tool(filename, content):
+    # Escape only ECMA-262 syntax characters; Python's re.escape also escapes
+    # spaces and hyphens, which are invalid identity escapes in Unicode mode.
+    literal = ''.join('\\' + char if char in r'\^$.*+?()[]{}|' else
+                      {'\n': r'\n', '\r': r'\r', '\t': r'\t'}.get(char, char)
+                      for char in content.decode('utf-8'))
+    # `$` alone can match before a final newline. This assertion requires the
+    # absolute end, keeping the former single-value enum's exact byte scope.
+    pattern = LiteralScalarString('^' + literal + r'(?![\s\S])')
     return {"kind": "builtin.workspace.write", "description": "Write only the reviewed dependency bytes to the bounded staging file",
             "inputSchema": schemas.obj({"path": {"type": "string", "enum": ["patch/" + filename]},
-                                        "content": {"type": "string", "enum": [content.decode()]}}),
+                                        "content": {"type": "string", "pattern": pattern}}),
             "outputSchema": {"type": "object"}, "capability": "filesystem.write", "effectClass": "workspace_mutate", "risk": "medium",
             "idempotency": "idempotent", "retrySafe": True, "timeoutSeconds": 5, "approval": "policy"}
 
@@ -30,8 +39,9 @@ def build():
         "providers": {"openai": {"kind": "openai", "credential": {"env": "OPENAI_API_KEY"}}},
         "runtime": {"maxConcurrency": 1, "budgets": {"maxProviderRequests": 4, "maxTurns": 4, "maxToolCalls": 2, "maxTotalTokens": 20000,
                      "maxWallTimeSeconds": 600, "maxCostMicrousd": 1000000, "maxProcessOutputBytes": 1048576, "maxArtifactBytes": 1048576},
-                    "pricing": {"version": "openai-public-2026-09-06-estimate", "models": {"openai/gpt-6-astra": {
-                        "inputMicrousdPerMillionTokens": 10000000, "outputMicrousdPerMillionTokens": 50000000}}}},
+                    "pricing": {"version": "openai-public-2026-09-08-estimate", "models": {"openai/gpt-6-astra": {
+                        "inputMicrousdPerMillionTokens": 10000000, "outputMicrousdPerMillionTokens": 50000000,
+                        "cacheReadMicrousdPerMillionTokens": 1000000, "cacheWriteMicrousdPerMillionTokens": 12500000}}}},
         "actions": {name: action(name) for name in ["capture", "validate-plan", "validate-patch"]},
         "tools": {name: write_tool(filename, content) for name, (filename, content) in zip(["write_manifest", "write_lock"], expected_files("2.7.0").items())},
         "agents": {}, "tasks": [

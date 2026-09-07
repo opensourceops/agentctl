@@ -13,7 +13,7 @@ The sample application fetches a bounded response preview with redirects disable
 | Trusted prepare | Exact Git source archive, pinned Python base, application tests, real Trivy JSON, database and metadata SHA256 |
 | Analyzer A | No tools; strict plan naming captured advisories, evidence pointers, source/report identity, allowed files and fixed version |
 | Deterministic validation | PEP440 version checks, direct dependency mapping, complete advisory coverage and exact reviewed wheel inventory |
-| Implementer B | Two `builtin.workspace.write` tools; each accepts one exact staging path and exact reviewed content |
+| Implementer B | Two `builtin.workspace.write` tools; each accepts one exact staging path and an anchored pattern matching only the exact reviewed content |
 | Deterministic patch validation | Actual file bytes, original manifest hashes, allowed file inventory and stable source/patch fingerprint |
 | Trusted outer validation | Exact Git tree, application tests, actual image rebuild and rescan using the original database bytes |
 | Credential-free eligibility | All targeted findings absent, approved dependency installed, no new HIGH/CRITICAL finding, consistent source/patch/image/report/database identities |
@@ -105,7 +105,7 @@ Dispatch the full **Bounded container remediation** journey with `operation: rem
 - `image_mode: candidate` and the exact allowlisted `framework_sha` before publication, or `image_mode: published` after configuring the exact digest.
 - `budget_lease`: the coordinator's nonsecret JSON lease bound to this invocation.
 
-The default operation is `remediate`. The authored runtime ceilings are four provider requests, 20,000 total input-plus-output tokens, 600 seconds and US$1 estimated cost. The analyzer has one turn; the implementer has at most three turns and two tool calls. Both have 2,048 maximum output tokens. The coordinator also reserves aggregate allowance before dispatch, reconciles actual durable usage and retains uncertain reservations. Runtime ceilings must fit the assigned lease. The dated pricing estimate is recorded in the workflow, not presented as a guaranteed invoice.
+The default operation is `remediate`. The authored runtime ceilings are four provider requests, 20,000 total input-plus-output tokens, 600 seconds and US$1 estimated cost. The analyzer has one turn; the implementer has at most three turns and two tool calls. Both have 2,048 maximum output tokens. The coordinator also reserves aggregate allowance before dispatch, reconciles actual durable usage and retains uncertain reservations. Runtime ceilings must fit the assigned lease. The dated pricing estimate includes uncached input, cached input, cache writes and output. It is recorded in the workflow, not presented as a guaranteed invoice.
 
 CI executes these trusted stages from the demo checkout:
 

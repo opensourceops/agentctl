@@ -16,6 +16,14 @@ def gh(*args):
     return subprocess.check_output(['gh', *args], text=True)
 
 
+def find_release(tag):
+    releases = json.loads(gh('api', '--paginate', '--slurp', 'repos/' + REPO + '/releases?per_page=100'))
+    matching = [r for page in releases for r in page if r['tag_name'] == tag]
+    if len(matching) > 1:
+        raise ValueError('ambiguous release tag')
+    return matching[0] if matching else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True)
@@ -32,11 +40,8 @@ def main():
                     '--repo', REPO, '--signer-workflow', REPO + '/.github/workflows/release-prep.yml',
                     '--source-digest', args.source, '--signer-digest', args.source,
                     '--deny-self-hosted-runners', '--bundle', str(args.directory / 'release-bundle.sigstore.json')], check=True)
-    releases = json.loads(gh('api', '--paginate', '--slurp', 'repos/' + REPO + '/releases?per_page=100'))
-    matching = [r for page in releases for r in page if r['tag_name'] == args.tag]
-    if len(matching) > 1:
-        raise ValueError('ambiguous release tag')
-    if not matching:
+    record = find_release(args.tag)
+    if record is None:
         notes = args.directory / 'release-notes.md'
         notes.write_text(f"Release binaries and OCI archives were prepared from `{args.source}`.\n\n"
                          f"Preparation: https://github.com/{REPO}/actions/runs/{bundle['preparationRunId']}\n\n"
@@ -46,8 +51,11 @@ def main():
             command += ['--prerelease']
         gh(*command)
         notes.unlink()
-        matching = [json.loads(gh('api', 'repos/' + REPO + '/releases/tags/' + args.tag))]
-    record = matching[0]
+        # The tag endpoint does not return unpublished drafts. Resolve the exact
+        # created draft through the authenticated list, as on a resumed upload.
+        record = find_release(args.tag)
+        if record is None:
+            raise ValueError('created draft could not be located; inspect remote state before retrying')
     if not record['draft']:
         raise ValueError('release is already published; cannot replace immutable release assets')
     if bool(record['prerelease']) != release['prerelease']:
