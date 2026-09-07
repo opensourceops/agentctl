@@ -14,6 +14,57 @@ from yaml_io import load, dump
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def invalid_write_inputs(filename):
+    content = adapter.expected_files('2.7.0')[filename].decode()
+    variants = {
+        'extra-newline': content + '\n', 'crlf': content.replace('\n', '\r\n'),
+        'missing-newline': content[:-1], 'changed-version': content.replace('2.7.0', '2.7.1'),
+        'prefix': 'unexpected\n' + content, 'suffix': content + '# unexpected',
+        'unescaped-dot': content.replace('2.7.0', '2x7x0'), 'literal-backslash-n': content.replace('\n', r'\n'),
+    }
+    if filename == 'requirements.lock':
+        marker = content.index('--hash=sha256:') + len('--hash=sha256:')
+        variants['changed-hash'] = content[:marker] + ('1' if content[marker] == '0' else '0') + content[marker+1:]
+    values = [(label, {'path': 'patch/' + filename, 'content': value}) for label, value in variants.items()]
+    values.append(('wrong-path', {'path': 'patch/unreviewed.txt', 'content': content}))
+    return values
+
+
+def rejected_write_fixtures(engine, image, out):
+    authored = load(ROOT/'agentctl/remediate.yaml')['spec']
+    results = []
+    for tool, filename in [('write_manifest', 'requirements.in'), ('write_lock', 'requirements.lock')]:
+        for label, tool_input in invalid_write_inputs(filename):
+            workspace = out/tool/label/'workspace'
+            for name in ['patch', 'state']:
+                (workspace/name).mkdir(parents=True)
+            # Isolate each authored tool before any valid mutation. The real
+            # runtime must reject the scripted input before dispatching a write.
+            value = {'apiVersion': 'agentctl.dev/v1', 'kind': 'Workflow',
+                     'metadata': {'name': 'synthetic-rejected-write'}, 'spec': {
+                'policy': copy.deepcopy(authored['policy']),
+                'providers': {'fake': {'kind': 'fake'}},
+                'tools': {tool: copy.deepcopy(authored['tools'][tool])},
+                'agents': {'writer': {'provider': 'fake', 'model': 'scripted', 'instructions': 'SYNTHETIC input rejection fixture.',
+                           'tools': [tool], 'maxTurns': 2, 'maxToolCalls': 1,
+                           'providerOptions': {'toolInput': tool_input, 'finalText': 'fixture'}}},
+                'tasks': [{'id': 'write', 'uses': 'agent:writer', 'with': {'prompt': 'Attempt the supplied fixture input.'}}]}}
+            dump(workspace/'rejected.yaml', value)
+            failure = command(engine, image, workspace, ['run', 'rejected.yaml', '--workspace', '/workspace',
+                              '--db', 'state/run.sqlite3'], 'rejected-run', expected=4)
+            if 'tool input failed schema validation' not in failure.get('error', {}).get('message', ''):
+                raise ValueError('malformed input failed for a reason other than its tool schema')
+            identifier = run_id(failure)
+            inspection = command(engine, image, workspace, ['inspect', identifier, '--db', 'state/run.sqlite3'], 'inspect')['data']
+            if (inspection['run']['state'] != 'failed' or inspection['toolCalls']
+                    or inspection['budget']['usage']['providerRequests'] != 1
+                    or list((workspace/'patch').iterdir())):
+                raise ValueError('malformed tool input did not fail before all writes')
+            results.append({'tool': tool, 'case': label, 'runId': identifier, 'exitCode': 4,
+                            'toolCalls': 0, 'writtenFiles': []})
+    return results
+
+
 def fixture(out):
     workspace = out/'workspace'
     workspace.mkdir(parents=True)
@@ -188,7 +239,8 @@ def preflight_fixture(engine, image, out):
     value['metadata']['name'] = 'synthetic-responses-tool-preflight'
     value['spec']['providers'] = {'fake': {'kind': 'fake'}}
     agent = value['spec']['agents']['probe']
-    agent.update({'provider': 'fake', 'model': 'scripted', 'providerOptions': {'finalText': '{"echo":"ok"}', 'toolInput': {'text': 'ok'}}})
+    agent.update({'provider': 'fake', 'model': 'scripted', 'providerOptions': {
+        'finalText': '{"echo":"ok"}', 'toolInput': preflight.expected_echo_input()}})
     agent.pop('reasoning')
     prices = value['spec']['runtime']['pricing']['models']
     prices['fake/scripted'] = prices.pop('openai/gpt-6-astra')
@@ -196,8 +248,10 @@ def preflight_fixture(engine, image, out):
     result = command(engine, image, workspace, ['run', 'preflight.yaml', '--workspace', '/workspace', '--db', 'state/preflight.sqlite3'], 'scripted-run')
     inspection = runner.inspect_replay(engine, workspace, image, result, 'state/preflight.sqlite3', 'preflight')
     preflight.assert_compatibility(inspection)
+    if list((workspace/'patch').iterdir()):
+        raise ValueError('pure multiline preflight wrote a patch file')
     return {'runId': result['data']['runId'], 'toolCalls': 1, 'replayFreshEffects': 0, 'providerNetworkRequests': 0,
-            'evidenceKind': 'scripted fake provider; real pure echo tool and strict output'}
+            'writtenFiles': [], 'evidenceKind': 'scripted fake provider; real pure echo with both exact multiline tool schemas and strict output'}
 
 
 def run(args):
@@ -228,7 +282,8 @@ def run(args):
         raise ValueError('denied writes produced forbidden side effects')
     recovery = recovery_fixture(args.engine, args.tooling_image, out/'recovery')
     preflight_result = preflight_fixture(args.engine, args.tooling_image, out/'preflight')
-    runner.save(out/'report.json', {'preflight': preflight_result, 'recovery': recovery,
+    rejected_writes = rejected_write_fixtures(args.engine, args.tooling_image, out/'rejected-writes')
+    runner.save(out/'report.json', {'preflight': preflight_result, 'recovery': recovery, 'rejectedWrites': rejected_writes,
                 'evidenceKind': 'synthetic scanner and scripted fake provider; real CLI and OCI',
                 'toolingImage': args.tooling_image, 'runId': identifier, 'replayRunId': replay_id,
                 'eligibilityRunId': eligible['data']['runId'], 'denialRunId': run_id(failure),

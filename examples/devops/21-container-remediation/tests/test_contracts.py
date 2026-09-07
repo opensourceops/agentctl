@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,8 @@ import publisher
 import runner
 import reconcile_guard
 import preflight
+import build_workflows
+import contract_check
 from yaml_io import load
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,12 +119,43 @@ class ContractTests(unittest.TestCase):
         for tool, filename in [('write_manifest', 'requirements.in'), ('write_lock', 'requirements.lock')]:
             schema = workflow['tools'][tool]['inputSchema']['properties']
             self.assertEqual(schema['path']['enum'], ['patch/'+filename])
-            self.assertEqual(schema['content']['enum'], [adapter.expected_files('2.7.0')[filename].decode()])
+            self.assertEqual(set(schema['content']), {'type', 'pattern'})
+            self.assertEqual(schema['content']['type'], 'string')
+            pattern = schema['content']['pattern']
+            expected = adapter.expected_files('2.7.0')[filename]
+            self.assertEqual(workflow['tools'][tool], build_workflows.write_tool(filename, expected))
+            self.assertTrue(pattern.startswith('^') and pattern.endswith('$'))
+            self.assertNotIn('(?', pattern)
+            # Fullmatch models the reference exact-content language, not Python
+            # search semantics. The real CLI's 19 rejection cases prove the
+            # pinned Rust validator's absolute `$` boundary before any write.
+            self.assertIsNotNone(re.fullmatch(pattern, expected.decode()))
+            self.assertNotIn('\n', pattern)
+            for label, changed in contract_check.invalid_write_inputs(filename):
+                with self.subTest(tool=tool, mutation=label):
+                    accepted = changed['path'] in schema['path']['enum'] and re.fullmatch(pattern, changed['content']) is not None
+                    self.assertFalse(accepted)
         task = next(t for t in workflow['tasks'] if t['id'] == 'implement')
         self.assertEqual(task['with']['prompt'], '${{ tasks.validate-plan.output }}')
         eligibility = load(ROOT/'agentctl/eligibility.yaml')['spec']
         self.assertFalse(eligibility.get('providers'))
         self.assertFalse(eligibility.get('agents'))
+
+    def test_write_pattern_treats_regex_metacharacters_as_literal_bytes(self):
+        content = b'\\^$.*+?()[]{}| -#\t\r\n'
+        pattern = build_workflows.write_tool('fixture', content)['inputSchema']['properties']['content']['pattern']
+        self.assertIsNotNone(re.fullmatch(pattern, content.decode()))
+        for changed in [content[:-1], b'x'+content, content+b'\n', content.replace(b'.', b'x')]:
+            self.assertIsNone(re.fullmatch(pattern, changed.decode()))
+
+    def test_both_live_workflows_account_for_cache_reads_and_writes(self):
+        for name in ['remediate', 'preflight']:
+            with self.subTest(workflow=name):
+                prices = load(ROOT/f'agentctl/{name}.yaml')['spec']['runtime']['pricing']
+                self.assertEqual(prices['version'], 'openai-public-2026-09-08-estimate')
+                self.assertEqual(prices['models']['openai/gpt-6-astra'], {
+                    'inputMicrousdPerMillionTokens': 10000000, 'outputMicrousdPerMillionTokens': 50000000,
+                    'cacheReadMicrousdPerMillionTokens': 1000000, 'cacheWriteMicrousdPerMillionTokens': 12500000})
 
     def test_ci_separates_credentials_and_forbids_untrusted_dispatch(self):
         workflow = load(ROOT/'.github/workflows/remediation.yml')
@@ -172,6 +206,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(workflow['agents']['probe']['reasoning'], {'effort': 'high'})
         self.assertEqual(workflow['agents']['probe']['maxToolCalls'], 1)
         self.assertEqual(workflow['tools']['echo']['effectClass'], 'pure')
+        self.assertEqual(workflow['tools']['echo']['capability'], 'internal')
+        self.assertEqual(workflow['tools']['echo']['kind'], 'builtin.echo')
+        self.assertEqual(workflow['policy']['writableRoots'], ['state'])
         self.assertFalse(workflow['policy'].get('processAllowlist'))
         job = load(ROOT/'.github/workflows/remediation.yml')['jobs']['preflight']
         self.assertIn("inputs.operation == 'preflight'", job['if'])
@@ -179,10 +216,23 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn('runner.py prepare', json.dumps(job))
         self.assertNotIn('publisher.py', json.dumps(job))
 
+    def test_preflight_echo_exercises_both_actual_multiline_write_input_schemas(self):
+        preflight_spec = load(ROOT/'agentctl/preflight.yaml')['spec']
+        remediation = load(ROOT/'agentctl/remediate.yaml')['spec']
+        echo = preflight_spec['tools']['echo']
+        self.assertEqual(echo['inputSchema'], echo['outputSchema'])
+        self.assertEqual(set(echo['inputSchema']['required']), {'manifest', 'lock'})
+        self.assertIs(echo['inputSchema']['additionalProperties'], False)
+        for name, tool in [('manifest', 'write_manifest'), ('lock', 'write_lock')]:
+            self.assertEqual(echo['inputSchema']['properties'][name], remediation['tools'][tool]['inputSchema'])
+        prompt = preflight_spec['tasks'][0]['with']['prompt']
+        self.assertEqual(prompt, preflight.expected_echo_input())
+
     def test_preflight_checks_actual_tool_result_and_strict_output(self):
         good = {'run': {'state': 'succeeded', 'output': {'preflight': {'echo': 'ok'}}},
                 'toolCalls': [{'toolId': 'echo', 'status': 'succeeded', 'effectId': 'fixture-effect'}],
-                'effects': [{'request': {'id': 'fixture-effect', 'input': {'text': 'ok'}}, 'result': {'text': 'ok'}, 'status': 'succeeded'}],
+                'effects': [{'request': {'id': 'fixture-effect', 'input': preflight.expected_echo_input()},
+                             'result': preflight.expected_echo_input(), 'status': 'succeeded'}],
                 'budget': {'usage': {'providerRequests': 2, 'inputTokens': 100, 'outputTokens': 50, 'costMicrousd': 3500}}}
         preflight.assert_compatibility(good)
         for field, value in [('toolCalls', []), ('effects', []), ('run', {'state': 'succeeded', 'output': {'preflight': {'echo': 'different'}}})]:
@@ -190,6 +240,17 @@ class ContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError): preflight.assert_compatibility({**good, field: value})
         exceeded = copy.deepcopy(good); exceeded['budget']['usage']['inputTokens'] = 8000
         with self.assertRaises(ValueError): preflight.assert_compatibility(exceeded)
+        for location in ['input', 'result']:
+            for part in ['manifest', 'lock']:
+                with self.subTest(location=location, part=part):
+                    changed = copy.deepcopy(good)
+                    effect = changed['effects'][0]
+                    value = effect['request']['input'] if location == 'input' else effect['result']
+                    value[part]['content'] += '\n'
+                    with self.assertRaises(ValueError): preflight.assert_compatibility(changed)
+        old_probe = copy.deepcopy(good)
+        old_probe['effects'][0].update({'request': {'id': 'fixture-effect', 'input': {'text': 'ok'}}, 'result': {'text': 'ok'}})
+        with self.assertRaises(ValueError): preflight.assert_compatibility(old_probe)
 
     def test_publisher_git_cannot_fall_back_to_inherited_credentials(self):
         result = publisher.git_environment({'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'credential.helper',

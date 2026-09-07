@@ -6,7 +6,14 @@ from pathlib import Path
 import os
 import shutil
 import runner
+from adapter import expected_files
 from yaml_io import load, dump
+
+
+def expected_echo_input():
+    files = expected_files('2.7.0')
+    return {name: {'path': 'patch/' + filename, 'content': files[filename].decode()}
+            for name, filename in [('manifest', 'requirements.in'), ('lock', 'requirements.lock')]}
 
 
 def configure(workspace):
@@ -28,7 +35,8 @@ def assert_compatibility(inspection):
         raise ValueError('preflight did not complete exactly one real echo tool call')
     effects = {effect['request']['id']: effect for effect in inspection.get('effects', [])}
     effect = effects.get(calls[0]['effectId'], {})
-    if effect.get('status') != 'succeeded' or effect.get('request', {}).get('input') != {'text': 'ok'} or effect.get('result') != {'text': 'ok'}:
+    expected = expected_echo_input()
+    if effect.get('status') != 'succeeded' or effect.get('request', {}).get('input') != expected or effect.get('result') != expected:
         raise ValueError('durable tool input/result did not preserve the exact scoped value')
     usage = inspection['budget']['usage']
     if not 2 <= usage['providerRequests'] <= 3 or usage['inputTokens'] + usage['outputTokens'] > 8000 or usage['costMicrousd'] > 200000:
