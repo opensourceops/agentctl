@@ -6654,15 +6654,18 @@ impl Runtime {
                                     self.clock.now(),
                                 )?;
                             }
-                            let actual = provider_budget_actual(workflow, agent, &Usage::default());
-                            self.reconcile_run_budget(
-                                &run.run_id,
-                                &task.task_id,
-                                &effect.id,
-                                &actual,
-                                "provider_error",
-                                trace_id,
-                            )?;
+                            if !matches!(error, ProviderError::UsageUnavailable { .. }) {
+                                let actual =
+                                    provider_budget_actual(workflow, agent, &Usage::default());
+                                self.reconcile_run_budget(
+                                    &run.run_id,
+                                    &task.task_id,
+                                    &effect.id,
+                                    &actual,
+                                    "provider_error",
+                                    trace_id,
+                                )?;
+                            }
                             return Err(RuntimeError::Provider(error));
                         }
                     }
@@ -6678,7 +6681,11 @@ impl Runtime {
                 &serde_json::to_value(&continuation)?,
                 self.clock.now(),
             )?;
-            if response.finish_reason == FinishReason::ToolCalls || !response.tool_calls.is_empty()
+            if matches!(
+                response.finish_reason,
+                FinishReason::Complete | FinishReason::ToolCalls
+            ) && (response.finish_reason == FinishReason::ToolCalls
+                || !response.tool_calls.is_empty())
             {
                 messages.push(Message::Assistant(response.assistant_content.clone()));
                 let mut results = Vec::new();
@@ -6913,6 +6920,20 @@ impl Runtime {
                     return Err(RuntimeError::Task {
                         task: task.task_id.clone(),
                         message: "provider reached maximum output tokens".to_owned(),
+                    });
+                }
+                FinishReason::ContentFilter => {
+                    return Err(RuntimeError::Task {
+                        task: task.task_id.clone(),
+                        message: "provider response was incomplete due to content filtering"
+                            .to_owned(),
+                    });
+                }
+                FinishReason::Incomplete => {
+                    return Err(RuntimeError::Task {
+                        task: task.task_id.clone(),
+                        message: "provider response was incomplete for an unspecified reason"
+                            .to_owned(),
                     });
                 }
                 FinishReason::Refusal => {
@@ -9198,7 +9219,10 @@ fn token_cost(tokens: u64, rate_microusd_per_million_tokens: u64) -> u64 {
 const fn provider_effect_is_uncertain(error: &ProviderError) -> bool {
     matches!(
         error,
-        ProviderError::Timeout | ProviderError::Cancelled | ProviderError::Http { status: 0, .. }
+        ProviderError::Timeout
+            | ProviderError::Cancelled
+            | ProviderError::Http { status: 0, .. }
+            | ProviderError::UsageUnavailable { .. }
     )
 }
 
@@ -9450,6 +9474,41 @@ mod tests {
                     ..Usage::default()
                 },
                 finish_reason: FinishReason::Complete,
+            })
+        }
+    }
+
+    struct UsageAccountingProvider {
+        calls: AtomicU64,
+        known_usage: Option<Usage>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for UsageAccountingProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn complete(
+            &self,
+            _request: &ProviderRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderResponse, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let usage =
+                self.known_usage
+                    .clone()
+                    .ok_or_else(|| ProviderError::UsageUnavailable {
+                        response_id: Some("resp_usage_fixture".to_owned()),
+                    })?;
+            Ok(ProviderResponse {
+                response_id: Some("resp_usage_fixture".to_owned()),
+                text: String::new(),
+                tool_calls: Vec::new(),
+                assistant_content: Vec::new(),
+                continuation: None,
+                usage,
+                finish_reason: FinishReason::MaxTokens,
             })
         }
     }
@@ -10472,6 +10531,379 @@ mod tests {
             .workflow;
         let plan = compile(&workflow, "fixture.yaml").expect("compile fixture");
         (workflow, plan)
+    }
+
+    #[tokio::test]
+    async fn unavailable_provider_usage_preserves_reservations_across_recovery() {
+        let directory = tempdir().expect("tempdir");
+        let store = SqliteStore::open_memory().expect("store");
+        let provider = Arc::new(UsageAccountingProvider {
+            calls: AtomicU64::new(0),
+            known_usage: None,
+        });
+        let runtime = runtime(store.clone(), directory.path())
+            .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+        let (workflow, plan) = usage_accounting_fixture();
+        let run_id = match runtime
+            .start(
+                &workflow,
+                &plan,
+                serde_json::json!({}),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed {
+                run_id, message, ..
+            }) => {
+                assert!(message.contains("token usage is unavailable"));
+                run_id
+            }
+            other => panic!("expected unknown usage failure, got {other:?}"),
+        };
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        let effects = store.list_effects(&run_id).expect("effects");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].status, EffectStatus::Uncertain);
+        let budget = store.budget_snapshot(&run_id).expect("budget");
+        assert_eq!(budget.reserved.provider_requests, 1);
+        assert!(budget.reserved.input_tokens > 0);
+        assert_eq!(budget.reserved.output_tokens, 64);
+        assert!(budget.reserved.cost_microusd > 0);
+        assert_eq!(budget.usage.provider_requests, 0);
+        assert!(store.tool_calls(&run_id).expect("tools").is_empty());
+        assert!(!directory.path().join("forbidden.txt").exists());
+
+        assert!(matches!(
+            runtime
+                .resume(&run_id, RunOptions::default(), &CancellationToken::new())
+                .await,
+            Err(RuntimeError::UncertainEffect { .. })
+        ));
+        let before_replay = store.stats().expect("stats");
+        assert!(matches!(
+            runtime.replay(&run_id).await,
+            Err(RuntimeError::InvalidState(message)) if message.contains("non-terminal task")
+        ));
+        assert_eq!(
+            store.stats().expect("unchanged replay stats"),
+            before_replay
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .budget_snapshot(&run_id)
+                .expect("retained budget")
+                .reserved,
+            budget.reserved
+        );
+        assert!(!directory.path().join("forbidden.txt").exists());
+
+        // An explicit terminal retry is a new run with a fresh reservation.
+        // It must not release the unknown charge belonging to its source.
+        let retry = runtime
+            .plan_retry(&run_id, &workflow, &plan, &[], true, false)
+            .expect("explicit retry plan");
+        assert!(retry.compatible);
+        let retry_id = match runtime
+            .retry(
+                &workflow,
+                &plan,
+                retry,
+                Some("explicit new attempt"),
+                RunOptions::default(),
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            Err(RuntimeError::RunFailed { run_id, .. }) => run_id,
+            other => panic!("expected another unknown usage failure, got {other:?}"),
+        };
+        assert_ne!(retry_id, run_id);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            store
+                .budget_snapshot(&run_id)
+                .expect("source reservation")
+                .reserved,
+            budget.reserved
+        );
+        assert_eq!(
+            store
+                .budget_snapshot(&retry_id)
+                .expect("new reservation")
+                .reserved
+                .provider_requests,
+            1
+        );
+        assert_eq!(
+            store.list_effects(&run_id).expect("source effects")[0].status,
+            EffectStatus::Uncertain
+        );
+        assert!(!directory.path().join("forbidden.txt").exists());
+    }
+
+    fn usage_accounting_fixture() -> (Workflow, CompiledPlan) {
+        compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: usage-accounting }
+spec:
+  runtime:
+    budgets: { maxProviderRequests: 3, maxTotalTokens: 10000, maxCostMicrousd: 1000000 }
+    pricing:
+      version: fixture-prices
+      models:
+        fake/fake: { inputMicrousdPerMillionTokens: 10000000, outputMicrousdPerMillionTokens: 50000000 }
+  policy: { approval: never, writableRoots: [.] }
+  providers: { fake: { kind: fake } }
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: bounded
+      maxTurns: 1
+      maxOutputTokens: 64
+      retry: { maxAttempts: 3 }
+  actions:
+    mark: { kind: builtin.write }
+  tasks:
+    - { id: work, uses: "agent:worker", with: { prompt: small } }
+    - { id: mark, uses: "action:mark", needs: [work], with: { path: forbidden.txt, content: must-not-write } }
+"#,
+        )
+    }
+
+    #[tokio::test]
+    async fn known_incomplete_provider_usage_reconciles_actual_amount_including_zero() {
+        for usage in [
+            Usage::default(),
+            Usage {
+                input_tokens: 12,
+                output_tokens: 8,
+                ..Usage::default()
+            },
+        ] {
+            let directory = tempdir().expect("tempdir");
+            let store = SqliteStore::open_memory().expect("store");
+            let provider = Arc::new(UsageAccountingProvider {
+                calls: AtomicU64::new(0),
+                known_usage: Some(usage.clone()),
+            });
+            let runtime = runtime(store.clone(), directory.path())
+                .with_registry(RuntimeRegistry::default().with_provider("fake", provider.clone()));
+            let (workflow, plan) = usage_accounting_fixture();
+            let run_id = match runtime
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await
+            {
+                Err(RuntimeError::RunFailed {
+                    run_id, message, ..
+                }) => {
+                    assert!(message.contains("maximum output tokens"));
+                    run_id
+                }
+                other => panic!("expected known incomplete response, got {other:?}"),
+            };
+            let budget = store.budget_snapshot(&run_id).expect("budget");
+            assert_eq!(budget.reserved, BudgetCounters::default());
+            assert_eq!(budget.usage.provider_requests, 1);
+            assert_eq!(budget.usage.input_tokens, usage.input_tokens);
+            assert_eq!(budget.usage.output_tokens, usage.output_tokens);
+            assert_eq!(
+                budget.usage.cost_microusd,
+                usage.input_tokens * 10 + usage.output_tokens * 50
+            );
+            assert_eq!(
+                store.list_effects(&run_id).expect("effects")[0].status,
+                EffectStatus::Succeeded
+            );
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+            assert!(!directory.path().join("forbidden.txt").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_provider_responses_never_dispatch_tools_and_replay_without_effects() {
+        struct FinishReasonProvider {
+            inner: ToolCallingProvider,
+            first_finish: FinishReason,
+        }
+
+        #[async_trait]
+        impl ModelProvider for FinishReasonProvider {
+            fn name(&self) -> &'static str {
+                "fake"
+            }
+
+            async fn complete(
+                &self,
+                request: &ProviderRequest,
+                cancellation: &CancellationToken,
+            ) -> Result<ProviderResponse, ProviderError> {
+                let mut response = self.inner.complete(request, cancellation).await?;
+                if !response.tool_calls.is_empty() {
+                    response.finish_reason = self.first_finish;
+                    response.usage = Usage {
+                        input_tokens: 12,
+                        output_tokens: 8,
+                        ..Usage::default()
+                    };
+                }
+                Ok(response)
+            }
+        }
+
+        let (workflow, plan) = compile_fixture(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: terminal-tool-response }
+spec:
+  runtime:
+    budgets: { maxProviderRequests: 3, maxTotalTokens: 10000, maxCostMicrousd: 1000000 }
+    pricing:
+      version: fixture-prices
+      models:
+        fake/fake: { inputMicrousdPerMillionTokens: 10000000, outputMicrousdPerMillionTokens: 50000000 }
+  policy: { toolsAllow: [echo], approval: never }
+  providers: { fake: { kind: fake } }
+  tools:
+    echo:
+      kind: builtin.echo
+      description: echo
+      inputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      outputSchema: { type: object, properties: { text: { type: string } }, required: [text], additionalProperties: false }
+      capability: internal
+      risk: low
+      effectClass: pure
+      idempotency: pure
+      retrySafe: true
+      timeoutSeconds: 5
+      approval: never
+  agents:
+    worker:
+      provider: fake
+      model: fake
+      instructions: use the tool once
+      tools: [echo]
+      maxTurns: 2
+      maxToolCalls: 1
+      maxOutputTokens: 64
+  tasks: [{ id: work, uses: "agent:worker", with: { prompt: hello } }]
+"#,
+        );
+        for (finish, terminal_message) in [
+            (FinishReason::MaxTokens, Some("maximum output tokens")),
+            (FinishReason::ContentFilter, Some("content filtering")),
+            (FinishReason::Incomplete, Some("unspecified reason")),
+            (FinishReason::Refusal, Some("refused the request")),
+            (FinishReason::Complete, None),
+            (FinishReason::ToolCalls, None),
+        ] {
+            let directory = tempdir().expect("tempdir");
+            let store = SqliteStore::open_memory().expect("store");
+            let provider = Arc::new(FinishReasonProvider {
+                inner: ToolCallingProvider::default(),
+                first_finish: finish,
+            });
+            let tool = Arc::new(SingleUseRepairTool::new());
+            let execution_runtime = runtime(store.clone(), directory.path()).with_registry(
+                RuntimeRegistry::default()
+                    .with_provider("fake", provider.clone())
+                    .with_tool("echo", tool.clone()),
+            );
+            let result = execution_runtime
+                .start(
+                    &workflow,
+                    &plan,
+                    serde_json::json!({}),
+                    RunOptions::default(),
+                    &CancellationToken::new(),
+                )
+                .await;
+            let (run_id, expected_state, expected_calls) = if let Some(message) = terminal_message {
+                match result {
+                    Err(RuntimeError::RunFailed {
+                        run_id,
+                        message: actual,
+                        ..
+                    }) => {
+                        assert!(actual.contains(message), "{finish:?}: {actual}");
+                        (run_id, RunState::Failed, 1)
+                    }
+                    other => {
+                        panic!("expected {finish:?} to stop before tool dispatch, got {other:?}")
+                    }
+                }
+            } else {
+                let outcome = result.expect("completed tool response still executes");
+                assert_eq!(outcome.state, RunState::Succeeded);
+                (outcome.run_id, RunState::Succeeded, 2)
+            };
+            let expected_tools = expected_calls - 1;
+            assert_eq!(provider.inner.0.load(Ordering::SeqCst), expected_calls);
+            assert_eq!(tool.calls.load(Ordering::SeqCst), expected_tools);
+            assert_eq!(
+                store.tool_calls(&run_id).unwrap().len() as u64,
+                expected_tools
+            );
+            let effects = store.list_effects(&run_id).expect("source effects");
+            assert_eq!(effects.len() as u64, expected_calls + expected_tools);
+            let recorded_response: ProviderResponse = serde_json::from_value(
+                effects
+                    .iter()
+                    .filter_map(|effect| effect.result.as_ref())
+                    .find(|value| value["responseId"] == "tool-turn")
+                    .expect("durable provider response")
+                    .clone(),
+            )
+            .expect("read recorded finish reason");
+            assert_eq!(recorded_response.finish_reason, finish);
+            assert_eq!(recorded_response.tool_calls.len(), 1);
+            assert!(
+                effects
+                    .iter()
+                    .all(|effect| effect.status == EffectStatus::Succeeded)
+            );
+            let budget = store.budget_snapshot(&run_id).expect("settled usage");
+            assert_eq!(budget.reserved, BudgetCounters::default());
+            assert_eq!(budget.usage.provider_requests, expected_calls);
+            assert_eq!(budget.usage.input_tokens, 12);
+            assert_eq!(budget.usage.output_tokens, 8);
+            assert_eq!(budget.usage.cost_microusd, 520);
+            let replay_runtime = runtime(store.clone(), directory.path()).with_registry(
+                RuntimeRegistry::default()
+                    .with_provider("fake", Arc::new(PanicProvider))
+                    .with_tool(
+                        "echo",
+                        Arc::new(PanicTool {
+                            contract: tool.contract().clone(),
+                        }),
+                    ),
+            );
+            let replay = replay_runtime
+                .replay(&run_id)
+                .await
+                .expect("recorded replay");
+            assert_eq!(replay.state, expected_state);
+            assert!(store.list_effects(&replay.run_id).unwrap().is_empty());
+            assert!(store.tool_calls(&replay.run_id).unwrap().is_empty());
+            assert_eq!(
+                store.budget_snapshot(&replay.run_id).unwrap().usage,
+                BudgetCounters::default()
+            );
+            assert_eq!(provider.inner.0.load(Ordering::SeqCst), expected_calls);
+            assert_eq!(tool.calls.load(Ordering::SeqCst), expected_tools);
+        }
     }
 
     #[tokio::test]

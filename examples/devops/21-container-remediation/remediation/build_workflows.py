@@ -18,11 +18,12 @@ def action(name):
 
 
 def write_tool(filename, content):
+    decoded = content.decode('utf-8')
     # Escape only ECMA-262 syntax characters; Python's re.escape also escapes
     # spaces and hyphens, which are invalid identity escapes in Unicode mode.
     literal = ''.join('\\' + char if char in r'\^$.*+?()[]{}|' else
                       {'\n': r'\n', '\r': r'\r', '\t': r'\t'}.get(char, char)
-                      for char in content.decode('utf-8'))
+                      for char in decoded)
     # Pinned jsonschema 0.37 / fancy-regex 0.16 maps `$` to absolute EndText
     # without multiline flags. Real CLI rejection fixtures prove this boundary;
     # Python search / ECMA soft-end semantics are not the runtime contract.
@@ -30,7 +31,8 @@ def write_tool(filename, content):
     pattern = LiteralScalarString('^' + literal + '$')
     return {"kind": "builtin.workspace.write", "description": "Write only the reviewed dependency bytes to the bounded staging file",
             "inputSchema": schemas.obj({"path": {"type": "string", "enum": ["patch/" + filename]},
-                                        "content": {"type": "string", "pattern": pattern}}),
+                                        "content": {"type": "string", "pattern": pattern,
+                                                    "minLength": len(decoded), "maxLength": len(decoded)}}),
             "outputSchema": {"type": "object"}, "capability": "filesystem.write", "effectClass": "workspace_mutate", "risk": "medium",
             "idempotency": "idempotent", "retrySafe": True, "timeoutSeconds": 5, "approval": "policy"}
 
@@ -84,7 +86,7 @@ def build():
                   "timeoutSeconds": 5, "approval": "policy"}},
         "agents": {"probe": {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
                    "instructionsFile": "instructions/preflight.md", "tools": ["echo"], "maxTurns": 3, "maxToolCalls": 1,
-                   "maxOutputTokens": 512, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
+                   "maxOutputTokens": 2048, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
         "actions": {"verify": {"kind": "builtin.assert"}},
         "tasks": [{"id": "probe", "uses": "agent:probe", "with": {"prompt": expected_echo_input()}},
                   {"id": "verify", "uses": "action:verify", "needs": ["probe"],
