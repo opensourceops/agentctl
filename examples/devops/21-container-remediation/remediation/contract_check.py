@@ -244,8 +244,9 @@ def preflight_fixture(engine, image, out):
     agent.pop('reasoning')
     prices = value['spec']['runtime']['pricing']['models']
     prices['fake/scripted'] = prices.pop('openai/gpt-6-astra')
-    dump(workspace/'preflight.yaml', value)
-    result = command(engine, image, workspace, ['run', 'preflight.yaml', '--workspace', '/workspace', '--db', 'state/preflight.sqlite3'], 'scripted-run')
+    # Keep the inspected authored file intact; some OCI shared mounts cache its size.
+    dump(workspace/'scripted-preflight.yaml', value)
+    result = command(engine, image, workspace, ['run', 'scripted-preflight.yaml', '--workspace', '/workspace', '--db', 'state/preflight.sqlite3'], 'scripted-run')
     inspection = runner.inspect_replay(engine, workspace, image, result, 'state/preflight.sqlite3', 'preflight')
     preflight.assert_compatibility(inspection)
     if list((workspace/'patch').iterdir()):
