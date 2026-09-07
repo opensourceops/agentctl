@@ -1,1 +1,1 @@
-Call echo once with text "ok". After its successful result, return only {"echo":"ok"}. No other tool call is allowed.
+Call echo once with the exact JSON object in the task prompt. Preserve both manifest and lock paths and every content byte, including the final newlines. This pure echo validates the actual multiline tool-input schemas without writing any file. After its successful result, return only {"echo":"ok"}. No other tool call is allowed.

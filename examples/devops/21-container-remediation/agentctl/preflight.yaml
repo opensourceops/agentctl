@@ -2,7 +2,7 @@ apiVersion: agentctl.dev/v1
 kind: Workflow
 metadata:
   name: responses-tool-preflight
-  description: One scoped echo and strict output before the full live journey.
+  description: Echo both exact multiline tool inputs before the full live journey.
 spec:
   policy:
     workspaceRoot: .
@@ -36,17 +36,44 @@ spec:
   tools:
     echo:
       kind: builtin.echo
-      description: Echo ok
+      description: Echo the exact reviewed manifest and lock inputs without writing files
       inputSchema: &id001
         type: object
         additionalProperties: false
         required:
-          - text
+          - manifest
+          - lock
         properties:
-          text:
-            type: string
-            enum:
-              - ok
+          manifest:
+            type: object
+            additionalProperties: false
+            required:
+              - path
+              - content
+            properties:
+              path:
+                type: string
+                enum:
+                  - patch/requirements.in
+              content:
+                type: string
+                pattern: |-
+                  ^# Deliberately vulnerable sample dependency; never install into the tooling environment\.\nurllib3==2\.7\.0\n$
+          lock:
+            type: object
+            additionalProperties: false
+            required:
+              - path
+              - content
+            properties:
+              path:
+                type: string
+                enum:
+                  - patch/requirements.lock
+              content:
+                type: string
+                pattern: |-
+                  ^# Hash-locked pure Python wheel; application dependencies only\.\nurllib3==2\.7\.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\n$
       outputSchema: *id001
       capability: internal
       effectClass: pure
@@ -87,7 +114,13 @@ spec:
     - id: probe
       uses: agent:probe
       with:
-        prompt: Run the echo preflight.
+        prompt:
+          manifest:
+            path: patch/requirements.in
+            content: "# Deliberately vulnerable sample dependency; never install into the tooling environment.\nurllib3==2.7.0\n"
+          lock:
+            path: patch/requirements.lock
+            content: "# Hash-locked pure Python wheel; application dependencies only.\nurllib3==2.7.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\n"
     - id: verify
       uses: action:verify
       needs:

@@ -239,7 +239,8 @@ def preflight_fixture(engine, image, out):
     value['metadata']['name'] = 'synthetic-responses-tool-preflight'
     value['spec']['providers'] = {'fake': {'kind': 'fake'}}
     agent = value['spec']['agents']['probe']
-    agent.update({'provider': 'fake', 'model': 'scripted', 'providerOptions': {'finalText': '{"echo":"ok"}', 'toolInput': {'text': 'ok'}}})
+    agent.update({'provider': 'fake', 'model': 'scripted', 'providerOptions': {
+        'finalText': '{"echo":"ok"}', 'toolInput': preflight.expected_echo_input()}})
     agent.pop('reasoning')
     prices = value['spec']['runtime']['pricing']['models']
     prices['fake/scripted'] = prices.pop('openai/gpt-6-astra')
@@ -247,8 +248,10 @@ def preflight_fixture(engine, image, out):
     result = command(engine, image, workspace, ['run', 'preflight.yaml', '--workspace', '/workspace', '--db', 'state/preflight.sqlite3'], 'scripted-run')
     inspection = runner.inspect_replay(engine, workspace, image, result, 'state/preflight.sqlite3', 'preflight')
     preflight.assert_compatibility(inspection)
+    if list((workspace/'patch').iterdir()):
+        raise ValueError('pure multiline preflight wrote a patch file')
     return {'runId': result['data']['runId'], 'toolCalls': 1, 'replayFreshEffects': 0, 'providerNetworkRequests': 0,
-            'evidenceKind': 'scripted fake provider; real pure echo tool and strict output'}
+            'writtenFiles': [], 'evidenceKind': 'scripted fake provider; real pure echo with both exact multiline tool schemas and strict output'}
 
 
 def run(args):

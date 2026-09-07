@@ -345,7 +345,7 @@ spec:
           content:
             type: string
             pattern: |-
-              ^# Deliberately vulnerable sample dependency; never install into the tooling environment\.\nurllib3==2\.7\.0\n(?![\s\S])
+              ^# Deliberately vulnerable sample dependency; never install into the tooling environment\.\nurllib3==2\.7\.0\n$
       outputSchema:
         type: object
       capability: filesystem.write
@@ -372,7 +372,7 @@ spec:
           content:
             type: string
             pattern: |-
-              ^# Hash-locked pure Python wheel; application dependencies only\.\nurllib3==2\.7\.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\n(?![\s\S])
+              ^# Hash-locked pure Python wheel; application dependencies only\.\nurllib3==2\.7\.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\n$
       outputSchema:
         type: object
       capability: filesystem.write
