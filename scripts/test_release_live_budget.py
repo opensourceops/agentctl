@@ -51,6 +51,9 @@ class ReleaseBudgetTests(unittest.TestCase):
         with budget.LiveBudget(path) as ledger:
             return budget.reservation_rows(ledger)
 
+    def original_row(self, reservation_id):
+        return next(row for row in self.rows(self.original) if row["id"] == reservation_id)
+
     def totals(self, path):
         with budget.LiveBudget(path) as ledger:
             return ledger.summary()["charged"]
@@ -80,7 +83,14 @@ class ReleaseBudgetTests(unittest.TestCase):
         self.assertEqual(row["charged"], {key: 0 for key in budget.FIELDS})
         self.assertEqual(row["metadata"]["skippedProofSha256"], budget.digest(row["metadata"]["skippedProof"]))
         self.assertNotIn("receiptSha256", row["metadata"])
-        self.assertEqual(self.rows(self.original)[-1]["charged"], budget.TASK_MAXIMUM)
+        # Equal timestamps sort by ID, not insertion order. Check ties and both orders.
+        for old_created, envelope_created in [(0, 0), (0, 1), (1, 0)]:
+            with self.subTest(old_created=old_created, envelope_created=envelope_created):
+                with budget.LiveBudget(self.original) as ledger:
+                    ledger.connection.execute("UPDATE reservations SET created=? WHERE id=?", (old_created, self.old_id))
+                    ledger.connection.execute("UPDATE reservations SET created=? WHERE id=?", (envelope_created, leased["envelopeId"]))
+                self.assertEqual(self.original_row(leased["envelopeId"])["charged"], budget.TASK_MAXIMUM)
+                self.assertEqual(self.original_row(self.old_id)["charged"], self.old_uncertain)
         self.assertEqual(budget.close(self.task)["original"]["charged"], self.old_uncertain)
 
     def test_skipped_proof_requires_completed_exact_source_repository_workflow_ref_and_attempt(self):
@@ -193,7 +203,7 @@ class ReleaseBudgetTests(unittest.TestCase):
             count += 1
             self.assertEqual(self.rows(self.execution)[-1]["status"], "reserved")
             self.assertEqual(self.rows(self.task)[-1]["status"], "reserved")
-            self.assertEqual(self.rows(self.original)[-1]["status"], "reserved")
+            self.assertEqual(self.original_row(leased["envelopeId"])["status"], "reserved")
             if timeout:
                 raise subprocess.TimeoutExpired(argv, options["timeout"])
             return subprocess.CompletedProcess(argv, 0,
@@ -211,7 +221,7 @@ class ReleaseBudgetTests(unittest.TestCase):
         first = self.initialize()
         self.assertEqual(first, self.initialize())
         self.assertEqual(len(self.rows(self.original)), 2)
-        self.assertEqual(self.rows(self.original)[0]["charged"], self.old_uncertain)
+        self.assertEqual(self.original_row(self.old_id)["charged"], self.old_uncertain)
         self.assertEqual(self.totals(self.original)["providerRequests"], 42)
         self.assertEqual(first["limits"], budget.TASK_MAXIMUM)
         with self.assertRaisesRegex(ValueError, "different limits or ledger"):
@@ -312,7 +322,7 @@ class ReleaseBudgetTests(unittest.TestCase):
         self.assertEqual(closed["taskCharged"]["providerRequests"], 1)
         self.assertEqual(closed["original"]["charged"]["providerRequests"], 13)
         self.assertEqual(closed["original"]["unreconciled"], 1)
-        self.assertEqual(self.rows(self.original)[0]["charged"], self.old_uncertain)
+        self.assertEqual(self.original_row(self.old_id)["charged"], self.old_uncertain)
         self.assertEqual(budget.close(self.task), closed)
         with self.assertRaisesRegex(ValueError, "closed"):
             budget.lease(self.task, self.context, self.job_limits)
@@ -367,7 +377,7 @@ class ReleaseBudgetTests(unittest.TestCase):
                     budget.receipt(leased, self.execution, self.environment)
                 with self.assertRaisesRegex(ValueError, "entire original task envelope retained"):
                     budget.close(self.task)
-                self.assertEqual(self.rows(self.original)[-1]["charged"], budget.TASK_MAXIMUM)
+                self.assertEqual(self.original_row(leased["envelopeId"])["charged"], budget.TASK_MAXIMUM)
 
     def test_receipt_rejects_clipped_usage_duplicates_and_cross_job_result(self):
         leased = self.allocate()
