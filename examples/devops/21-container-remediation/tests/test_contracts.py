@@ -119,22 +119,33 @@ class ContractTests(unittest.TestCase):
         for tool, filename in [('write_manifest', 'requirements.in'), ('write_lock', 'requirements.lock')]:
             schema = workflow['tools'][tool]['inputSchema']['properties']
             self.assertEqual(schema['path']['enum'], ['patch/'+filename])
-            self.assertEqual(set(schema['content']), {'type', 'pattern'})
+            self.assertEqual(set(schema['content']), {'type', 'pattern', 'minLength', 'maxLength'})
             self.assertEqual(schema['content']['type'], 'string')
             pattern = schema['content']['pattern']
             expected = adapter.expected_files('2.7.0')[filename]
+            self.assertTrue(expected.isascii())
+            self.assertEqual(schema['content']['minLength'], len(expected.decode()))
+            self.assertEqual(schema['content']['maxLength'], len(expected.decode()))
             self.assertEqual(workflow['tools'][tool], build_workflows.write_tool(filename, expected))
             self.assertTrue(pattern.startswith('^') and pattern.endswith('$'))
             self.assertNotIn('(?', pattern)
             # Fullmatch models the reference exact-content language, not Python
             # search semantics. The real CLI's 19 rejection cases prove the
-            # pinned Rust validator's absolute `$` boundary before any write.
+            # pinned Rust validator's complete schema boundary before any write.
             self.assertIsNotNone(re.fullmatch(pattern, expected.decode()))
             self.assertNotIn('\n', pattern)
             for label, changed in contract_check.invalid_write_inputs(filename):
                 with self.subTest(tool=tool, mutation=label):
-                    accepted = changed['path'] in schema['path']['enum'] and re.fullmatch(pattern, changed['content']) is not None
+                    accepted = (changed['path'] in schema['path']['enum']
+                                and schema['content']['minLength'] <= len(changed['content']) <= schema['content']['maxLength']
+                                and re.fullmatch(pattern, changed['content']) is not None)
                     self.assertFalse(accepted)
+            if filename == 'requirements.lock':
+                # Both actual preflights returned this 65-character prefix.
+                # The explicit lower bound rejects it independently of pattern.
+                shortened = '# Hash-locked pure Python wheel; application dependencies only.\nu'
+                self.assertTrue(expected.decode().startswith(shortened))
+                self.assertLess(len(shortened), schema['content']['minLength'])
         task = next(t for t in workflow['tasks'] if t['id'] == 'implement')
         self.assertEqual(task['with']['prompt'], '${{ tasks.validate-plan.output }}')
         eligibility = load(ROOT/'agentctl/eligibility.yaml')['spec']
@@ -143,7 +154,9 @@ class ContractTests(unittest.TestCase):
 
     def test_write_pattern_treats_regex_metacharacters_as_literal_bytes(self):
         content = b'\\^$.*+?()[]{}| -#\t\r\n'
-        pattern = build_workflows.write_tool('fixture', content)['inputSchema']['properties']['content']['pattern']
+        schema = build_workflows.write_tool('fixture', content)['inputSchema']['properties']['content']
+        pattern = schema['pattern']
+        self.assertEqual((schema['minLength'], schema['maxLength']), (len(content.decode()), len(content.decode())))
         self.assertIsNotNone(re.fullmatch(pattern, content.decode()))
         for changed in [content[:-1], b'x'+content, content+b'\n', content.replace(b'.', b'x')]:
             self.assertIsNone(re.fullmatch(pattern, changed.decode()))

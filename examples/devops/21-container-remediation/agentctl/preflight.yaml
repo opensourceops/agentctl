@@ -59,6 +59,8 @@ spec:
                 type: string
                 pattern: |-
                   ^# Deliberately vulnerable sample dependency; never install into the tooling environment\.\nurllib3==2\.7\.0\n$
+                minLength: 104
+                maxLength: 104
           lock:
             type: object
             additionalProperties: false
@@ -74,6 +76,8 @@ spec:
                 type: string
                 pattern: |-
                   ^# Hash-locked pure Python wheel; application dependencies only\.\nurllib3==2\.7\.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\n$
+                minLength: 158
+                maxLength: 158
       outputSchema: *id001
       capability: internal
       effectClass: pure
