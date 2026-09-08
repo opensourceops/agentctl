@@ -412,7 +412,7 @@ spec:
         - write_lock
       maxTurns: 3
       maxToolCalls: 2
-      maxOutputTokens: 2048
+      maxOutputTokens: 4096
       timeoutSeconds: 180
       structuredOutput: *id011
       providerOptions:

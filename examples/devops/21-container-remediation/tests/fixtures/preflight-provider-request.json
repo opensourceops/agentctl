@@ -1,0 +1,167 @@
+{
+  "description": "Normalized initial request retained from preflight run34182372619 at framework0d4542cccdbd22cb96e3dec25cdffb66d0938ced. Contains public fixture inputs only. Tests substitute the configured output cap and a synthetic stateless continuation; this is not successful live continuation evidence.",
+  "request": {
+    "model": "gpt-6-astra",
+    "instructions": "Call echo once with the exact JSON object in the task prompt. Preserve both manifest and lock paths and every content byte, including the final newlines. This pure echo validates the actual multiline tool-input schemas without writing any file. After its successful result, return only {\"echo\":\"ok\"}. No other tool call is allowed.\n",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"prompt\":{\"manifest\":{\"path\":\"patch/requirements.in\",\"content\":\"# Deliberately vulnerable sample dependency; never install into the tooling environment.\\nurllib3==2.7.0\\n\"},\"lock\":{\"path\":\"patch/requirements.lock\",\"content\":\"# Hash-locked pure Python wheel; application dependencies only.\\nurllib3==2.7.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\\n\"}}}"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "id": "echo",
+        "description": "Echo the exact reviewed manifest and lock inputs without writing files",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifest",
+            "lock"
+          ],
+          "properties": {
+            "manifest": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "content"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "patch/requirements.in"
+                  ]
+                },
+                "content": {
+                  "type": "string",
+                  "pattern": "^# Deliberately vulnerable sample dependency; never install into the tooling environment\\.\\nurllib3==2\\.7\\.0\\n$",
+                  "minLength": 104,
+                  "maxLength": 104
+                }
+              }
+            },
+            "lock": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "content"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "patch/requirements.lock"
+                  ]
+                },
+                "content": {
+                  "type": "string",
+                  "pattern": "^# Hash-locked pure Python wheel; application dependencies only\\.\\nurllib3==2\\.7\\.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\\n$",
+                  "minLength": 158,
+                  "maxLength": 158
+                }
+              }
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifest",
+            "lock"
+          ],
+          "properties": {
+            "manifest": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "content"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "patch/requirements.in"
+                  ]
+                },
+                "content": {
+                  "type": "string",
+                  "pattern": "^# Deliberately vulnerable sample dependency; never install into the tooling environment\\.\\nurllib3==2\\.7\\.0\\n$",
+                  "minLength": 104,
+                  "maxLength": 104
+                }
+              }
+            },
+            "lock": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "content"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "patch/requirements.lock"
+                  ]
+                },
+                "content": {
+                  "type": "string",
+                  "pattern": "^# Hash-locked pure Python wheel; application dependencies only\\.\\nurllib3==2\\.7\\.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897\\n$",
+                  "minLength": 158,
+                  "maxLength": 158
+                }
+              }
+            }
+          }
+        },
+        "capability": "internal",
+        "risk": "low",
+        "effectClass": "pure",
+        "idempotency": "pure",
+        "retrySafe": true,
+        "timeoutSeconds": 5,
+        "secretRequirements": [],
+        "networkRequirements": [],
+        "approval": "policy",
+        "observability": null
+      }
+    ],
+    "maxOutputTokens": 2048,
+    "reasoning": {
+      "effort": "high"
+    },
+    "structuredOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "echo"
+      ],
+      "properties": {
+        "echo": {
+          "type": "string",
+          "enum": [
+            "ok"
+          ]
+        }
+      }
+    },
+    "continuation": null,
+    "promptCacheKey": "responses-tool-preflight:probe",
+    "safetyIdentifier": null,
+    "providerOptions": {
+      "store": false
+    }
+  }
+}

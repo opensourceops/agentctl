@@ -58,11 +58,11 @@ def build():
             {"id": "validate-patch", "uses": "action:validate-patch", "needs": ["capture", "validate-plan", "implement"],
              "with": {"context": "${{ tasks.capture.output }}", "plan": "${{ tasks.validate-plan.output }}", "implementation": "${{ tasks.implement.output }}"}}],
         "outputs": {"patch": "${{ tasks.validate-patch.output }}"}}}
-    for name, instruction, turns, tools, output in [("analyzer", "analyze", 1, [], schemas.PLAN),
-                                                   ("implementer", "implement", 3, ["write_manifest", "write_lock"], schemas.IMPLEMENTATION)]:
+    for name, instruction, turns, tools, output, output_tokens in [("analyzer", "analyze", 1, [], schemas.PLAN, 2048),
+                                                                  ("implementer", "implement", 3, ["write_manifest", "write_lock"], schemas.IMPLEMENTATION, 4096)]:
         workflow["spec"]["agents"][name] = {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
             "instructionsFile": "instructions/" + instruction + ".md", "tools": tools, "maxTurns": turns, "maxToolCalls": len(tools),
-            "maxOutputTokens": 2048, "timeoutSeconds": 180, "structuredOutput": output, "providerOptions": {"store": False}}
+            "maxOutputTokens": output_tokens, "timeoutSeconds": 180, "structuredOutput": output, "providerOptions": {"store": False}}
     dump(ROOT / "agentctl/remediate.yaml", workflow)
     eligibility = {"apiVersion": "agentctl.dev/v1", "kind": "Workflow", "metadata": {"name": "container-remediation-publication-eligibility",
                    "description": "Validate exact trusted build/test/rescan evidence without a provider or GitHub credential."}, "spec": {
@@ -79,14 +79,14 @@ def build():
         "policy": {"workspaceRoot": ".", "writableRoots": ["state"], "networkAllowlist": ["api.openai.com"], "approval": "never"},
         "providers": {"openai": {"kind": "openai", "credential": {"env": "OPENAI_API_KEY"}}},
         "runtime": {"maxConcurrency": 1, "budgets": {"maxProviderRequests": 3, "maxTurns": 3, "maxToolCalls": 1,
-                    "maxTotalTokens": 8000, "maxWallTimeSeconds": 120, "maxCostMicrousd": 200000},
+                    "maxTotalTokens": 16000, "maxWallTimeSeconds": 90, "maxCostMicrousd": 600000},
                     "pricing": workflow["spec"]["runtime"]["pricing"]},
         "tools": {"echo": {"kind": "builtin.echo", "description": "Echo the exact reviewed manifest and lock inputs without writing files", "inputSchema": echo_schema, "outputSchema": echo_schema,
                   "capability": "internal", "effectClass": "pure", "risk": "low", "idempotency": "pure", "retrySafe": True,
                   "timeoutSeconds": 5, "approval": "policy"}},
         "agents": {"probe": {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
                    "instructionsFile": "instructions/preflight.md", "tools": ["echo"], "maxTurns": 3, "maxToolCalls": 1,
-                   "maxOutputTokens": 2048, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
+                   "maxOutputTokens": 4096, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
         "actions": {"verify": {"kind": "builtin.assert"}},
         "tasks": [{"id": "probe", "uses": "agent:probe", "with": {"prompt": expected_echo_input()}},
                   {"id": "verify", "uses": "action:verify", "needs": ["probe"],

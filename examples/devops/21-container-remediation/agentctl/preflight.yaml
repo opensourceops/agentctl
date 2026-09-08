@@ -22,9 +22,9 @@ spec:
       maxProviderRequests: 3
       maxTurns: 3
       maxToolCalls: 1
-      maxTotalTokens: 8000
-      maxWallTimeSeconds: 120
-      maxCostMicrousd: 200000
+      maxTotalTokens: 16000
+      maxWallTimeSeconds: 90
+      maxCostMicrousd: 600000
     pricing:
       version: openai-public-2026-09-08-estimate
       models:
@@ -97,7 +97,7 @@ spec:
         - echo
       maxTurns: 3
       maxToolCalls: 1
-      maxOutputTokens: 2048
+      maxOutputTokens: 4096
       timeoutSeconds: 90
       structuredOutput:
         type: object

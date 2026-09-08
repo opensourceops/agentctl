@@ -39,8 +39,9 @@ def assert_compatibility(inspection):
     if effect.get('status') != 'succeeded' or effect.get('request', {}).get('input') != expected or effect.get('result') != expected:
         raise ValueError('durable tool input/result did not preserve the exact scoped value')
     usage = inspection['budget']['usage']
-    if not 2 <= usage['providerRequests'] <= 3 or usage['inputTokens'] + usage['outputTokens'] > 8000 or usage['costMicrousd'] > 200000:
-        raise ValueError('preflight usage exceeds its reviewed request/token/cost ceiling')
+    if (not 2 <= usage['providerRequests'] <= 3 or usage['inputTokens'] + usage['outputTokens'] > 16000
+            or usage['costMicrousd'] > 600000 or usage['wallTimeSeconds'] > 90):
+        raise ValueError('preflight usage exceeds its reviewed request/token/cost/time ceiling')
     return usage
 
 
