@@ -5,7 +5,7 @@ The core defines provider-neutral messages, text/reasoning/tool content, strict 
 | Kind | Native API | Implemented behavior | Credential default |
 | --- | --- | --- | --- |
 | `fake` | in-process scripted provider | deterministic echo/script, tool path, usage, typed streaming | none |
-| `openai` | Responses API | Explicit compatible model; strict function tools and structured output; multiple call IDs; stored and stateless continuation; reasoning effort/mode/context; prompt-cache mode/TTL; input/output/reasoning/cache metrics; typed SSE streaming | `OPENAI_API_KEY` |
+| `openai` | Responses API | Explicit compatible model; function tools with strict generation by default and strict structured output; multiple call IDs; stored and stateless continuation; reasoning effort/mode/context; prompt-cache mode/TTL; input/output/reasoning/cache metrics; typed SSE streaming | `OPENAI_API_KEY` |
 | `azure_openai` | Azure `/openai/v1/responses?api-version=v1` | OpenAI mapping and SSE with Azure `api-key`; explicit endpoint required | `AZURE_OPENAI_API_KEY` |
 | `anthropic` | Messages API | native content/tool/thinking blocks, structured output instruction, usage and stop mapping | `ANTHROPIC_API_KEY` |
 | `google` | Gemini `generateContent` | native contents/function declarations/calls/results, thought-signature continuation, response schema, token usage | `GEMINI_API_KEY` |
@@ -72,7 +72,24 @@ selections fail closed; estimates are not invoices. See the [current execution
 ledger](execution/AUTONOMOUS_LAUNCH_READINESS.md) for actual live results and
 usage, rather than treating earlier GPT-5.6 evidence as a new-source result.
 
-OpenAI provider options are an allowlisted map (`store`, `reasoningContext`, `promptCacheMode`, `promptCacheTtl`, `parallelToolCalls`, and `safetyIdentifier`). Unknown options or invalid values fail compilation. Tool-using OpenAI and Azure OpenAI agents may set `store: false`; the adapter requests encrypted reasoning content and replays the complete ordered response-item and function-output history. `stream: true` selects typed Responses SSE for fake, OpenAI, and Azure OpenAI agents. Anthropic and Google streaming fail capability negotiation. Programmatic tool calling remains unsupported and fails rather than being ignored. Parallel function calls are parsed and correlated, but one agent task executes them serially in response order. Independent workflow tasks can use bounded parallel scheduling.
+OpenAI provider options are an allowlisted map (`store`, `reasoningContext`, `promptCacheMode`, `promptCacheTtl`, `parallelToolCalls`, `toolStrict`, and `safetyIdentifier`). Unknown options or invalid values fail compilation. Tool-using OpenAI and Azure OpenAI agents may set `store: false`; the adapter requests encrypted reasoning content and replays the complete ordered response-item and function-output history. `stream: true` selects typed Responses SSE for fake, OpenAI, and Azure OpenAI agents. Anthropic and Google streaming fail capability negotiation. Programmatic tool calling remains unsupported and fails rather than being ignored. Parallel function calls are parsed and correlated, but one agent task executes them serially in response order. Independent workflow tasks can use bounded parallel scheduling.
+
+`providerOptions.toolStrict` is a boolean for OpenAI and Azure OpenAI agents and
+defaults to `true`. Setting it to `false` explicitly selects the API's
+[best-effort function generation](https://developers.openai.com/api/docs/guides/function-calling#strict-mode)
+when strict generation is unsuitable for a reviewed tool schema. The complete
+tool parameters still go to the provider. Runtime validation still checks every
+returned input against that same schema before creating or dispatching its tool
+effect, and existing policy and approval checks still apply. Invalid inputs fail
+the task; this option does not add an automatic repair loop. The final
+`structuredOutput` schema continues to use `text.format.strict: true`.
+
+The option is captured in the stored workflow and each model request. Changing
+it changes workflow and model-effect identities and the affected task's recovery
+fingerprint. Resume and recorded replay retain the original choice. An explicit
+repair may rerun the changed task in a new provider session while preserving
+compatible, unaffected task results. Provider generation settings grant no tool
+or filesystem authority.
 
 ## Stateful and stateless continuation
 

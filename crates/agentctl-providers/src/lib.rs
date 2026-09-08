@@ -434,6 +434,15 @@ impl ModelProvider for OpenAiProvider {
 }
 
 fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
+    let tool_strict = match request.provider_options.get("toolStrict") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err(ProviderError::Malformed(
+                "OpenAI provider option toolStrict must be a boolean".to_owned(),
+            ));
+        }
+    };
     let store = openai_store_enabled(request);
     let mut body = Map::from_iter([
         ("model".to_owned(), Value::String(request.model.clone())),
@@ -467,7 +476,7 @@ fn openai_request(request: &ProviderRequest) -> Result<Value, ProviderError> {
                             "name": tool.id,
                             "description": tool.description,
                             "parameters": tool.input_schema,
-                            "strict": true,
+                            "strict": tool_strict,
                         })
                     })
                     .collect(),
@@ -1920,6 +1929,80 @@ CtKEl+CNRhcXc/b/4bqdwn9pC6iT
         assert_eq!(body["prompt_cache_options"]["ttl"], "30m");
         assert_eq!(body["tools"][0]["strict"], true);
         assert_eq!(body["text"]["format"]["strict"], true);
+    }
+
+    #[test]
+    fn openai_tool_strict_only_changes_generation_strictness() {
+        let mut request = request();
+        request.structured_output = Some(serde_json::json!({
+            "type": "object", "properties": {"result": {"type": "string", "enum": ["ok"]}},
+            "required": ["result"], "additionalProperties": false
+        }));
+        request.tools[0].input_schema = serde_json::json!({
+            "type": "object", "properties": {"content": {
+                "type": "string", "pattern": "^fixed\\n$", "minLength": 6, "maxLength": 6
+            }}, "required": ["content"], "additionalProperties": false
+        });
+        let mut second_tool = request.tools[0].clone();
+        second_tool.id = "second".to_owned();
+        request.tools.push(second_tool);
+        let contracts = request.tools.clone();
+        let baseline = openai_request(&request).expect("default strict request");
+        assert!(
+            baseline["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| tool["strict"] == true)
+        );
+        assert_eq!(baseline["text"]["format"]["strict"], true);
+        request
+            .provider_options
+            .insert("toolStrict".to_owned(), Value::Bool(true));
+        assert_eq!(openai_request(&request).unwrap(), baseline);
+
+        request
+            .provider_options
+            .insert("toolStrict".to_owned(), Value::Bool(false));
+        let mut expected = baseline;
+        for tool in expected["tools"].as_array_mut().unwrap() {
+            tool["strict"] = Value::Bool(false);
+        }
+        assert_eq!(openai_request(&request).unwrap(), expected);
+        assert_eq!(request.tools, contracts, "runtime contracts remain intact");
+        for tool in &contracts {
+            tool.validate_input(&serde_json::json!({"content": "fixed\n"}))
+                .unwrap();
+            assert!(
+                tool.validate_input(&serde_json::json!({"content": "fixed\n\n"}))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn openai_tool_strict_rejects_invalid_programmatic_values() {
+        let mut request = request();
+        for value in [
+            Value::Null,
+            serde_json::json!("false"),
+            serde_json::json!(0),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            request
+                .provider_options
+                .insert("toolStrict".to_owned(), value);
+            assert!(
+                matches!(openai_request(&request), Err(ProviderError::Malformed(message))
+                if message == "OpenAI provider option toolStrict must be a boolean")
+            );
+        }
+        request.tools.clear();
+        assert!(matches!(
+            openai_request(&request),
+            Err(ProviderError::Malformed(_))
+        ));
     }
 
     #[tokio::test]
