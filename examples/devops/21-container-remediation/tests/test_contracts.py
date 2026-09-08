@@ -113,6 +113,11 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(len(workflow['agents']), 2)
         self.assertEqual(workflow['agents']['analyzer']['tools'], [])
         self.assertEqual(workflow['agents']['implementer']['tools'], ['write_manifest', 'write_lock'])
+        self.assertEqual({name: agent['maxOutputTokens'] for name, agent in workflow['agents'].items()},
+                         {'analyzer': 2048, 'implementer': 4096})
+        full_budget = workflow['runtime']['budgets']
+        self.assertEqual((full_budget['maxProviderRequests'], full_budget['maxTotalTokens'], full_budget['maxCostMicrousd']),
+                         (4, 20000, 1000000))
         for agent in workflow['agents'].values():
             self.assertEqual(agent['model'], 'gpt-6-astra')
             self.assertEqual(agent['reasoning'], {'effort': 'high'})
@@ -211,14 +216,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(publisher.reconcile_pull(remote, 'branch', 'main', {})['status'], 'closed_no_duplicate')
         self.assertEqual(remote.calls, 1)
 
-    def test_preflight_has_its_own_tiny_lease_boundary(self):
+    def test_preflight_has_its_own_bounded_lease_boundary(self):
         workflow = load(ROOT/'agentctl/preflight.yaml')['spec']
         budget = workflow['runtime']['budgets']
-        self.assertEqual((budget['maxProviderRequests'], budget['maxTotalTokens'], budget['maxCostMicrousd']), (3, 8000, 200000))
+        self.assertEqual((budget['maxProviderRequests'], budget['maxTotalTokens'], budget['maxWallTimeSeconds'], budget['maxCostMicrousd']), (3, 16000, 90, 600000))
         self.assertEqual(workflow['agents']['probe']['model'], 'gpt-6-astra')
         self.assertEqual(workflow['agents']['probe']['reasoning'], {'effort': 'high'})
         self.assertEqual(workflow['agents']['probe']['maxToolCalls'], 1)
-        self.assertEqual(workflow['agents']['probe']['maxOutputTokens'], 2048)
+        self.assertEqual(workflow['agents']['probe']['maxOutputTokens'], 4096)
         self.assertEqual(workflow['tools']['echo']['effectClass'], 'pure')
         self.assertEqual(workflow['tools']['echo']['capability'], 'internal')
         self.assertEqual(workflow['tools']['echo']['kind'], 'builtin.echo')
@@ -242,18 +247,66 @@ class ContractTests(unittest.TestCase):
         prompt = preflight_spec['tasks'][0]['with']['prompt']
         self.assertEqual(prompt, preflight.expected_echo_input())
 
+    def test_configured_preflight_can_reserve_a_stateless_reasoning_continuation(self):
+        authored = load(ROOT/'agentctl/preflight.yaml')['spec']
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            (workspace/'source/agentctl').mkdir(parents=True)
+            (workspace/'source/agentctl/preflight.yaml').write_bytes((ROOT/'agentctl/preflight.yaml').read_bytes())
+            with patch.dict(os.environ, {'AGENTCTL_MODEL': 'gpt-6-astra'}):
+                configured = preflight.configure(workspace)['spec']
+            self.assertEqual(load(workspace/'preflight.yaml')['spec'], configured)
+            self.assertEqual(configured['runtime']['budgets'], authored['runtime']['budgets'])
+            self.assertEqual(configured['agents']['probe']['maxOutputTokens'], 4096)
+
+        request = json.loads((ROOT/'tests/fixtures/preflight-provider-request.json').read_text())['request']
+        agent = configured['agents']['probe']
+        self.assertEqual(request['instructions'], (ROOT/'agentctl/instructions/preflight.md').read_text())
+        for field in ['model', 'reasoning', 'structuredOutput', 'providerOptions']:
+            self.assertEqual(request[field], agent[field])
+        for field in ['inputSchema', 'outputSchema']:
+            self.assertEqual(request['tools'][0][field], authored['tools']['echo'][field])
+        expected = preflight.expected_echo_input()
+        self.assertEqual(json.loads(request['messages'][0]['content'][0]['text']), {'prompt': expected})
+        request['maxOutputTokens'] = agent['maxOutputTokens']
+        # Fixed continuation fixture: both the conversation state and messages
+        # retain an opaque reasoning item and the exact echoed data. This is a
+        # representative reservation regression, not a bound on all LLM output.
+        assistant = {'role': 'assistant', 'content': [
+            {'type': 'opaque_reasoning', 'value': {'type': 'reasoning', 'id': 'rs-fixture', 'encrypted_content': 'A' * 2048}},
+            {'type': 'tool_call', 'id': 'call-fixture', 'name': 'echo', 'input': expected}]}
+        request['continuation'] = {'kind': 'conversation', 'value': [request['messages'][0], assistant]}
+        request['messages'] += [assistant, {'role': 'user', 'content': [
+            {'type': 'tool_result', 'id': 'call-fixture', 'output': expected, 'is_error': False}]}]
+        input_reservation = len(json.dumps(request, separators=(',', ':'), ensure_ascii=False).encode()) + 256
+        # First-response fixture usage: 400 input + 1400 output, already
+        # including its reasoning tokens. Reserve the next response separately.
+        total_reservation = 1800 + input_reservation + request['maxOutputTokens']
+        self.assertGreater(total_reservation, 8000)
+        self.assertLessEqual(total_reservation, configured['runtime']['budgets']['maxTotalTokens'])
+        pricing = configured['runtime']['pricing']['models']['openai/gpt-6-astra']
+        input_rate = max(pricing[key] for key in ['inputMicrousdPerMillionTokens', 'cacheReadMicrousdPerMillionTokens', 'cacheWriteMicrousdPerMillionTokens'])
+        output_rate = pricing['outputMicrousdPerMillionTokens']
+        cost = ((400 * pricing['inputMicrousdPerMillionTokens'] + 1400 * output_rate) // 1000000
+                + (input_reservation * input_rate + 999999) // 1000000
+                + (request['maxOutputTokens'] * output_rate + 999999) // 1000000)
+        self.assertGreater(cost, 200000)
+        self.assertLessEqual(cost, configured['runtime']['budgets']['maxCostMicrousd'])
+
     def test_preflight_checks_actual_tool_result_and_strict_output(self):
         good = {'run': {'state': 'succeeded', 'output': {'preflight': {'echo': 'ok'}}},
                 'toolCalls': [{'toolId': 'echo', 'status': 'succeeded', 'effectId': 'fixture-effect'}],
                 'effects': [{'request': {'id': 'fixture-effect', 'input': preflight.expected_echo_input()},
                              'result': preflight.expected_echo_input(), 'status': 'succeeded'}],
-                'budget': {'usage': {'providerRequests': 2, 'inputTokens': 100, 'outputTokens': 50, 'costMicrousd': 3500}}}
+                'budget': {'usage': {'providerRequests': 2, 'inputTokens': 100, 'outputTokens': 50, 'costMicrousd': 3500, 'wallTimeSeconds': 2}}}
         preflight.assert_compatibility(good)
         for field, value in [('toolCalls', []), ('effects', []), ('run', {'state': 'succeeded', 'output': {'preflight': {'echo': 'different'}}})]:
             with self.subTest(field=field):
                 with self.assertRaises(ValueError): preflight.assert_compatibility({**good, field: value})
-        exceeded = copy.deepcopy(good); exceeded['budget']['usage']['inputTokens'] = 8000
-        with self.assertRaises(ValueError): preflight.assert_compatibility(exceeded)
+        for field, value in [('providerRequests', 4), ('inputTokens', 16000), ('costMicrousd', 600001), ('wallTimeSeconds', 91)]:
+            with self.subTest(budget=field):
+                exceeded = copy.deepcopy(good); exceeded['budget']['usage'][field] = value
+                with self.assertRaises(ValueError): preflight.assert_compatibility(exceeded)
         for location in ['input', 'result']:
             for part in ['manifest', 'lock']:
                 with self.subTest(location=location, part=part):
