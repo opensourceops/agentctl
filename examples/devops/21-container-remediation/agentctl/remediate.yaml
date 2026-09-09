@@ -417,6 +417,7 @@ spec:
       structuredOutput: *id011
       providerOptions:
         store: false
+        toolStrict: false
   tasks:
     - id: capture
       uses: action:capture

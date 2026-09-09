@@ -62,7 +62,7 @@ def build():
                                                                   ("implementer", "implement", 3, ["write_manifest", "write_lock"], schemas.IMPLEMENTATION, 4096)]:
         workflow["spec"]["agents"][name] = {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
             "instructionsFile": "instructions/" + instruction + ".md", "tools": tools, "maxTurns": turns, "maxToolCalls": len(tools),
-            "maxOutputTokens": output_tokens, "timeoutSeconds": 180, "structuredOutput": output, "providerOptions": {"store": False}}
+            "maxOutputTokens": output_tokens, "timeoutSeconds": 180, "structuredOutput": output, "providerOptions": {"store": False, **({"toolStrict": False} if tools else {})}}
     dump(ROOT / "agentctl/remediate.yaml", workflow)
     eligibility = {"apiVersion": "agentctl.dev/v1", "kind": "Workflow", "metadata": {"name": "container-remediation-publication-eligibility",
                    "description": "Validate exact trusted build/test/rescan evidence without a provider or GitHub credential."}, "spec": {
@@ -86,7 +86,7 @@ def build():
                   "timeoutSeconds": 5, "approval": "policy"}},
         "agents": {"probe": {"provider": "openai", "model": "gpt-6-astra", "reasoning": {"effort": "high"},
                    "instructionsFile": "instructions/preflight.md", "tools": ["echo"], "maxTurns": 3, "maxToolCalls": 1,
-                   "maxOutputTokens": 4096, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False}}},
+                   "maxOutputTokens": 4096, "timeoutSeconds": 90, "structuredOutput": probe_schema, "providerOptions": {"store": False, "toolStrict": False}}},
         "actions": {"verify": {"kind": "builtin.assert"}},
         "tasks": [{"id": "probe", "uses": "agent:probe", "with": {"prompt": expected_echo_input()}},
                   {"id": "verify", "uses": "action:verify", "needs": ["probe"],

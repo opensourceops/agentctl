@@ -161,7 +161,8 @@
     "promptCacheKey": "responses-tool-preflight:probe",
     "safetyIdentifier": null,
     "providerOptions": {
-      "store": false
+      "store": false,
+      "toolStrict": false
     }
   }
 }

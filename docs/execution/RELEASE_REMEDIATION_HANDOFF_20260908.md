@@ -1,80 +1,76 @@
-# Release and remediation checkpoint — 8 September 2026
+# Release remediation handoff — 8 September 2026
 
-This checkpoint supersedes earlier current-state claims. Historical failures and receipts remain in [the execution ledger](RELEASE_REMEDIATION_20260906.md). The four requested actions are partially completed. **Not ready:** the stronger live preflight still fails, so full remediation, its model-generated draft fix PR, provider-free reconciliation, release publication and the published-tooling consumer run remain unproven.
+The live OpenAI blocker and stale README token-limit sentence are resolved. Fresh model responses are not deterministic; compiled orchestration, captured execution, compatible reuse and replay retain their documented boundaries. Production publication remains a separate operator action.
 
-## Sources and merged work
+## Source and review identities
 
-Framework [PR11](https://github.com/opensourceops/agentctl/pull/11) merged as `39ed172a8d7f2bc6c43e6ade7aeaa79ff01e1dfa`. Code under test is `bb8fb0a5a28d876fee26c49c49a8a5bf1c8390e2`. This handoff and the accompanying ledger checkpoint are evidence-only additions after that source.
-
-Live-discovered fixes preserve exact multiline write authority, improve the preflight to exercise both real schemas, retain uncertainty for missing usage, distinguish actual incomplete-response reasons and prevent dispatch of partial tools. The latest source raises preflight and implementer response ceilings to4096 while keeping the proven analyzer at2048. Preflight defaults are3requests/16000total tokens/90seconds/USD0.60 estimated; full remediation remains4requests/20000tokens/USD1. Model `gpt-6-astra`, high reasoning, `store:false`, tool grants and recovery boundaries remain unchanged. These settings have deterministic coverage; successful live implementation is not claimed.
-
-Demo [PR8](https://github.com/Ompragash/agentctl-remediation-demo/pull/8) merged as `316086796dc95b960c797ee4234eebe9519f4602`, pinning frameworkbb8. Its35 tracked export files (34payloads plus manifest) match the clean package. Maintenance PRs are not model-generated remediation PRs.
-
-Docs [PR7](https://github.com/opensourceops/opensourceops.github.io/pull/7) merged as `cff5095b0957459af5646f04050c4e2a046f1c38` and deployed through [34182285736](https://github.com/opensourceops/opensourceops.github.io/actions/runs/34182285736). All116 checked public files match the retained deployment artifact at framework0d4542c; visible canonical boilerplate is absent. This does not establish deployment of the laterbb8 correction.
-
-## Passing source-specific gates
-
-| Gate | Evidence |
+| Deliverable | Exact tested source / review |
 | --- | --- |
-| Linux/macOS/Windows CI and production SBOM | [34183776957](https://github.com/opensourceops/agentctl/actions/runs/34183776957), passed |
-| Supply-chain/security | [34183776934](https://github.com/opensourceops/agentctl/actions/runs/34183776934), passed |
-| Container/security | [34183776924](https://github.com/opensourceops/agentctl/actions/runs/34183776924), passed |
-| Four native packages, four images and signed bundle | [34184038972](https://github.com/opensourceops/agentctl/actions/runs/34184038972), passed; attachment skipped |
-| Paired documentation source/evidence head | [34184232135](https://github.com/opensourceops/opensourceops.github.io/actions/runs/34184232135), [34184888790](https://github.com/opensourceops/opensourceops.github.io/actions/runs/34184888790), passed; deployment skipped |
-| Demo maintenance contracts | [34183982402](https://github.com/Ompragash/agentctl-remediation-demo/actions/runs/34183982402), passed; paid jobs skipped |
+| Framework | `7dee64e1d1b6fd38c1883d0d235d712590c30fbe`, [PR #13](https://github.com/opensourceops/agentctl/pull/13) |
+| Documentation | `2f2e7b03870899c9cc6f425e9d9eb8c005b15d99`, [PR #9](https://github.com/opensourceops/opensourceops.github.io/pull/9); framework pin remains `7dee64e` |
+| Demo trusted main | `dfd8ba73af22eb9e121f0923e89d162c0b9bcf64`; maintenance PR #9 merged |
+| Actual generated fix | [Draft PR #10](https://github.com/Ompragash/agentctl-remediation-demo/pull/10), head `458ea6480616ae8a5c9890646e466a577d762ca7`, validated tree `00de48e65a607cb471757028f4a2f3ba17b4879e` |
 
-Local example verification passed18 contract tests,13 adapter tests and66 actual OCI CLI invocations, including19 malformed writes denied before tool dispatch, with zero write effects, exact positive echo/output, selective repair and zero-effect replay. Full source CI also covers the prior35 provider tests, six runtime completion/terminal cases, two accounting/recovery regressions and26 coordinator cases. Paired docs validation passed140 browser cases with one unchanged generic skip,94 pages and all21 packages.
+Docs evidence-only head is `86ac4876ecf14ced90b9128faf658a6674d6e731`; its subsequent hosted run 34197347005 also passed. Later evidence-only commits do not replace these code-under-test identities. The original outer checkout's unrelated CLI/generated-reference edits and untracked files remain preserved.
 
-Evidence paths below are relative to `.release-evidence/release-20260906/` in the original checkout; raw artifacts are retained locally, with hosted run links above. Complete bundle validation independently checked all checksums and native relationships, source/signer attestation, both complete OCI indexes, six disposable tags, six rerun reuses and four platform pulls. No Docker Hub publication is implied.
+## Changes and evidence
 
-| Retained artifact/report | SHA256 |
+An isolated API comparison changed only tool-generation strictness and produced the complete reviewed multiline contents after constrained generation repeatedly returned incomplete responses. The new explicit boolean `agent.providerOptions.toolStrict` applies to OpenAI/Azure, defaults to true, and controls generation only. Preflight and implementer opt out; complete argument schemas, strict final output, policy and approvals remain enforced. The README now reflects the actual 4096-token preflight/implementer and 2048-token analyzer ceilings.
+
+Review also exposed a runtime authority defect: a provider could name a globally registered tool outside the current agent's tool list. Runtime now rejects that before lookup/dispatch. A hostile-provider regression fails on old code and proves zero forbidden writes with the fix. Tests also cover option validation, fingerprint changes, durable approval/resume, recorded continuation and replay.
+
+| Gate | Result and evidence |
 | --- | --- |
-| `native-release-34184038972/native-evidence.json` | `f9faed3d23e290ca7b3b96e45b1724f5620823ba06e4a59fa59b1b9a892f70c9` |
-| `native-release-34184038972/validation.json` | `8c5d5b3be67e559aa97588fee488f40fc65a546e118ab3e10cd72db34331b68f` |
-| Complete bundle ZIP,254203465bytes | `967f6062b6e4e470a828f50afc685f0613d3cdd8ee98de56de5c2ea92387ca0c` |
-| Signed release manifest | `f78f1e4f1034cba8cbec7f78fd4f0bf3ed097e22ace7cdf795c2fcdc45372591` |
-| Sigstore bundle | `113e234c82e894844be168aa748d5ad21c479e5c2519f1657e78b19529c2583e` |
-| `SHA256SUMS` | `43505e84ac9e2e571435fd794fa66c6cede635fdf1242eac11ab077d0a65f3fd` |
-| `docs/final-docs-report-bb8fb0a.json` | `f28555d88228e2a87a950e50f5c33fbe18dbdc5a7e9c000449ab7e5ba9641061` |
-| Actual bb8 docs artifact ZIP | `c069d43f044e062cdf6f0e2eabcb171ecc29ce1e57fd3ad22009a5c94d93abf6` |
-| Clean demo ZIP | `5853c6b30e97fb5efe179f21953ce4a2a6bfd8fc20823ce8aca55e86d05838c6` |
-| `preflight-22-wire-audit/report.json` | `47fef087e1301a5abc8c563eaec783a3fd304f4259b35cc464612cc7503087fe` |
-| `preflight-local-25000/verification.json` | `4e0608e4492815f473c29d91b9907885eb8a562c43c8127630da13b72524f8fa` |
+| Local full verification | `cargo xtask verify` passed at clean `7dee64e`, with complete pinned Python dependencies |
+| Existing twenty examples | All 20 passed from clean directories; report SHA256 `58fb9485e7cb61d2a23ab66b11a3b77f2eb23ee0198cde772410db55c45a584a` |
+| Framework CI | [34195126536](https://github.com/opensourceops/agentctl/actions/runs/34195126536): Linux, macOS, Windows and production SBOM passed |
+| Container/security | [34195126487](https://github.com/opensourceops/agentctl/actions/runs/34195126487) and [34195126478](https://github.com/opensourceops/agentctl/actions/runs/34195126478) passed |
+| Real native preflight | 2 requests / 1208 tokens; exact tool input and strict output passed |
+| Real native recovery | Keyless OS-network-denied replay after instruction-file mutation; injected downstream assertion failure and executed selective repair reused the live agent result with zero provider/tool calls |
+| Full live container workflow | [34195429813](https://github.com/Ompragash/agentctl-remediation-demo/actions/runs/34195429813) passed: real builds/scans, two Astra roles, scoped writes, tests, rescan, eligibility, replay and draft PR |
+| Provider-free reconciliation | [34196095845](https://github.com/Ompragash/agentctl-remediation-demo/actions/runs/34196095845) reused the same branch, fingerprint, validated tree and PR; paid jobs skipped before steps |
+| Generated fix PR checks | [34196000156](https://github.com/Ompragash/agentctl-remediation-demo/actions/runs/34196000156) passed without model credentials |
+| Docs | Local paired and [hosted 34195633694](https://github.com/opensourceops/opensourceops.github.io/actions/runs/34195633694) passed; 140 browser cases, one unchanged generic skip, actual artifact/package parity verified |
+| Native release preparation | [34196038209](https://github.com/opensourceops/agentctl/actions/runs/34196038209), passed with attachment disabled; all native packages/images, signed bundle and disposable-registry evidence independently verified |
 
-Final prepared minimal index: `sha256:d5025ebc91237276ef477605e11aeb35ce062b8b5b78925608bcb89c4c8170ca`. Tooling index: `sha256:435d2ab00be4f6e5eb655339d369d8a7174ae7155bb6b26997aeb22ac718e216`. These were verified in a disposable registry only. Preserve failed/partial download and opaque-build-record inspection evidence; successful byte verification did not require weakening any release gate.
+Both native tooling images passed the synthetic scanner/scripted-provider OCI contract, including 19 rejected writes without tool dispatch, failed validation preventing publication, compatible reuse and zero-effect replay. This evidence is separate from the actual OpenAI/Trivy workflow. An injected terminal failure is not claimed as a process crash or same-run resume.
 
-## Live blocker and budgets
+## Actual remediation outcome
 
-The simple earlier echo preflight passed. Full attempts failed before writes on provider schema rejection; subsequent schema corrections have deterministic coverage. The stronger exact multiline preflight still fails. Current-source hosted [34185368189](https://github.com/Ompragash/agentctl-remediation-demo/actions/runs/34185368189) returned explicit `max_output_tokens` on the first request at4096, before echo or continuation. Required usage counters were numeric0/0; verified receipt reconciles1request/0reportedtokens/3seconds/USD0 estimate.
+The live roles made 3 `gpt-6-astra` requests with high reasoning, using 3261 input plus 1029 output tokens (4290 total; 426 reasoning tokens already included), 28 seconds, and USD 0.089960 estimated. They wrote exactly `requirements.in` and `requirements.lock`, upgrading the deliberately vulnerable `urllib3` fixture from 2.6.2 to 2.7.0 with its reviewed wheel hash. Both application test runs passed two tests.
 
-Offline audit reconstructed the unchanged Rust wire request and verified all strict schemas, exact LF literals and19 negative cases. No mapping defect was demonstrated. A runtime key was available locally; a TLS-verified model metadata GET returned200 with no environment proxies. One isolated25000-output-token diagnostic followed [official reasoning guidance](https://developers.openai.com/api/docs/guides/reasoning#controlling-costs), using the verified bb8 macOS ARM64 package and pure echo. Its temporary2request/60000token/180second/USD4 allowance was reserved directly against the original shared ledger, without changing repository defaults.
+The pinned Trivy scanner used one retained database snapshot, SHA256 `fc8340c6b58c86e8cc14f4791cb4bc1d6ee578548185c9fbb54ecd0fcd94e04a`. All three target advisories (`CVE-2026-21441`, `CVE-2026-44431`, `CVE-2026-44432`) disappeared, no findings were introduced, and 270 unrelated findings remain disclosed. This is a bounded dependency fix, not a claim that the sample image is vulnerability-free.
 
-That diagnostic also failed on its first response with explicit `max_output_tokens`: `resp_030541145402578f016a9f8e06357487d2a5b7b01b5bacfd91`. Required counters were numeric0/0, no tool dispatched and no runtime reservation remained. Harness elapsed4seconds (runtime3) was reconciled. Empty normalized output does not establish absence of raw partial upstream items; the adapter intentionally omits incomplete items. Keyless offline replay refused the pending downstream task with exit4, so successful replay of this failed workflow is not claimed. The cause of the reported exhaustion remains unresolved. No arbitrary further cap increase or unchanged paid retry is planned.
+- Candidate tooling image: `sha256:f103338afe73139372157c5dcd282f1f0f4a61cf2bdc7ab6ffc4728b907cd9e2`.
+- Before application image: `sha256:09542889af3fd998fa37d4170365fb008e0d17c07ac9068813ff3821b609d87e`.
+- After application image: `sha256:a558abe12b502619a35f46107da2c67486d5c25ee96c4eb60494c43eb3819eb0`.
 
-Across this remediation task plus the local diagnostic,13 provider calls were observed. Twelve reconciled calls report5792tokens and USD0.156265 runtime estimates; the separate historical cache-write correction adds USD0.002970, giving USD0.159235 known estimate. These are not invoices. Unknown preflight15 retains its entire3request/8000token/120second/USD0.20 lease. Older15/18 cannot be retroactively classified because their adapter discarded incomplete reasons.
+The actual agentctl run is `run-01a07fc1-b527-7f82-b188-1cb87fd964e5`; replay is `replay-01a07fc2-21e3-7fa2-ab0d-450e9fb44b6d`. SQLite integrity, provider/effect results, budgets and CAS bytes match retained inspections. Remediation and eligibility replays run without a key and with `--network=none`, preserving all recorded outputs/artifact digests with zero fresh effects. Builds, scans and GitHub mutations remain trusted outer CI effects, handled through artifact identity and remote reconciliation rather than agentctl replay or exactly-once delivery.
 
-The task ledger remains at14charged/reserved requests,13792tokens,199seconds and USD0.356265 within its unchanged30/40000/900/USD2 envelope. The local diagnostic is charged separately in the original ledger. Original aggregate charged/reserved totals are97requests,81926tokens,1284seconds and USD4.047740, including the entire task envelope and historical charges. Reservation totals are not observed calls or actual invoice spend. Do not reset either ledger, release unknown usage, or allocate a duplicate envelope.
+## Evidence and accounting
 
-## Approval and publication state
+Retained evidence is under `.release-evidence/release-20260906/` in the original workspace. The following independently verified reports are separate from source implementation:
 
-Docs [PR8](https://github.com/opensourceops/opensourceops.github.io/pull/8) is open/non-draft at `878560e75d477a4f2d4eb076ccfb4753049dd4e8`; tested docs source is `826071bf92f0bf975757f27db6201b22f686dd59`. All checks and artifact verification pass. Automatic approval review rejected its merge because it triggers public Pages deployment. A new explicit question naming PR8 remains pending. The earlier “go ahead” was applied to PR7 and its deployment; no rejected PR8 action was bypassed.
+| Report | SHA256 |
+| --- | --- |
+| `remediate-34195429813/live-verification.json` | `4dbfd5c0ef07ca230c12e3752d8e9e4fd7798ec78a09b0ac452f0c1815e3f556` |
+| `remediate-34195429813/publication-verification.json` | `6ffd78a9f761f419a3640f41f63a46aa37d4f9bb3d4b7fead4bc13472b420d8c` |
+| `reconcile-34196095845/verification.json` | `a35fd2e745557f72d3ee30f4a6703cd0c0145386cac64b85523e25859ac7cffd` |
+| `live-preflight-tool-strict/repair-verification.json` | `7fea73b89445869060de5dccf2a75d5f6092add0b30a543b734c3c954f46906d` |
+| `docs/hosted-7dee64e/verification.json` | `d3b25f9d31ad4e0fb201a327b14bded8236f838dfea4e9e2563e75b3f3151514` |
 
-The task-created unpublished v0.4.0 tag was approved and corrected to0d4542c, but remains superseded bybb8. Draft384291529 is unpublished and labeled “Superseded candidate—do not publish”; eight old0d assets remain. Its obsolete upload process was stopped. No Docker Hub promotion occurred. Do not publish this partial draft, silently reuse its source identity forbb8, or replace any published immutable version.
+This correction used 6 new requests and 6034 tokens across the diagnostic, native preflight and full workflow, costing USD 0.117880 estimated. Prices are configured public estimates, not invoice evidence. The prior task ledger remains active at 20 charged/reserved requests, 19826 tokens, 241 seconds and USD 0.474145. Those totals retain unknown run 15's complete 3-request/8000-token/120-second/USD 0.20 reservation; no uncertainty was erased. Its 17 reconciled requests report 11826 tokens and USD 0.274145, with a historical USD 0.002970 price correction recorded separately. An earlier one-request diagnostic remains separately charged to the original suite ledger. Do not initialize a new allowance or close the unresolved envelope.
 
-## Next steps from retained work
+Local validation initially hit an unrelated nested-workspace fuzz lookup and incomplete Python environment; unchanged gates passed in an external clean worktree with pinned requirements installed. The downloaded live artifact matched its advertised digest; its 1.37 GB Trivy database exceeded an initial local 1 GiB unpack bound, so extraction used streaming with a bounded 2 GiB limit and unchanged archive member/path/hash checks. These were evidence-environment failures, not hidden production passes.
 
-1. Resolve the exact PR8 Pages approval. If approved, merge only its verified head, wait for normal deployment, and compare actual public bytes/source metadata with the deployed artifact.
-2. Investigate the reproducible model/schema interaction using retained response IDs and `OPENAI_INCOMPLETE_REPRO.md`. Require new evidence before a paid retry. A narrow correction needs focused tests and a separately reserved diagnostic; preserve model/high and exact write authority unless the user explicitly changes that contract.
-3. After a passing stronger preflight, reserve full remediation against the existing task ledger and current trusted demo main/run identity. Verify actual model writes, deterministic validation, a draft fix PR, and the provider-free reconciliation path. No such model-generated PR exists yet.
-4. Only after live gates pass, prepare source-specific final release evidence, resolve the corrected tag/partial draft for that exact source, verify complete signed assets, promote the exact OCI bytes, then execute the full published-tooling consumer workflow. The already verifiedbb8 bundle needs no rebuild if release source remainsbb8.
+## Remaining operator sequence
 
-Read-only continuation commands:
+1. Review the framework and docs PRs; keep the generated remediation fix PR as a draft unless separately choosing to merge it.
+2. Exact-source release preparation is complete. Use reviewed source `7dee64e1d1b6fd38c1883d0d235d712590c30fbe` and its verified preparation run; do not publish the old assets.
+3. The existing `v0.4.0` tag still targets superseded `0d4542c`; draft release `384291529` is explicitly superseded and has only its old assets. Deliberately correct/retire that unpublished preparation before preparing a complete draft for the reviewed source. Never publish this stale draft or mix source identities.
+4. Follow [the release process](../RELEASE_PROCESS.md) to attach the complete matching assets before the operator publishes. No production Docker Hub tags were pushed by this validation.
+5. After publication, set the demo's `AGENTCTL_IMAGE` to the verified tooling digest and run the same scenario in published-image mode with a fresh lease from the existing allowance. Candidate success does not prove a production pull. Existing task headroom is 10 requests / 20174 tokens / 659 seconds / USD 1.525855 estimated; recheck it before allocation.
 
-```sh
-gh pr view 8 --repo opensourceops/opensourceops.github.io
-gh run view 34185368189 --repo Ompragash/agentctl-remediation-demo
-gh run view 34184038972 --repo opensourceops/agentctl
-gh api repos/opensourceops/agentctl/releases/384291529
-```
+The final bundle ZIP SHA256 is `3a5c22e50a54600055decb7d99100b39f0482d48cbc20bca6ca87ce19694e3c2`. Independent `native-release-34196038209/validation.json` SHA256 is `02f4b0f25f2df7c75c35574844821cbd40aa8b7467a13c4d292ef5faaa42e4bb`. Its ten required artifact ZIPs, 35 checksum-listed files, two complete OCI indexes, source/signer-bound hosted attestation, six disposable tags, six rerun reuses and four platform pulls pass. A slow read-only bundle transfer was replaced by four validated HTTP206 ranges, preserving its 87,228,416-byte prefix and requiring the complete advertised hash; no build/test/provider execution was interrupted.
 
-The original checkout's existing CLI/docs edits remain untouched. All unblocked source, native and paired-site verification is retained. The live blocker and Pages approval prevent completing all four requested actions; the supported release verdict remains **not ready**.
+The live validation and release-preparation gates are passed. Production release, public site deployment of these new PRs, and final published-image smoke are not claimed complete.

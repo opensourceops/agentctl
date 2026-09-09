@@ -2687,6 +2687,7 @@ fn validate_provider_options(
             "promptCacheMode",
             "promptCacheTtl",
             "parallelToolCalls",
+            "toolStrict",
             "safetyIdentifier",
         ],
         ProviderKind::Anthropic | ProviderKind::Google => &[],
@@ -2740,7 +2741,7 @@ fn validate_provider_options(
             .with_path(path("promptCacheTtl")),
         );
     }
-    for key in ["store", "parallelToolCalls"] {
+    for key in ["store", "parallelToolCalls", "toolStrict"] {
         if options.get(key).is_some_and(|value| !value.is_boolean()) {
             diagnostics.push(
                 Diagnostic::error(
@@ -3864,6 +3865,98 @@ spec:
         );
         let diagnostics = compile(&workflow, "fixture.yaml").expect_err("cycle rejected");
         assert_eq!(diagnostics[0].code, DiagnosticCode::DependencyCycle);
+    }
+
+    #[test]
+    fn tool_strict_option_is_boolean_provider_scoped_and_part_of_plan_identity() {
+        let source = parse(
+            r#"
+apiVersion: agentctl.dev/v1
+kind: Workflow
+metadata: { name: tool-strict }
+spec:
+  providers: { model: { kind: openai } }
+  agents:
+    worker:
+      provider: model
+      model: fixture
+      instructions: inspect the supplied task
+  tasks: [{ id: work, uses: "agent:worker" }]
+"#,
+        );
+        for kind in [ProviderKind::Openai, ProviderKind::AzureOpenai] {
+            let mut workflow = source.clone();
+            workflow.spec.providers.get_mut("model").unwrap().kind = kind;
+            let default_plan = compile(&workflow, "fixture.yaml").unwrap();
+            for value in [true, false] {
+                workflow
+                    .spec
+                    .agents
+                    .get_mut("worker")
+                    .unwrap()
+                    .provider_options
+                    .insert("toolStrict".to_owned(), Value::Bool(value));
+                let plan = compile(&workflow, "fixture.yaml").expect("boolean accepted");
+                assert_ne!(default_plan.workflow_digest, plan.workflow_digest);
+                assert_ne!(default_plan.plan_digest, plan.plan_digest);
+            }
+            let nonstrict_plan = compile(&workflow, "fixture.yaml").unwrap();
+            workflow
+                .spec
+                .agents
+                .get_mut("worker")
+                .unwrap()
+                .provider_options
+                .insert("toolStrict".to_owned(), Value::Bool(true));
+            let strict_plan = compile(&workflow, "fixture.yaml").unwrap();
+            assert_ne!(strict_plan.workflow_digest, nonstrict_plan.workflow_digest);
+            assert_ne!(strict_plan.plan_digest, nonstrict_plan.plan_digest);
+
+            for invalid in [
+                Value::Null,
+                serde_json::json!("false"),
+                serde_json::json!(0),
+                serde_json::json!([]),
+                serde_json::json!({}),
+            ] {
+                workflow
+                    .spec
+                    .agents
+                    .get_mut("worker")
+                    .unwrap()
+                    .provider_options
+                    .insert("toolStrict".to_owned(), invalid);
+                let errors = compile(&workflow, "fixture.yaml").expect_err("nonboolean rejected");
+                assert!(errors.iter().any(|error| {
+                    error.code == DiagnosticCode::SchemaViolation
+                        && error.path.as_deref()
+                            == Some("spec.agents.worker.providerOptions.toolStrict")
+                        && error.message == "toolStrict must be a boolean"
+                }));
+            }
+        }
+        for kind in [
+            ProviderKind::Fake,
+            ProviderKind::Anthropic,
+            ProviderKind::Google,
+        ] {
+            let mut workflow = source.clone();
+            workflow.spec.providers.get_mut("model").unwrap().kind = kind;
+            workflow
+                .spec
+                .agents
+                .get_mut("worker")
+                .unwrap()
+                .provider_options
+                .insert("toolStrict".to_owned(), Value::Bool(false));
+            let errors =
+                compile(&workflow, "fixture.yaml").expect_err("unsupported provider rejected");
+            assert!(errors.iter().any(|error| {
+                error.code == DiagnosticCode::UnsupportedCapability
+                    && error.path.as_deref()
+                        == Some("spec.agents.worker.providerOptions.toolStrict")
+            }));
+        }
     }
 
     #[test]

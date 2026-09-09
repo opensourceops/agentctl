@@ -111,6 +111,7 @@ spec:
               - ok
       providerOptions:
         store: false
+        toolStrict: false
   actions:
     verify:
       kind: builtin.assert
