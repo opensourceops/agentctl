@@ -1,0 +1,46 @@
+name: release-registry-preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_if_missing:
+        description: Create only the missing public opensourceops/agentctl Docker Hub repository
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentctl-dockerhub-publication
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.repository == 'opensourceops/agentctl' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check or create the exact public release repository
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          CREATE_IF_MISSING: ${{ inputs.create_if_missing }}
+        run: |
+          set -euo pipefail
+          if [ "$CREATE_IF_MISSING" = true ]; then
+            python3 scripts/release/registry_preflight.py --create-if-missing
+          else
+            python3 scripts/release/registry_preflight.py
+          fi | tee registry-preflight.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: registry-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: registry-preflight.json
+          if-no-files-found: error
+          retention-days: 90
