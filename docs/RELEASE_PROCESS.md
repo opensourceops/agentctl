@@ -69,6 +69,8 @@ A timeout after copying OCI contents is reconciled by reading the remote tag. A 
 
 To retry after correcting registry access, dispatch **release-image-publication** on a trusted ref with the already published `release_tag`. It verifies the same durable assets and never rebuilds. Unavailable registries stop further writes. Do not overwrite an immutable version to conceal a failed retry.
 
+Before the first publication, run **release-registry-preflight** on `main`. It uses the configured `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` to check the exact `opensourceops/agentctl` repository, then verifies anonymous public access. If the repository is absent, an operator can dispatch it with `create_if_missing: true` to create that public repository. Existing private repositories, authentication failures, and denied access stop the check without changing visibility or permissions. Docker Hub repository creation and metadata access may require token scopes beyond image push; configure these separately according to the [Docker Hub API](https://docs.docker.com/reference/api/hub/latest/) and [organization token permissions](https://docs.docker.com/security/access-tokens/organization-access-tokens/). The check does not prove image push access; actual digest promotion remains a separate gate.
+
 Rollback means selecting a previously reviewed digest in the consuming system. It does not undo external deployments or rewrite released packages. Final production image publication and the demo's published-image smoke remain operator actions after implementation review.
 
 ## Local verification

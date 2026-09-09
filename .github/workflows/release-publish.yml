@@ -69,9 +69,20 @@ jobs:
           test -n "$DOCKERHUB_USERNAME" || { echo 'Set Actions variable DOCKERHUB_USERNAME in opensourceops/agentctl.' >&2; exit 1; }
           test -n "$DOCKERHUB_TOKEN" || { echo 'Set Actions secret DOCKERHUB_TOKEN with push access to opensourceops/agentctl.' >&2; exit 1; }
       - name: Install OCI transport
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
+          set -euo pipefail
+          test -f /etc/apt/sources.list.d/ubuntu.sources
+          apt_root="$(mktemp -d)"
+          trap 'sudo rm -rf -- "$apt_root"' EXIT
+          chmod 755 "$apt_root"
+          mkdir "$apt_root/parts" "$apt_root/lists"
+          # Unrelated vendor indexes must not block Ubuntu's signed transport packages.
+          apt_options=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources
+                       -o "Dir::Etc::sourceparts=$apt_root/parts"
+                       -o "Dir::State::lists=$apt_root/lists")
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends skopeo
           skopeo --version
       - name: Authenticate only at the production publication boundary
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
